@@ -12,7 +12,7 @@ export function EvidencePanel({ sources, selectedCitationKey, onSelectCitation }
     <section className="panel">
       <div className="section-title">
         <div>
-          <p className="eyebrow">Traceability</p>
+          <p className="eyebrow">溯源</p>
           <h2>证据来源</h2>
         </div>
         <Search size={18} />

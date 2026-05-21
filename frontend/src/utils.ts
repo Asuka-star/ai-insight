@@ -1,4 +1,4 @@
-import type { AgentName, AgentStep, AnalysisArtifact, AnalysisRun } from "./types";
+import type { AgentName, AgentStep, AnalysisArtifact, AnalysisRun, AnalysisStatus } from "./types";
 import { AGENTS } from "./constants";
 
 export function splitList(value: string): string[] {
@@ -22,7 +22,34 @@ export function latestStepByAgent(run?: AnalysisRun): Map<AgentName, AgentStep[]
 }
 
 export function isActiveRun(run?: AnalysisRun | null): boolean {
-  return run?.status === "PENDING" || run?.status === "RUNNING";
+  return run?.status === "PENDING" || run?.status === "RUNNING" || run?.status === "CLARIFYING" || run?.status === "REVIEWING" || run?.status === "REVISING";
+}
+
+export function resolveRunPhase(run?: AnalysisRun | null): AnalysisStatus | string {
+  if (!run) return "EMPTY";
+  if (run.phase) return run.phase;
+  if (run.status === "PENDING" && (run.clarificationDraft || !run.steps?.length)) {
+    return "AWAITING_CONFIRMATION";
+  }
+  return run.status;
+}
+
+export function displayRunPhase(status?: string): string {
+  const labels: Record<string, string> = {
+    EMPTY: "未创建",
+    DRAFT: "草稿",
+    CLARIFYING: "澄清中",
+    AWAITING_CONFIRMATION: "待确认",
+    PENDING: "待执行",
+    RUNNING: "运行中",
+    REVIEWING: "复核中",
+    NEEDS_USER_INPUT: "待补充",
+    REVISING: "修订中",
+    SUCCEEDED: "已完成",
+    FAILED: "失败",
+    CANCELLED: "已取消"
+  };
+  return labels[status ?? ""] ?? (status || "未知状态");
 }
 
 export function statusClass(status?: string): string {

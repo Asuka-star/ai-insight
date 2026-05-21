@@ -1,4 +1,10 @@
-import type { AgentName, AnalysisRun, CreateAnalysisRunRequest } from "./types";
+import type {
+  AddContextRequest,
+  AgentName,
+  AnalysisRun,
+  CreateAnalysisRunRequest,
+  UpdateAnalysisRequirementRequest
+} from "./types";
 
 export async function listRuns(): Promise<AnalysisRun[]> {
   return requestJson("/api/analysis-runs");
@@ -14,6 +20,28 @@ export async function createRun(payload: CreateAnalysisRunRequest): Promise<Anal
 
 export async function getRun(runId: string): Promise<AnalysisRun> {
   return requestJson(`/api/analysis-runs/${runId}`);
+}
+
+export async function updateRequirement(runId: string, payload: UpdateAnalysisRequirementRequest): Promise<AnalysisRun> {
+  return requestJson(`/api/analysis-runs/${runId}/requirement`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload)
+  });
+}
+
+export async function startAnalysis(runId: string): Promise<AnalysisRun> {
+  return requestJson(`/api/analysis-runs/${runId}/start`, {
+    method: "POST"
+  });
+}
+
+export async function addContext(runId: string, payload: AddContextRequest): Promise<AnalysisRun> {
+  return requestJson(`/api/analysis-runs/${runId}/context`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload)
+  });
 }
 
 export async function rerunAgent(runId: string, agentName: AgentName): Promise<AnalysisRun> {

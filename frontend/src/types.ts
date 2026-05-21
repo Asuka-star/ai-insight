@@ -1,4 +1,14 @@
-export type AnalysisStatus = "PENDING" | "RUNNING" | "SUCCEEDED" | "FAILED";
+export type AnalysisStatus =
+  | "DRAFT"
+  | "CLARIFYING"
+  | "AWAITING_CONFIRMATION"
+  | "PENDING"
+  | "RUNNING"
+  | "REVIEWING"
+  | "NEEDS_USER_INPUT"
+  | "REVISING"
+  | "SUCCEEDED"
+  | "FAILED";
 export type StepStatus = "PENDING" | "RUNNING" | "SUCCEEDED" | "FAILED";
 export type AgentName =
   | "CLARIFIER"
@@ -33,6 +43,43 @@ export interface AnalysisRequirement {
   competitors: string[];
   dimensions: string[];
   sourcePreferences: string[];
+  outputGoal?: string;
+}
+
+export interface UpdateAnalysisRequirementRequest {
+  industry?: string;
+  competitors: string[];
+  dimensions: string[];
+  sourcePreferences: string[];
+  outputGoal?: string;
+}
+
+export interface ClarificationDraft {
+  industry?: string;
+  competitors: string[];
+  dimensions: string[];
+  sourcePreferences: string[];
+  outputGoal?: string;
+  clarificationQuestions: string[];
+  confirmed: boolean;
+}
+
+export type ContextIntent = "ADJUST_SCOPE" | "ADD_EVIDENCE" | "REQUEST_RERUN" | "REVISE_REPORT" | "COMMENT";
+export type ContextRole = "USER" | "SYSTEM" | "AGENT";
+
+export interface AnalysisContextMessage {
+  id: string;
+  role: ContextRole;
+  intent: ContextIntent;
+  content: string;
+  targetAgent?: AgentName;
+  createdAt?: string;
+}
+
+export interface AddContextRequest {
+  content: string;
+  intent: ContextIntent;
+  targetAgent?: AgentName;
 }
 
 export interface AgentStep {
@@ -178,7 +225,10 @@ export interface WorkflowTransition {
 export interface AnalysisRun {
   id: string;
   status: AnalysisStatus;
+  phase?: AnalysisStatus | string;
   requirement?: AnalysisRequirement;
+  clarificationDraft?: ClarificationDraft;
+  contextMessages?: AnalysisContextMessage[];
   steps: AgentStep[];
   evidenceSources: EvidenceSource[];
   artifacts: AnalysisArtifact[];

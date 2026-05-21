@@ -25,7 +25,7 @@ export function ArtifactViewer({ artifact, onSelectCitation }: ArtifactViewerPro
       <div className="artifact-meta">
         <span>{ARTIFACT_LABELS[artifact.type] ?? artifact.type}</span>
         <span>v{artifact.version || 1}</span>
-        <span>{artifact.citationKeys?.length ?? 0} citations</span>
+        <span>{artifact.citationKeys?.length ?? 0} 条引用</span>
       </div>
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}

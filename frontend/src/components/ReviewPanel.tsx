@@ -14,7 +14,7 @@ export function ReviewPanel({ findings, decision, onRerunTarget, disabled }: Rev
     <section className="panel">
       <div className="section-title">
         <div>
-          <p className="eyebrow">Reviewer</p>
+          <p className="eyebrow">复核</p>
           <h2>质检与打回</h2>
         </div>
         {findings.length ? <AlertTriangle size={18} /> : <ShieldCheck size={18} />}
@@ -22,7 +22,7 @@ export function ReviewPanel({ findings, decision, onRerunTarget, disabled }: Rev
       {decision ? (
         <div className="decision-box">
           <span>{decision.action || "PASS"}</span>
-          <p>{decision.reason || "等待 Reviewer 给出结构化决策"}</p>
+          <p>{decision.reason || "等待复核 Agent 给出结构化决策"}</p>
           {decision.targetAgent ? (
             <button type="button" onClick={() => onRerunTarget(decision.targetAgent as AgentName)} disabled={disabled}>
               重跑 {AGENT_LABELS[decision.targetAgent as AgentName] ?? decision.targetAgent}

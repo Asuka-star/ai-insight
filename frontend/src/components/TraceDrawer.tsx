@@ -14,10 +14,10 @@ export function TraceDrawer({ agent, steps, traces, onClose }: TraceDrawerProps)
   if (!agent) return null;
 
   return (
-    <aside className="trace-drawer" aria-label="Agent Trace">
+    <aside className="trace-drawer" aria-label="Agent 执行轨迹">
       <div className="drawer-header">
         <div>
-          <p className="eyebrow">Trace</p>
+          <p className="eyebrow">轨迹</p>
           <h2>{AGENT_LABELS[agent]}</h2>
         </div>
         <button className="icon-button" type="button" onClick={onClose} aria-label="关闭 Trace">
@@ -44,10 +44,10 @@ export function TraceDrawer({ agent, steps, traces, onClose }: TraceDrawerProps)
         {traces.length ? (
           traces.map((trace) => (
             <div className="trace-card" key={trace.id}>
-              <strong>{trace.modelName || "unknown model"}</strong>
+              <strong>{trace.modelName || "未知模型"}</strong>
               <p>{trace.decisionSummary || trace.outputSnapshot || "暂无决策说明"}</p>
               <small>
-                prompt {trace.promptTokens ?? 0} / completion {trace.completionTokens ?? 0} / {trace.latencyMs ?? 0}ms
+                提示词 {trace.promptTokens ?? 0} / 输出 {trace.completionTokens ?? 0} / {trace.latencyMs ?? 0}ms
               </small>
             </div>
           ))
