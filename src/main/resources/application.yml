@@ -1,0 +1,20 @@
+spring:
+  application:
+    name: ai-insight
+
+server:
+  port: 8080
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+
+ai-insight:
+  llm:
+    xiaomi:
+      api-key: ${XIAOMI_LLM_API_KEY:}
+      base-url: ${XIAOMI_LLM_BASE_URL:https://token-plan-cn.xiaomimimo.com/v1}
+      model: ${XIAOMI_LLM_MODEL:mimo-v2.5-pro}
+      timeout: 60s
