@@ -1,4 +1,4 @@
-package com.aiinsight.model;
+package com.aiinsight.model.run;
 
 import lombok.Getter;
 import lombok.NoArgsConstructor;

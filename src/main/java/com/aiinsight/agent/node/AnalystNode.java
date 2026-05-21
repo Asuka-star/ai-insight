@@ -1,13 +1,13 @@
 package com.aiinsight.agent.node;
 
-import com.aiinsight.model.AgentName;
-import com.aiinsight.model.AnalysisClaim;
-import com.aiinsight.model.AnalysisArtifact;
-import com.aiinsight.model.AnalysisRun;
-import com.aiinsight.model.ArtifactType;
-import com.aiinsight.model.ClaimType;
-import com.aiinsight.model.ConfidenceLevel;
-import com.aiinsight.model.EvidenceSource;
+import com.aiinsight.model.enums.AgentName;
+import com.aiinsight.model.schema.AnalysisClaim;
+import com.aiinsight.model.run.AnalysisArtifact;
+import com.aiinsight.model.run.AnalysisRun;
+import com.aiinsight.model.enums.ArtifactType;
+import com.aiinsight.model.enums.ClaimType;
+import com.aiinsight.model.enums.ConfidenceLevel;
+import com.aiinsight.model.run.EvidenceSource;
 import com.aiinsight.agent.AgentNode;
 import org.springframework.stereotype.Component;
 

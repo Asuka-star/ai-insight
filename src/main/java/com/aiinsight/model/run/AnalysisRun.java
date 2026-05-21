@@ -1,5 +1,11 @@
-package com.aiinsight.model;
+package com.aiinsight.model.run;
 
+import com.aiinsight.model.enums.AnalysisStatus;
+import com.aiinsight.model.review.ReviewDecision;
+import com.aiinsight.model.review.ReviewFinding;
+import com.aiinsight.model.schema.AnalysisClaim;
+import com.aiinsight.model.schema.CompetitorProfile;
+import com.aiinsight.model.schema.ResearchPackage;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
 import lombok.Setter;
@@ -32,6 +38,7 @@ public class AnalysisRun {
     private ReviewDecision reviewDecision = new ReviewDecision();
     // AgentTrace 后续用于记录 Prompt、输入输出、模型和 token 消耗，支撑可观测性评分项。
     private List<AgentTrace> traces = new ArrayList<>();
+    private List<WorkflowTransition> workflowTransitions = new ArrayList<>();
     private List<ReviewFinding> reviewFindings = new ArrayList<>();
     private List<String> recommendedActions = new ArrayList<>();
     private String errorMessage;

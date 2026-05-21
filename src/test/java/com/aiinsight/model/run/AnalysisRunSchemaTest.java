@@ -1,5 +1,7 @@
-package com.aiinsight.model;
+package com.aiinsight.model.run;
 
+import com.aiinsight.model.enums.ClaimType;
+import com.aiinsight.model.schema.AnalysisClaim;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -15,6 +17,7 @@ class AnalysisRunSchemaTest {
         assertThat(run.getClaims()).isEmpty();
         assertThat(run.getReviewDecision()).isNotNull();
         assertThat(run.getTraces()).isEmpty();
+        assertThat(run.getWorkflowTransitions()).isEmpty();
     }
 
     @Test

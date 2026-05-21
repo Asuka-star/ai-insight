@@ -1,7 +1,7 @@
 package com.aiinsight.service;
 
 import com.aiinsight.dto.RunEvent;
-import com.aiinsight.model.AnalysisRun;
+import com.aiinsight.model.run.AnalysisRun;
 import org.springframework.stereotype.Component;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 

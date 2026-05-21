@@ -1,5 +1,6 @@
-package com.aiinsight.model;
+package com.aiinsight.model.review;
 
+import com.aiinsight.model.enums.ReviewSeverity;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
 import lombok.Setter;

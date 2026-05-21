@@ -1,16 +1,16 @@
 package com.aiinsight.agent.node;
 
-import com.aiinsight.model.AgentName;
-import com.aiinsight.model.AnalysisArtifact;
-import com.aiinsight.model.AnalysisRun;
-import com.aiinsight.model.ArtifactType;
-import com.aiinsight.model.CompetitorProfile;
-import com.aiinsight.model.EvidenceSource;
-import com.aiinsight.model.FeatureNode;
-import com.aiinsight.model.FeatureTree;
-import com.aiinsight.model.PricingModel;
-import com.aiinsight.model.PricingPlan;
-import com.aiinsight.model.UserPersona;
+import com.aiinsight.model.enums.AgentName;
+import com.aiinsight.model.run.AnalysisArtifact;
+import com.aiinsight.model.run.AnalysisRun;
+import com.aiinsight.model.enums.ArtifactType;
+import com.aiinsight.model.schema.CompetitorProfile;
+import com.aiinsight.model.run.EvidenceSource;
+import com.aiinsight.model.schema.FeatureNode;
+import com.aiinsight.model.schema.FeatureTree;
+import com.aiinsight.model.schema.PricingModel;
+import com.aiinsight.model.schema.PricingPlan;
+import com.aiinsight.model.schema.UserPersona;
 import com.aiinsight.agent.AgentNode;
 import org.springframework.stereotype.Component;
 

@@ -1,5 +1,6 @@
-package com.aiinsight.model;
+package com.aiinsight.model.schema;
 
+import com.aiinsight.model.run.EvidenceSource;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
 import lombok.Setter;

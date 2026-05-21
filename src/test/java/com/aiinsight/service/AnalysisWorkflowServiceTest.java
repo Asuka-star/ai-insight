@@ -1,11 +1,11 @@
 package com.aiinsight.service;
 
 import com.aiinsight.dto.CreateAnalysisRunRequest;
-import com.aiinsight.model.AgentName;
-import com.aiinsight.model.AnalysisStatus;
-import com.aiinsight.model.ArtifactType;
-import com.aiinsight.model.ClaimType;
-import com.aiinsight.model.ReviewAction;
+import com.aiinsight.model.enums.AgentName;
+import com.aiinsight.model.enums.AnalysisStatus;
+import com.aiinsight.model.enums.ArtifactType;
+import com.aiinsight.model.enums.ClaimType;
+import com.aiinsight.model.enums.ReviewAction;
 import com.aiinsight.llm.LlmClient;
 import com.aiinsight.repository.AnalysisRunRepository;
 import com.aiinsight.agent.node.AnalystNode;
@@ -15,6 +15,8 @@ import com.aiinsight.agent.node.ResearcherNode;
 import com.aiinsight.agent.node.ReviewerNode;
 import com.aiinsight.agent.node.RevisionNode;
 import com.aiinsight.agent.node.WriterNode;
+import com.aiinsight.workflow.AnalysisLangGraphWorkflow;
+import com.aiinsight.workflow.WorkflowNodeExecutor;
 import org.junit.jupiter.api.Test;
 import org.springframework.core.task.support.TaskExecutorAdapter;
 
@@ -39,11 +41,8 @@ class AnalysisWorkflowServiceTest {
         };
         AnalysisRunRepository repository = new AnalysisRunRepository();
         AnalysisEventBroker eventBroker = new AnalysisEventBroker();
-        AnalysisWorkflowService service = new AnalysisWorkflowService(
-                repository,
-                new AnalysisRequestNormalizer(),
-                eventBroker,
-                new TaskExecutorAdapter(Runnable::run),
+        WorkflowNodeExecutor nodeExecutor = new WorkflowNodeExecutor(repository, eventBroker);
+        AnalysisLangGraphWorkflow graphWorkflow = new AnalysisLangGraphWorkflow(
                 List.of(
                         new RevisionNode(),
                         new WriterNode(noopLlmClient),
@@ -52,7 +51,18 @@ class AnalysisWorkflowServiceTest {
                         new ExtractorNode(),
                         new ResearcherNode(),
                         new ClarifierNode()
-                )
+                ),
+                nodeExecutor,
+                repository,
+                eventBroker
+        );
+        assertThat(graphWorkflow.mermaid()).contains("REVIEW_GATE");
+        AnalysisWorkflowService service = new AnalysisWorkflowService(
+                repository,
+                new AnalysisRequestNormalizer(),
+                eventBroker,
+                new TaskExecutorAdapter(Runnable::run),
+                graphWorkflow
         );
         CreateAnalysisRunRequest request = new CreateAnalysisRunRequest();
         request.setPrompt("分析 Notion 和飞书文档在 AI 协作文档方向的竞品机会");
@@ -63,6 +73,11 @@ class AnalysisWorkflowServiceTest {
         assertThat(finished.getStatus()).isEqualTo(AnalysisStatus.SUCCEEDED);
         assertThat(finished.getSteps()).hasSize(12);
         assertThat(finished.getTraces()).hasSize(12);
+        assertThat(finished.getWorkflowTransitions()).hasSize(2);
+        assertThat(finished.getWorkflowTransitions().get(0).getRoute()).isEqualTo("recollect");
+        assertThat(finished.getWorkflowTransitions().get(0).getTargetNode()).isEqualTo(AgentName.RESEARCHER.name());
+        assertThat(finished.getWorkflowTransitions().get(1).getRoute()).isEqualTo("finish");
+        assertThat(finished.getWorkflowTransitions().get(1).getTargetNode()).isEqualTo(AgentName.REVISION.name());
         assertThat(finished.getSteps())
                 .filteredOn(step -> step.getAgentName() == AgentName.RESEARCHER)
                 .hasSize(2);

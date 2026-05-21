@@ -2,7 +2,7 @@
 
 AI Insight 是面向字节跳动 AI 全栈挑战赛 AI-3 课题的后端原型项目，目标是实现一个**可溯源、可复核、可观测、可重跑**的竞品分析 Agent 协作系统。
 
-项目当前采用 Spring Boot 后端优先的方式推进，先把多 Agent 工作流、结构化 Schema、Reviewer 反馈闭环和 SSE 运行态打通，再逐步接入真实搜索、RAG、数据库持久化和前端工作台。
+项目当前采用 Spring Boot 后端优先的方式推进，已经把 LangGraph4j 多 Agent 工作流、结构化 Schema、Reviewer 反馈闭环和 SSE 运行态打通，后续会逐步接入真实搜索、RAG、数据库持久化和前端工作台。
 
 ## 项目定位
 
@@ -46,9 +46,14 @@ src/main/java/com/aiinsight
 ├── dto                # 请求与事件 DTO
 ├── exception          # 业务异常
 ├── llm                # 小米 LLM OpenAI 兼容客户端与 fallback
-├── model              # analysis_run、Schema、Trace、Artifact 等模型
+├── model              # 运行态、Schema、质检和枚举模型
+│   ├── enums          # Agent、状态、产物、复核动作等枚举
+│   ├── review         # Reviewer 发现的问题与结构化决策
+│   ├── run            # analysis_run、步骤、Trace、证据、产物和工作流跳转
+│   └── schema         # 竞品画像、功能树、定价、用户画像和分析结论
 ├── repository         # 当前内存仓储，后续替换为数据库
-└── service            # 工作流编排、事件推送、规则质检等服务
+├── service            # 任务服务、事件推送、规则质检等服务
+└── workflow           # LangGraph4j 状态图、图状态和节点执行器
 ```
 
 ## 竞品知识 Schema
@@ -63,6 +68,7 @@ src/main/java/com/aiinsight
 - `AnalysisClaim`：分析结论原子，包含结论类型、置信度和 evidenceIds。
 - `ReviewDecision`：Reviewer 输出的结构化决策，用于驱动通过、修订或打回采集。
 - `AgentTrace`：Agent 执行 Trace，后续会扩展 Prompt、模型名、Token 消耗等字段。
+- `WorkflowTransition`：LangGraph4j 条件边决策记录，用于回放 REVIEW_GATE 的路由选择。
 
 ## 本地运行
 
@@ -128,6 +134,12 @@ curl http://localhost:8080/api/analysis-runs/{runId}
 curl -N http://localhost:8080/api/analysis-runs/{runId}/events
 ```
 
+查看 LangGraph4j Mermaid 图：
+
+```bash
+curl http://localhost:8080/api/analysis-runs/workflow/mermaid
+```
+
 重跑单个 Agent：
 
 ```bash
@@ -151,7 +163,6 @@ docker compose up -d
 
 ## 后续规划
 
-- 引入 LangGraph4j，将当前 service-level pipeline 替换为显式 DAG 状态图。
 - 接入真实公开信息采集，包括官网、价格页、文档、更新日志和公开评价。
 - 使用 Spring AI 构建文档切分、Embedding、向量召回和引用绑定链路。
 - 将内存仓储替换为 PostgreSQL 持久化模型。
@@ -163,6 +174,8 @@ docker compose up -d
 当前阶段重点已经完成：
 
 - 多 Agent 顺序协作
+- LangGraph4j DAG 状态图编排
+- REVIEW_GATE 条件边决策追踪
 - 结构化 Schema 状态传递
 - Reviewer 自动打回 Researcher 的反馈闭环
 - SSE 事件推送

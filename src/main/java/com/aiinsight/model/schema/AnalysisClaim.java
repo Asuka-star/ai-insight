@@ -1,5 +1,7 @@
-package com.aiinsight.model;
+package com.aiinsight.model.schema;
 
+import com.aiinsight.model.enums.ClaimType;
+import com.aiinsight.model.enums.ConfidenceLevel;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
 import lombok.Setter;

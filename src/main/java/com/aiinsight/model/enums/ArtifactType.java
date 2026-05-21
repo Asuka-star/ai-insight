@@ -1,4 +1,4 @@
-package com.aiinsight.model;
+package com.aiinsight.model.enums;
 
 public enum ArtifactType {
     CLARIFICATION_BRIEF,

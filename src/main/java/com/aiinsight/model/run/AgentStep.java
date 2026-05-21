@@ -1,5 +1,7 @@
-package com.aiinsight.model;
+package com.aiinsight.model.run;
 
+import com.aiinsight.model.enums.AgentName;
+import com.aiinsight.model.enums.StepStatus;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
 import lombok.Setter;

@@ -1,8 +1,8 @@
 package com.aiinsight.controller;
 
 import com.aiinsight.dto.CreateAnalysisRunRequest;
-import com.aiinsight.model.AgentName;
-import com.aiinsight.model.AnalysisRun;
+import com.aiinsight.model.enums.AgentName;
+import com.aiinsight.model.run.AnalysisRun;
 import com.aiinsight.service.AnalysisEventBroker;
 import com.aiinsight.service.AnalysisWorkflowService;
 import jakarta.validation.Valid;
@@ -35,6 +35,11 @@ public class AnalysisRunController {
     @GetMapping
     public Collection<AnalysisRun> list() {
         return workflowService.list();
+    }
+
+    @GetMapping(path = "/workflow/mermaid", produces = MediaType.TEXT_PLAIN_VALUE)
+    public String workflowMermaid() {
+        return workflowService.workflowMermaid();
     }
 
     @GetMapping("/{runId}")

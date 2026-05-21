@@ -1,5 +1,6 @@
-package com.aiinsight.model;
+package com.aiinsight.model.run;
 
+import com.aiinsight.model.enums.AgentName;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
 import lombok.Setter;
