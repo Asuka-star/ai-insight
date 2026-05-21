@@ -13,6 +13,7 @@ public class XiaomiLlmProperties {
 
     private String apiKey;
     private String baseUrl = "https://token-plan-cn.xiaomimimo.com/v1";
+    private String completionsPath = "/chat/completions";
     private String model = "mimo-v2.5-pro";
     private Duration timeout = Duration.ofSeconds(60);
 }

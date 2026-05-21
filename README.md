@@ -45,7 +45,7 @@ src/main/java/com/aiinsight
 ├── controller         # REST 与 SSE 接口
 ├── dto                # 请求与事件 DTO
 ├── exception          # 业务异常
-├── llm                # 小米 LLM OpenAI 兼容客户端与 fallback
+├── llm                # 基于 Spring AI 的小米 LLM 适配器与 fallback
 ├── model              # 运行态、Schema、质检和枚举模型
 │   ├── enums          # Agent、状态、产物、复核动作等枚举
 │   ├── review         # Reviewer 发现的问题与结构化决策
@@ -95,18 +95,21 @@ mvn spring-boot:run
 http://localhost:8080
 ```
 
-## 小米 LLM 配置
+## Spring AI 与小米 LLM 配置
 
-项目通过环境变量读取小米 LLM 配置。不要提交真实 API Key。
+项目通过 Spring AI 的 OpenAI ChatModel 接入小米 OpenAI-compatible 接口，业务侧仍然只依赖 `LlmClient` 门面。不要提交真实 API Key。
 
 PowerShell 示例：
 
 ```powershell
 $env:XIAOMI_LLM_API_KEY="your-api-key"
 $env:XIAOMI_LLM_BASE_URL="https://token-plan-cn.xiaomimimo.com/v1"
+$env:XIAOMI_LLM_COMPLETIONS_PATH="/chat/completions"
 $env:XIAOMI_LLM_MODEL="mimo-v2.5-pro"
 mvn spring-boot:run
 ```
+
+`XIAOMI_LLM_BASE_URL` 当前默认包含 `/v1`，因此 `XIAOMI_LLM_COMPLETIONS_PATH` 默认是 `/chat/completions`。如果后续换成不带 `/v1` 的 OpenAI-compatible base url，可以把 completions path 改成 `/v1/chat/completions`。
 
 也可以在本地 `.env` 中维护配置，`.env` 已加入 `.gitignore`。
 
