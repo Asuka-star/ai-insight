@@ -37,6 +37,9 @@ public class AnalysisRun {
     private ResearchPackage researchPackage = new ResearchPackage();
     private List<CompetitorProfile> competitorProfiles = new ArrayList<>();
     private List<AnalysisClaim> claims = new ArrayList<>();
+    private ClarificationDraft clarificationDraft = new ClarificationDraft();
+    private List<AnalysisContextMessage> contextMessages = new ArrayList<>();
+    private List<UserProvidedEvidence> userProvidedEvidence = new ArrayList<>();
     private ReviewDecision reviewDecision = new ReviewDecision();
     // AgentTrace 后续用于记录 Prompt、输入输出、模型和 token 消耗，支撑可观测性评分项。
     private List<AgentTrace> traces = new ArrayList<>();

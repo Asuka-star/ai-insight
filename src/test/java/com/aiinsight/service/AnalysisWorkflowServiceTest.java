@@ -1,15 +1,5 @@
 package com.aiinsight.service;
 
-import com.aiinsight.dto.CreateAnalysisRunRequest;
-import com.aiinsight.model.enums.AgentName;
-import com.aiinsight.model.enums.AnalysisStatus;
-import com.aiinsight.model.enums.ArtifactType;
-import com.aiinsight.model.enums.ClaimType;
-import com.aiinsight.model.enums.ReviewAction;
-import com.aiinsight.model.enums.StepStatus;
-import com.aiinsight.llm.LlmClient;
-import com.aiinsight.model.run.AnalysisRun;
-import com.aiinsight.repository.AnalysisRunRepository;
 import com.aiinsight.agent.node.AnalystNode;
 import com.aiinsight.agent.node.ClarifierNode;
 import com.aiinsight.agent.node.ExtractorNode;
@@ -17,6 +7,21 @@ import com.aiinsight.agent.node.ResearcherNode;
 import com.aiinsight.agent.node.ReviewerNode;
 import com.aiinsight.agent.node.RevisionNode;
 import com.aiinsight.agent.node.WriterNode;
+import com.aiinsight.dto.AddAnalysisContextRequest;
+import com.aiinsight.dto.AddUserEvidenceRequest;
+import com.aiinsight.dto.CreateAnalysisRunRequest;
+import com.aiinsight.dto.UpdateAnalysisRequirementRequest;
+import com.aiinsight.exception.InvalidRunStateException;
+import com.aiinsight.llm.LlmClient;
+import com.aiinsight.model.enums.AgentName;
+import com.aiinsight.model.enums.AnalysisStatus;
+import com.aiinsight.model.enums.ArtifactType;
+import com.aiinsight.model.enums.ClaimType;
+import com.aiinsight.model.enums.ContextIntent;
+import com.aiinsight.model.enums.ReviewAction;
+import com.aiinsight.model.enums.StepStatus;
+import com.aiinsight.model.run.AnalysisRun;
+import com.aiinsight.repository.AnalysisRunRepository;
 import com.aiinsight.workflow.AnalysisLangGraphWorkflow;
 import com.aiinsight.workflow.WorkflowNodeExecutor;
 import org.junit.jupiter.api.Test;
@@ -30,50 +35,131 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class AnalysisWorkflowServiceTest {
 
     @Test
-    void executesFullWorkflowAndProducesFinalReport() {
-        LlmClient noopLlmClient = new LlmClient() {
-            @Override
-            public boolean isAvailable() {
-                return false;
-            }
-
-            @Override
-            public String complete(com.aiinsight.llm.ChatRequest request) {
-                throw new IllegalStateException("LLM is not configured");
-            }
-        };
-        AnalysisRunRepository repository = new TestAnalysisRunRepository();
-        AnalysisEventBroker eventBroker = new AnalysisEventBroker();
-        WorkflowNodeExecutor nodeExecutor = new WorkflowNodeExecutor(repository, eventBroker);
-        AnalysisLangGraphWorkflow graphWorkflow = new AnalysisLangGraphWorkflow(
-                List.of(
-                        new RevisionNode(),
-                        new WriterNode(noopLlmClient),
-                        new ReviewerNode(new CitationCoverageEvaluator(), noopLlmClient),
-                        new AnalystNode(),
-                        new ExtractorNode(),
-                        new ResearcherNode(new SourceCollectionService(new WebPageFetchService()), new EvidenceChunkService()),
-                        new ClarifierNode()
-                ),
-                nodeExecutor,
-                repository,
-                eventBroker
-        );
-        assertThat(graphWorkflow.mermaid()).contains("REVIEW_GATE");
-        AnalysisWorkflowService service = new AnalysisWorkflowService(
-                repository,
-                new AnalysisRequestNormalizer(),
-                eventBroker,
-                new TaskExecutorAdapter(Runnable::run),
-                graphWorkflow,
-                new EvidenceRetrievalService()
-        );
+    void createsDraftThenExecutesAfterRequirementConfirmation() {
+        AnalysisWorkflowService service = newService();
         CreateAnalysisRunRequest request = new CreateAnalysisRunRequest();
-        request.setPrompt("分析 Notion 和飞书文档在 AI 协作文档方向的竞品机会");
+        request.setPrompt("Analyze Notion and Confluence for AI document collaboration.");
+
+        var draft = service.createDraft(request);
+
+        assertThat(draft.getStatus()).isEqualTo(AnalysisStatus.AWAITING_CONFIRMATION);
+        assertThat(draft.getSteps()).isEmpty();
+        assertThat(draft.getClarificationDraft()).isNotNull();
+        assertThat(draft.getClarificationDraft().isConfirmed()).isFalse();
+        assertThat(draft.getClarificationDraft().getClarificationQuestions()).isNotEmpty();
+
+        UpdateAnalysisRequirementRequest update = new UpdateAnalysisRequirementRequest();
+        update.setCompetitors(List.of("Notion", "Confluence"));
+        update.setOutputGoal("产品规划");
+        var confirmed = service.updateRequirement(draft.getId(), update);
+
+        assertThat(confirmed.getStatus()).isEqualTo(AnalysisStatus.PENDING);
+        assertThat(confirmed.getRequirement().getOutputGoal()).isEqualTo("产品规划");
+        assertThat(confirmed.getClarificationDraft().isConfirmed()).isTrue();
+
+        AddAnalysisContextRequest context = new AddAnalysisContextRequest();
+        context.setIntent(ContextIntent.ADJUST_SCOPE);
+        context.setContent("Add Confluence and pricing to the scope.");
+        var withContext = service.addContext(draft.getId(), context);
+
+        assertThat(withContext.getStatus()).isEqualTo(AnalysisStatus.AWAITING_CONFIRMATION);
+        assertThat(withContext.getContextMessages()).hasSize(1);
+        assertThat(withContext.getRequirement().getCompetitors()).contains("Confluence");
+        assertThat(withContext.getRequirement().getDimensions()).contains("pricing");
+
+        var finished = service.startExecution(draft.getId());
+
+        assertThat(finished.getStatus()).isEqualTo(AnalysisStatus.SUCCEEDED);
+        assertThat(finished.getSteps()).isNotEmpty();
+    }
+
+    @Test
+    void addsUserProvidedEvidenceAsCitableSourceAndChunk() {
+        AnalysisWorkflowService service = newService();
+        CreateAnalysisRunRequest request = new CreateAnalysisRunRequest();
+        request.setPrompt("Analyze Notion and Confluence for AI document collaboration.");
+        var run = service.createDraft(request);
+
+        AddUserEvidenceRequest evidenceRequest = new AddUserEvidenceRequest();
+        evidenceRequest.setTitle("Internal interview notes");
+        evidenceRequest.setSourceType("interview");
+        evidenceRequest.setContent("Users praised AI summaries, but asked for stronger enterprise permission governance.");
+        evidenceRequest.setSensitive(true);
+
+        var updated = service.addEvidence(run.getId(), evidenceRequest);
+
+        assertThat(updated.getUserProvidedEvidence()).hasSize(1);
+        assertThat(updated.getEvidenceSources()).hasSize(1);
+        assertThat(updated.getEvidenceSources().get(0).getCitationKey()).isEqualTo("S1");
+        assertThat(updated.getEvidenceSources().get(0).getSourceType()).isEqualTo("user_interview");
+        assertThat(updated.getEvidenceSources().get(0).getComplianceNote()).contains("internal-only");
+        assertThat(updated.getEvidenceChunks()).hasSize(1);
+        assertThat(updated.getResearchPackage().getSources()).hasSize(1);
+        assertThat(updated.getRecommendedActions()).anyMatch(action -> action.contains("用户证据 S1 已加入"));
+    }
+
+    @Test
+    void addEvidenceContextCreatesCitableSource() {
+        AnalysisWorkflowService service = newService();
+        CreateAnalysisRunRequest request = new CreateAnalysisRunRequest();
+        request.setPrompt("Analyze Notion and Confluence for AI document collaboration.");
+        var run = service.createDraft(request);
+
+        AddAnalysisContextRequest context = new AddAnalysisContextRequest();
+        context.setIntent(ContextIntent.ADD_EVIDENCE);
+        context.setContent("Interview notes: users want stronger audit trails for AI-generated document changes.");
+
+        var updated = service.addContext(run.getId(), context);
+
+        assertThat(updated.getContextMessages()).hasSize(1);
+        assertThat(updated.getUserProvidedEvidence()).hasSize(1);
+        assertThat(updated.getEvidenceSources()).hasSize(1);
+        assertThat(updated.getEvidenceSources().get(0).getCitationKey()).isEqualTo("S1");
+        assertThat(updated.getEvidenceChunks()).hasSize(1);
+    }
+
+    @Test
+    void cancelsDraftAndBlocksRestart() {
+        AnalysisWorkflowService service = newService();
+        CreateAnalysisRunRequest request = new CreateAnalysisRunRequest();
+        request.setPrompt("Analyze Notion and Confluence for AI document collaboration.");
+        var run = service.createDraft(request);
+
+        var cancelled = service.cancel(run.getId());
+
+        assertThat(cancelled.getStatus()).isEqualTo(AnalysisStatus.CANCELLED);
+        assertThat(cancelled.getRecommendedActions()).contains("任务已由用户取消。");
+        assertThatThrownBy(() -> service.startExecution(run.getId()))
+                .isInstanceOf(InvalidRunStateException.class)
+                .hasMessageContaining("CANCELLED");
+    }
+
+    @Test
+    void blocksRequirementChangesAfterRunSucceeded() {
+        AnalysisWorkflowService service = newService();
+        CreateAnalysisRunRequest request = new CreateAnalysisRunRequest();
+        request.setPrompt("Analyze Notion and Confluence for AI document collaboration.");
+        var finished = service.start(request);
+
+        UpdateAnalysisRequirementRequest update = new UpdateAnalysisRequirementRequest();
+        update.setOutputGoal("Change after completion");
+
+        assertThat(finished.getStatus()).isEqualTo(AnalysisStatus.SUCCEEDED);
+        assertThatThrownBy(() -> service.updateRequirement(finished.getId(), update))
+                .isInstanceOf(InvalidRunStateException.class)
+                .hasMessageContaining("SUCCEEDED");
+    }
+
+    @Test
+    void executesFullWorkflowAndProducesFinalReport() {
+        AnalysisWorkflowService service = newService();
+        CreateAnalysisRunRequest request = new CreateAnalysisRunRequest();
+        request.setPrompt("Analyze Notion and Confluence for AI document collaboration.");
 
         var run = service.start(request);
         var finished = service.get(run.getId());
@@ -121,7 +207,7 @@ class AnalysisWorkflowServiceTest {
                 .hasSize(2);
         assertThat(finished.getEvidenceSources()).hasSize(6);
         assertThat(finished.getEvidenceChunks()).hasSize(6);
-        assertThat(service.retrieveEvidence(finished.getId(), "价格 套餐", 3)).isNotEmpty();
+        assertThat(service.retrieveEvidence(finished.getId(), "Notion", 3)).isNotEmpty();
         assertThat(finished.getResearchPackage().getSources()).hasSize(6);
         assertThat(finished.getResearchPackage().getMissingEvidenceTypes()).isEmpty();
         assertThat(finished.getCompetitorProfiles()).hasSize(2);
@@ -142,8 +228,50 @@ class AnalysisWorkflowServiceTest {
         assertThat(finished.getArtifacts())
                 .filteredOn(artifact -> artifact.getType() == ArtifactType.REVIEW_FINDINGS)
                 .hasSize(2);
-        assertThat(finished.getArtifacts()).anyMatch(artifact -> artifact.getTitle().equals("可溯源竞品分析报告"));
+        assertThat(finished.getArtifacts()).anyMatch(artifact -> artifact.getType() == ArtifactType.FINAL_REPORT);
         assertThat(finished.getReviewFindings()).isEmpty();
+    }
+
+    private AnalysisWorkflowService newService() {
+        LlmClient noopLlmClient = new LlmClient() {
+            @Override
+            public boolean isAvailable() {
+                return false;
+            }
+
+            @Override
+            public String complete(com.aiinsight.llm.ChatRequest request) {
+                throw new IllegalStateException("LLM is not configured");
+            }
+        };
+        AnalysisRunRepository repository = new TestAnalysisRunRepository();
+        AnalysisEventBroker eventBroker = new AnalysisEventBroker();
+        WorkflowNodeExecutor nodeExecutor = new WorkflowNodeExecutor(repository, eventBroker);
+        AnalysisLangGraphWorkflow graphWorkflow = new AnalysisLangGraphWorkflow(
+                List.of(
+                        new RevisionNode(),
+                        new WriterNode(noopLlmClient),
+                        new ReviewerNode(new CitationCoverageEvaluator(), noopLlmClient),
+                        new AnalystNode(noopLlmClient),
+                        new ExtractorNode(noopLlmClient),
+                        new ResearcherNode(new SourceCollectionService(new WebPageFetchService()), new EvidenceChunkService()),
+                        new ClarifierNode(noopLlmClient)
+                ),
+                nodeExecutor,
+                repository,
+                eventBroker
+        );
+        assertThat(graphWorkflow.mermaid()).contains("REVIEW_GATE");
+        return new AnalysisWorkflowService(
+                repository,
+                new AnalysisRequestNormalizer(),
+                eventBroker,
+                new TaskExecutorAdapter(Runnable::run),
+                graphWorkflow,
+                new EvidenceRetrievalService(),
+                new SourceCollectionService(new WebPageFetchService()),
+                new EvidenceChunkService()
+        );
     }
 
     private static class TestAnalysisRunRepository implements AnalysisRunRepository {

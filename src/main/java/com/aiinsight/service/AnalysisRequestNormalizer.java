@@ -31,7 +31,15 @@ public class AnalysisRequestNormalizer {
                 : request.getCompetitors();
         List<String> dimensions = request.getDimensions().isEmpty() ? DEFAULT_DIMENSIONS : request.getDimensions();
         List<String> sourcePreferences = request.getSourcePreferences().isEmpty() ? DEFAULT_SOURCES : request.getSourcePreferences();
-        return new AnalysisRequirement(request.getPrompt(), industry, competitors, dimensions, sourcePreferences, normalizeSourceUrls(request));
+        return new AnalysisRequirement(
+                request.getPrompt(),
+                industry,
+                competitors,
+                dimensions,
+                sourcePreferences,
+                normalizeSourceUrls(request),
+                request.getOutputGoal()
+        );
     }
 
     private String inferIndustry(String prompt) {

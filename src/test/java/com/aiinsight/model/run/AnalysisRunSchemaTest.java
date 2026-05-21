@@ -16,6 +16,9 @@ class AnalysisRunSchemaTest {
         assertThat(run.getCompetitorProfiles()).isEmpty();
         assertThat(run.getClaims()).isEmpty();
         assertThat(run.getReviewDecision()).isNotNull();
+        assertThat(run.getClarificationDraft()).isNotNull();
+        assertThat(run.getContextMessages()).isEmpty();
+        assertThat(run.getUserProvidedEvidence()).isEmpty();
         assertThat(run.getTraces()).isEmpty();
         assertThat(run.getWorkflowTransitions()).isEmpty();
     }

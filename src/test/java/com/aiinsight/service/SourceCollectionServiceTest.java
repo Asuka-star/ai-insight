@@ -2,6 +2,7 @@ package com.aiinsight.service;
 
 import com.aiinsight.model.run.AnalysisRequirement;
 import com.aiinsight.model.run.AnalysisRun;
+import com.aiinsight.model.run.UserProvidedEvidence;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -41,5 +42,33 @@ class SourceCollectionServiceTest {
         assertThat(sources.get(0).getSourceType()).isEqualTo("public_web_page");
         assertThat(sources.get(0).getRawText()).contains("AI collaboration");
         assertThat(sources.get(0).getComplianceNote()).contains("robots.txt checked");
+    }
+
+    @Test
+    void collectsUserProvidedEvidenceBeforeSeedEvidence() {
+        SourceCollectionService service = new SourceCollectionService(new WebPageFetchService());
+        AnalysisRequirement requirement = new AnalysisRequirement(
+                "Analyze Notion",
+                "AI documents",
+                List.of("Notion"),
+                List.of("pricing"),
+                List.of("public_reviews"),
+                List.of()
+        );
+        AnalysisRun run = new AnalysisRun(requirement);
+        run.getUserProvidedEvidence().add(new UserProvidedEvidence(
+                "Internal interview notes",
+                "interview",
+                "Users like Notion templates but worry about enterprise permission governance.",
+                "",
+                true
+        ));
+
+        var sources = service.collect(run, false);
+
+        assertThat(sources).hasSize(1);
+        assertThat(sources.get(0).getCitationKey()).isEqualTo("S1");
+        assertThat(sources.get(0).getSourceType()).isEqualTo("user_interview");
+        assertThat(sources.get(0).getComplianceNote()).contains("internal-only");
     }
 }

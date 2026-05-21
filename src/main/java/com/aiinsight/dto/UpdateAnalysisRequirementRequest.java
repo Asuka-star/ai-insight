@@ -1,6 +1,5 @@
 package com.aiinsight.dto;
 
-import jakarta.validation.constraints.NotBlank;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
 import lombok.Setter;
@@ -11,10 +10,8 @@ import java.util.List;
 @Getter
 @Setter
 @NoArgsConstructor
-public class CreateAnalysisRunRequest {
+public class UpdateAnalysisRequirementRequest {
 
-    @NotBlank
-    private String prompt;
     private String industry;
     private List<String> competitors = new ArrayList<>();
     private List<String> dimensions = new ArrayList<>();

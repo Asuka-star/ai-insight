@@ -2,6 +2,7 @@ package com.aiinsight.service;
 
 import com.aiinsight.model.run.AnalysisRun;
 import com.aiinsight.model.run.EvidenceSource;
+import com.aiinsight.model.run.UserProvidedEvidence;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
@@ -20,6 +21,10 @@ public class SourceCollectionService {
     public List<EvidenceSource> collect(AnalysisRun run, boolean recollecting) {
         List<EvidenceSource> sources = new ArrayList<>();
         int index = 1;
+        for (UserProvidedEvidence evidence : run.getUserProvidedEvidence()) {
+            sources.add(fromUserProvidedEvidence("S" + index, evidence));
+            index++;
+        }
         for (String url : run.getRequirement().getSourceUrls()) {
             EvidenceSource source = fromUrl("S" + index, url);
             if (source != null) {
@@ -34,6 +39,25 @@ public class SourceCollectionService {
             appendSupplementalEvidence(run, sources, index);
         }
         return sources;
+    }
+
+    public EvidenceSource fromUserProvidedEvidence(String citationKey, UserProvidedEvidence evidence) {
+        String sourceType = StringUtils.hasText(evidence.getSourceType()) ? evidence.getSourceType() : "note";
+        String url = StringUtils.hasText(evidence.getUrl())
+                ? evidence.getUrl()
+                : "user-evidence://" + evidence.getId();
+        String complianceNote = evidence.isSensitive()
+                ? "User-provided sensitive source. Treat as internal-only evidence and avoid public redistribution."
+                : "User-provided source. Use only for this analysis run.";
+        return new EvidenceSource(
+                citationKey,
+                evidence.getTitle(),
+                url,
+                "user_" + sourceType,
+                snippet(evidence.getContent()),
+                evidence.getContent(),
+                complianceNote
+        );
     }
 
     private EvidenceSource fromUrl(String citationKey, String url) {

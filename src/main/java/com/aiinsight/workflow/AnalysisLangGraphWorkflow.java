@@ -91,6 +91,7 @@ public class AnalysisLangGraphWorkflow {
             stateGraph.addEdge(AgentName.ANALYST.name(), AgentName.WRITER.name());
             stateGraph.addEdge(AgentName.WRITER.name(), AgentName.REVIEWER.name());
             stateGraph.addEdge(AgentName.REVIEWER.name(), REVIEW_GATE);
+            // Reviewer 不直接结束流程，而是把结构化 ReviewDecision 映射成条件边，形成可回放的打回闭环。
             stateGraph.addConditionalEdges(
                     REVIEW_GATE,
                     AsyncEdgeAction.edge_async(AnalysisGraphState::feedbackRoute),
@@ -112,12 +113,13 @@ public class AnalysisLangGraphWorkflow {
         AnalysisRun run = repository.findById(state.runId()).orElseThrow(() -> new RunNotFoundException(state.runId()));
         int attempts = state.reworkAttempts();
         String route = nextRoute(run, attempts);
+        // 每一次条件边选择都落库，前端才能解释“Reviewer 为什么打回到某个 Agent”。
         recordTransition(run, route, attempts);
         if (!ROUTE_FINISH.equals(route)) {
             attempts++;
-            eventBroker.publish(run, "review_rework_started", "Reviewer requested rework route: " + route);
+            eventBroker.publish(run, "review_rework_started", "复核 Agent 请求打回路径：" + route);
         } else if (attempts > 0) {
-            eventBroker.publish(run, "review_rework_completed", "Review rework completed");
+            eventBroker.publish(run, "review_rework_completed", "复核打回流程已完成");
         }
         return Map.of(
                 AnalysisGraphState.REWORK_ATTEMPTS, attempts,
@@ -139,6 +141,7 @@ public class AnalysisLangGraphWorkflow {
     }
 
     private String nextRoute(AnalysisRun run, int reworkAttempts) {
+        // MVP 限制自动返工轮次，防止 Reviewer 和上游 Agent 在证据不足时无限循环。
         if (reworkAttempts >= MAX_REVIEW_REWORK_ATTEMPTS) {
             return ROUTE_FINISH;
         }
@@ -170,8 +173,8 @@ public class AnalysisLangGraphWorkflow {
 
     private String inputSummary(AnalysisGraphState state) {
         if (state.reworkAttempts() > 0) {
-            return "Review feedback rework attempt " + state.reworkAttempts();
+            return "复核反馈重跑第 " + state.reworkAttempts() + " 轮";
         }
-        return "Input from previous Agent state";
+        return "来自上一 Agent 状态的输入";
     }
 }

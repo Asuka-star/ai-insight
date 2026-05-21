@@ -10,9 +10,11 @@ import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.chat.prompt.Prompt;
 import org.springframework.ai.openai.OpenAiChatOptions;
+import lombok.extern.slf4j.Slf4j;
 
 import java.util.List;
 
+@Slf4j
 class SpringAiLlmClient implements LlmClient {
 
     private final ChatModel chatModel;
@@ -31,7 +33,11 @@ class SpringAiLlmClient implements LlmClient {
     @Override
     public String complete(ChatRequest request) {
         ChatOptions options = request.getOptions() == null ? ChatOptions.deterministic() : request.getOptions();
+        // Trace 保存完整 Prompt 和模型输出；日志只打印元信息，避免控制台泄露报告内容或用户资料。
         AgentTraceContext.recordModelRequest(properties.getModel(), request);
+        long startedAt = System.currentTimeMillis();
+        log.info("LLM request started: model={}, messages={}, temperature={}, maxTokens={}",
+                properties.getModel(), request.getMessages().size(), options.getTemperature(), options.getMaxTokens());
         OpenAiChatOptions springAiOptions = OpenAiChatOptions.builder()
                 .model(properties.getModel())
                 .temperature(options.getTemperature())
@@ -52,6 +58,11 @@ class SpringAiLlmClient implements LlmClient {
                 usage == null ? null : usage.getPromptTokens(),
                 usage == null ? null : usage.getCompletionTokens()
         );
+        log.info("LLM response completed: model={}, latencyMs={}, promptTokens={}, completionTokens={}",
+                properties.getModel(),
+                System.currentTimeMillis() - startedAt,
+                usage == null ? null : usage.getPromptTokens(),
+                usage == null ? null : usage.getCompletionTokens());
         return content.trim();
     }
 
