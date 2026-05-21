@@ -48,6 +48,9 @@ public class AnalysisEventBroker {
         List<SseEmitter> runEmitters = emitters.get(runId);
         if (runEmitters != null) {
             runEmitters.remove(emitter);
+            if (runEmitters.isEmpty()) {
+                emitters.remove(runId, runEmitters);
+            }
         }
     }
 }

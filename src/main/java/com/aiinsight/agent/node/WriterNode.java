@@ -83,7 +83,10 @@ public class WriterNode implements AgentNode {
 
     private String fallbackReport(AnalysisRun run, List<String> citations) {
         String firstCitation = citations.isEmpty() ? "S1" : citations.get(0);
-        // fallback 故意保留一个无引用机会点，用来稳定触发 Reviewer 的引用覆盖检查。
+        String opportunityCitation = run.getResearchPackage().getMissingEvidenceTypes().isEmpty()
+                ? " [" + firstCitation + "]"
+                : "";
+        // 首轮 fallback 故意保留一个无引用机会点；补采完成后再补引用，便于演示质检前后改善。
         return """
                 # 竞品分析报告草稿
 
@@ -93,12 +96,12 @@ public class WriterNode implements AgentNode {
 
                 ## 机会点
 
-                机会点是聚焦可溯源分析、Reviewer 复核和单 Agent 重跑，把报告生产过程变成可观察的协作流程。
+                机会点是聚焦可溯源分析、Reviewer 复核和单 Agent 重跑，把报告生产过程变成可观察的协作流程。%s
 
                 ## 风险
 
                 若资料源不足，价格策略、商业模式和差异化结论容易出现过度推断，需要在最终报告中显式标注证据覆盖情况 [%s]。
-                """.formatted(firstCitation, firstCitation);
+                """.formatted(firstCitation, opportunityCitation, firstCitation);
     }
 
     private String evidenceBlock(AnalysisRun run) {

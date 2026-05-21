@@ -4,6 +4,9 @@ import com.aiinsight.model.AgentName;
 import com.aiinsight.model.AnalysisArtifact;
 import com.aiinsight.model.AnalysisRun;
 import com.aiinsight.model.ArtifactType;
+import com.aiinsight.model.ClaimType;
+import com.aiinsight.model.ReviewAction;
+import com.aiinsight.model.ReviewDecision;
 import com.aiinsight.llm.ChatMessage;
 import com.aiinsight.llm.ChatOptions;
 import com.aiinsight.llm.ChatRequest;
@@ -19,7 +22,7 @@ import java.util.stream.Collectors;
 @Component
 @RequiredArgsConstructor
 // Reviewer 是可信度防线：先跑确定性规则，再让 LLM 做更语义化的质检。
-// 未来的 DAG 条件边会根据 reviewFindings 决定是通过、修订报告还是打回采集。
+// ReviewDecision 会驱动工作流打回采集或修订节点，形成可观测反馈闭环。
 public class ReviewerNode implements AgentNode {
 
     private final CitationCoverageEvaluator citationCoverageEvaluator;
@@ -43,11 +46,36 @@ public class ReviewerNode implements AgentNode {
             // 规则结果进入结构化 finding，不能只存在于 LLM 文本回复里。
             run.getReviewFindings().addAll(citationCoverageEvaluator.evaluate(draft.getContent()));
         }
+        run.setReviewDecision(buildDecision(run));
         String content = llmClient.isAvailable() && draft != null
                 ? reviewWithLlm(run, draft)
                 : fallbackReviewContent(run);
         run.getArtifacts().add(new AnalysisArtifact(ArtifactType.REVIEW_FINDINGS, "Reviewer 复核结果", content, List.of()));
         return run;
+    }
+
+    private ReviewDecision buildDecision(AnalysisRun run) {
+        ReviewDecision decision = new ReviewDecision();
+        if (run.getReviewFindings().isEmpty()) {
+            decision.setAction(ReviewAction.PASS);
+            decision.setReason("规则检查未发现高风险问题。");
+            return decision;
+        }
+        if (!run.getResearchPackage().getMissingEvidenceTypes().isEmpty()) {
+            decision.setAction(ReviewAction.RECOLLECT_EVIDENCE);
+            decision.setTargetAgent(AgentName.RESEARCHER);
+            decision.setReason("报告存在无引用结论，且采集包显示价格页或用户评价证据不足。");
+            decision.setRequiredEvidenceTypes(run.getResearchPackage().getMissingEvidenceTypes());
+        } else {
+            decision.setAction(ReviewAction.REVISE_REPORT);
+            decision.setTargetAgent(AgentName.WRITER);
+            decision.setReason("报告存在无引用结论，需要 Writer 补充引用或降级为待验证假设。");
+        }
+        decision.setAffectedClaimIds(run.getClaims().stream()
+                .filter(claim -> claim.getType() == ClaimType.OPPORTUNITY || claim.getEvidenceIds().isEmpty())
+                .map(claim -> claim.getId())
+                .toList());
+        return decision;
     }
 
     private String reviewWithLlm(AnalysisRun run, AnalysisArtifact draft) {

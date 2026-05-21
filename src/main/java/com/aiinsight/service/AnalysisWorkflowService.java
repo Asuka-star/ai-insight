@@ -4,8 +4,10 @@ import com.aiinsight.exception.RunNotFoundException;
 import com.aiinsight.dto.CreateAnalysisRunRequest;
 import com.aiinsight.model.AgentName;
 import com.aiinsight.model.AgentStep;
+import com.aiinsight.model.AgentTrace;
 import com.aiinsight.model.AnalysisRun;
 import com.aiinsight.model.AnalysisStatus;
+import com.aiinsight.model.ReviewAction;
 import com.aiinsight.repository.AnalysisRunRepository;
 import com.aiinsight.agent.AgentNode;
 import org.springframework.core.task.AsyncTaskExecutor;
@@ -20,6 +22,8 @@ import java.util.UUID;
 
 @Service
 public class AnalysisWorkflowService {
+
+    private static final int MAX_REVIEW_REWORK_ATTEMPTS = 1;
 
     private final AnalysisRunRepository repository;
     private final AnalysisRequestNormalizer normalizer;
@@ -84,12 +88,16 @@ public class AnalysisWorkflowService {
         repository.save(run);
         eventBroker.publish(run, "run_started", "Analysis workflow started");
         try {
-            // 原型阶段先用确定顺序串起 Agent，保证运行态和产物链路可演示。
-            // 真正的反馈闭环会在 Reviewer 之后加入条件边和回退节点。
+            int reworkAttempts = 0;
+            // 原型阶段先用确定顺序串起 Agent；Reviewer 后根据结构化决策触发一次反馈重跑。
             for (AgentNode node : pipeline) {
                 executeNode(run, node, "Input from previous Agent state");
                 repository.save(run);
                 pauseForReadableEvents();
+                if (node.name() == AgentName.REVIEWER && shouldReworkFromReview(run, reworkAttempts)) {
+                    reworkAttempts++;
+                    executeReviewRework(run, reworkAttempts);
+                }
             }
             run.setStatus(AnalysisStatus.SUCCEEDED);
             repository.save(run);
@@ -102,7 +110,28 @@ public class AnalysisWorkflowService {
         }
     }
 
+    private boolean shouldReworkFromReview(AnalysisRun run, int reworkAttempts) {
+        return reworkAttempts < MAX_REVIEW_REWORK_ATTEMPTS
+                && run.getReviewDecision().getAction() == ReviewAction.RECOLLECT_EVIDENCE
+                && run.getReviewDecision().getTargetAgent() != null;
+    }
+
+    private void executeReviewRework(AnalysisRun run, int attempt) {
+        AgentName targetAgent = run.getReviewDecision().getTargetAgent();
+        eventBroker.publish(run, "review_rework_started", "Reviewer requested rework from " + targetAgent);
+        for (AgentNode node : pipeline) {
+            if (node.name().ordinal() < targetAgent.ordinal() || node.name().ordinal() > AgentName.REVIEWER.ordinal()) {
+                continue;
+            }
+            executeNode(run, node, "Review feedback rework attempt " + attempt);
+            repository.save(run);
+            pauseForReadableEvents();
+        }
+        eventBroker.publish(run, "review_rework_completed", "Review rework attempt " + attempt + " completed");
+    }
+
     private void executeNode(AnalysisRun run, AgentNode node, String inputSummary) {
+        long startedAt = System.currentTimeMillis();
         AgentStep step = new AgentStep(node.name(), node.title());
         step.start(inputSummary);
         run.getSteps().add(step);
@@ -112,14 +141,26 @@ public class AnalysisWorkflowService {
             // Agent 直接修改 run 聚合，服务层只负责记录生命周期和事件。
             node.execute(run);
             step.succeed(node.name() + " produced updated run state");
+            run.getTraces().add(trace(node, inputSummary, step.getOutputSummary(), "SUCCEEDED", startedAt));
             repository.save(run);
             eventBroker.publish(run, "agent_succeeded", node.name() + " succeeded");
         } catch (RuntimeException ex) {
             step.fail(ex.getMessage());
+            run.getTraces().add(trace(node, inputSummary, ex.getMessage(), "FAILED", startedAt));
             repository.save(run);
             eventBroker.publish(run, "agent_failed", node.name() + " failed: " + ex.getMessage());
             throw ex;
         }
+    }
+
+    private AgentTrace trace(AgentNode node, String inputSummary, String outputSummary, String decisionSummary, long startedAt) {
+        AgentTrace trace = new AgentTrace();
+        trace.setAgentName(node.name());
+        trace.setInputSnapshot(inputSummary);
+        trace.setOutputSnapshot(outputSummary);
+        trace.setDecisionSummary(decisionSummary);
+        trace.setLatencyMs(System.currentTimeMillis() - startedAt);
+        return trace;
     }
 
     private void pauseForReadableEvents() {

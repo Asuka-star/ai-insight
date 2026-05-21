@@ -1,9 +1,12 @@
 package com.aiinsight.agent.node;
 
 import com.aiinsight.model.AgentName;
+import com.aiinsight.model.AnalysisClaim;
 import com.aiinsight.model.AnalysisArtifact;
 import com.aiinsight.model.AnalysisRun;
 import com.aiinsight.model.ArtifactType;
+import com.aiinsight.model.ClaimType;
+import com.aiinsight.model.ConfidenceLevel;
 import com.aiinsight.model.EvidenceSource;
 import com.aiinsight.agent.AgentNode;
 import org.springframework.stereotype.Component;
@@ -27,11 +30,18 @@ public class AnalystNode implements AgentNode {
 
     @Override
     public AnalysisRun execute(AnalysisRun run) {
+        run.getClaims().clear();
+        run.getClaims().add(comparisonClaim(run));
+        run.getClaims().add(opportunityClaim(run));
+        run.getClaims().add(riskClaim(run));
+
         // MVP 先用矩阵表达对比结果，后续会拆成 SWOT、功能树差异和机会点 Claim。
-        String rows = run.getEvidenceSources().stream()
-                .map(source -> "| %s | 协作、权限、AI 生成 | 团队导入成本 | %s |".formatted(
-                        source.getTitle().replace(" 官方产品资料", ""),
-                        source.getCitationKey()
+        String rows = run.getCompetitorProfiles().stream()
+                .map(profile -> "| %s | %s | %s | %s |".formatted(
+                        profile.getProductName(),
+                        String.join("、", profile.getStrengths()),
+                        String.join("、", profile.getWeaknesses()),
+                        String.join(", ", profile.getEvidenceIds())
                 ))
                 .collect(Collectors.joining("\n"));
         String content = """
@@ -48,5 +58,37 @@ public class AnalystNode implements AgentNode {
                 run.getEvidenceSources().stream().map(EvidenceSource::getCitationKey).toList()
         ));
         return run;
+    }
+
+    private AnalysisClaim comparisonClaim(AnalysisRun run) {
+        AnalysisClaim claim = baseClaim(run);
+        claim.setType(ClaimType.COMPARISON);
+        claim.setContent("主要竞品都在协作、权限和 AI 生成方向建设能力。");
+        claim.setConfidence(ConfidenceLevel.HIGH);
+        return claim;
+    }
+
+    private AnalysisClaim opportunityClaim(AnalysisRun run) {
+        AnalysisClaim claim = baseClaim(run);
+        claim.setType(ClaimType.OPPORTUNITY);
+        claim.setContent("以可溯源报告、Reviewer 复核和单 Agent 重跑切入，可以区别于只做内容生成的工具。");
+        claim.setConfidence(ConfidenceLevel.MEDIUM);
+        return claim;
+    }
+
+    private AnalysisClaim riskClaim(AnalysisRun run) {
+        AnalysisClaim claim = baseClaim(run);
+        claim.setType(ClaimType.RISK);
+        claim.setContent("当前价格策略和用户评价证据不足，商业模式结论需要标注待验证。");
+        claim.setConfidence(ConfidenceLevel.LOW);
+        return claim;
+    }
+
+    private AnalysisClaim baseClaim(AnalysisRun run) {
+        AnalysisClaim claim = new AnalysisClaim();
+        claim.setGeneratedBy(name().name());
+        claim.setCompetitorNames(run.getRequirement().getCompetitors());
+        claim.setEvidenceIds(run.getEvidenceSources().stream().map(EvidenceSource::getCitationKey).toList());
+        return claim;
     }
 }

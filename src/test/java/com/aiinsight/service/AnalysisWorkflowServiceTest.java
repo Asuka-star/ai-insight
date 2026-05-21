@@ -1,7 +1,11 @@
 package com.aiinsight.service;
 
 import com.aiinsight.dto.CreateAnalysisRunRequest;
+import com.aiinsight.model.AgentName;
 import com.aiinsight.model.AnalysisStatus;
+import com.aiinsight.model.ArtifactType;
+import com.aiinsight.model.ClaimType;
+import com.aiinsight.model.ReviewAction;
 import com.aiinsight.llm.LlmClient;
 import com.aiinsight.repository.AnalysisRunRepository;
 import com.aiinsight.agent.node.AnalystNode;
@@ -57,9 +61,36 @@ class AnalysisWorkflowServiceTest {
         var finished = service.get(run.getId());
 
         assertThat(finished.getStatus()).isEqualTo(AnalysisStatus.SUCCEEDED);
-        assertThat(finished.getSteps()).hasSize(7);
-        assertThat(finished.getEvidenceSources()).hasSize(2);
+        assertThat(finished.getSteps()).hasSize(12);
+        assertThat(finished.getTraces()).hasSize(12);
+        assertThat(finished.getSteps())
+                .filteredOn(step -> step.getAgentName() == AgentName.RESEARCHER)
+                .hasSize(2);
+        assertThat(finished.getSteps())
+                .filteredOn(step -> step.getAgentName() == AgentName.REVIEWER)
+                .hasSize(2);
+        assertThat(finished.getEvidenceSources()).hasSize(6);
+        assertThat(finished.getResearchPackage().getSources()).hasSize(6);
+        assertThat(finished.getResearchPackage().getMissingEvidenceTypes()).isEmpty();
+        assertThat(finished.getCompetitorProfiles()).hasSize(2);
+        assertThat(finished.getCompetitorProfiles())
+                .allSatisfy(profile -> {
+                    assertThat(profile.getFeatureTree().getRoots()).isNotEmpty();
+                    assertThat(profile.getPricingModel().getEvidenceIds()).isNotEmpty();
+                    assertThat(profile.getPricingModel().getPlans()).isNotEmpty();
+                    assertThat(profile.getPersonas()).isNotEmpty();
+                    assertThat(profile.getEvidenceIds()).isNotEmpty();
+                });
+        assertThat(finished.getClaims()).hasSize(3);
+        assertThat(finished.getClaims())
+                .extracting(claim -> claim.getType())
+                .containsExactlyInAnyOrder(ClaimType.COMPARISON, ClaimType.OPPORTUNITY, ClaimType.RISK);
+        assertThat(finished.getClaims()).allSatisfy(claim -> assertThat(claim.getEvidenceIds()).isNotEmpty());
+        assertThat(finished.getReviewDecision().getAction()).isEqualTo(ReviewAction.PASS);
+        assertThat(finished.getArtifacts())
+                .filteredOn(artifact -> artifact.getType() == ArtifactType.REVIEW_FINDINGS)
+                .hasSize(2);
         assertThat(finished.getArtifacts()).anyMatch(artifact -> artifact.getTitle().equals("可溯源竞品分析报告"));
-        assertThat(finished.getReviewFindings()).isNotEmpty();
+        assertThat(finished.getReviewFindings()).isEmpty();
     }
 }
