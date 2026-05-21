@@ -7,6 +7,9 @@ import com.aiinsight.model.enums.ArtifactType;
 import com.aiinsight.model.run.EvidenceSource;
 import com.aiinsight.model.enums.ReviewAction;
 import com.aiinsight.agent.AgentNode;
+import com.aiinsight.service.EvidenceChunkService;
+import com.aiinsight.service.SourceCollectionService;
+import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Component;
 
 import java.time.Instant;
@@ -15,9 +18,13 @@ import java.util.List;
 import java.util.stream.Collectors;
 
 @Component
+@RequiredArgsConstructor
 // Researcher 只负责产出“可引用证据”，不直接写分析结论。
-// 目前用模拟来源保证流程可跑，后续会替换为搜索、网页解析和问卷/访谈数据接入。
+// 优先采集用户提供的公开 URL，没有 URL 时使用种子来源保证演示链路可跑。
 public class ResearcherNode implements AgentNode {
+
+    private final SourceCollectionService sourceCollectionService;
+    private final EvidenceChunkService evidenceChunkService;
 
     @Override
     public AgentName name() {
@@ -35,19 +42,9 @@ public class ResearcherNode implements AgentNode {
                 && run.getReviewDecision().getTargetAgent() == name();
         // 采集重跑时先清空旧证据，避免同一 citationKey 指向多个来源。
         run.getEvidenceSources().clear();
-        int index = 1;
-        for (String competitor : run.getRequirement().getCompetitors()) {
-            run.getEvidenceSources().add(new EvidenceSource(
-                    "S" + index,
-                    competitor + " 官方产品资料",
-                    "https://example.com/" + competitor.toLowerCase().replace(" ", "-"),
-                    competitor + " 强调协作、知识沉淀、权限管理和 AI 辅助内容生成能力。"
-            ));
-            index++;
-        }
-        if (recollecting) {
-            index = appendSupplementalEvidence(run, index);
-        }
+        run.getEvidenceChunks().clear();
+        run.getEvidenceSources().addAll(sourceCollectionService.collect(run, recollecting));
+        run.getEvidenceChunks().addAll(evidenceChunkService.chunk(run.getEvidenceSources()));
         run.getResearchPackage().setSources(new ArrayList<>(run.getEvidenceSources()));
         run.getResearchPackage().setMissingEvidenceTypes(recollecting
                 ? List.of()
@@ -64,25 +61,5 @@ public class ResearcherNode implements AgentNode {
                 run.getEvidenceSources().stream().map(EvidenceSource::getCitationKey).toList()
         ));
         return run;
-    }
-
-    private int appendSupplementalEvidence(AnalysisRun run, int index) {
-        for (String competitor : run.getRequirement().getCompetitors()) {
-            run.getEvidenceSources().add(new EvidenceSource(
-                    "S" + index,
-                    competitor + " 价格页资料",
-                    "https://example.com/" + competitor.toLowerCase().replace(" ", "-") + "/pricing",
-                    competitor + " 的价格页用于补充免费版、团队版、企业版等套餐信息，价格细节仍以页面原文为准。"
-            ));
-            index++;
-            run.getEvidenceSources().add(new EvidenceSource(
-                    "S" + index,
-                    competitor + " 用户评价资料",
-                    "https://example.com/reviews/" + competitor.toLowerCase().replace(" ", "-"),
-                    competitor + " 的用户评价用于补充上手成本、协作体验和 AI 功能满意度等信息。"
-            ));
-            index++;
-        }
-        return index;
     }
 }

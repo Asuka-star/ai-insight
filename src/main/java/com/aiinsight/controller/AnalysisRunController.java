@@ -2,7 +2,9 @@ package com.aiinsight.controller;
 
 import com.aiinsight.dto.CreateAnalysisRunRequest;
 import com.aiinsight.model.enums.AgentName;
+import com.aiinsight.model.run.AgentTrace;
 import com.aiinsight.model.run.AnalysisRun;
+import com.aiinsight.model.run.EvidenceChunk;
 import com.aiinsight.service.AnalysisEventBroker;
 import com.aiinsight.service.AnalysisWorkflowService;
 import jakarta.validation.Valid;
@@ -13,6 +15,7 @@ import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
@@ -45,6 +48,18 @@ public class AnalysisRunController {
     @GetMapping("/{runId}")
     public AnalysisRun get(@PathVariable UUID runId) {
         return workflowService.get(runId);
+    }
+
+    @GetMapping("/{runId}/traces")
+    public Collection<AgentTrace> traces(@PathVariable UUID runId) {
+        return workflowService.traces(runId);
+    }
+
+    @GetMapping("/{runId}/retrieval")
+    public Collection<EvidenceChunk> retrieveEvidence(@PathVariable UUID runId,
+                                                      @RequestParam String query,
+                                                      @RequestParam(required = false) Integer topK) {
+        return workflowService.retrieveEvidence(runId, query, topK);
     }
 
     @GetMapping(path = "/{runId}/events", produces = MediaType.TEXT_EVENT_STREAM_VALUE)

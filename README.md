@@ -8,7 +8,7 @@ AI Insight 是面向字节跳动 AI 全栈挑战赛 AI-3 课题的后端原型�
 
 - 可溯源：资料片段、竞品画像、分析结论和报告引用都绑定 citationId。
 - 可复核：Reviewer Agent 会检查引用缺失、结论风险和证据覆盖不足。
-- 可观测：每个 Agent 的执行步骤、输入输出摘要、Trace、产物和状态都挂在 `analysis_run` 上。
+- 可观测：每个 Agent 的执行步骤、输入输出摘要、Prompt、模型输出、耗时、fallback 状态和 Trace 都挂在 `analysis_run` 上。
 - 可重跑：支持单个 Agent 手动重跑，也支持 Reviewer 基于结构化决策触发一次自动补采与下游重跑。
 - 结构化协作：Agent 之间通过 `ResearchPackage`、`CompetitorProfile`、`AnalysisClaim`、`ReviewDecision` 等强类型对象传递状态，而不是只依赖自然语言文本。
 
@@ -67,7 +67,7 @@ src/main/java/com/aiinsight
 - `UserPersona`：目标用户画像。
 - `AnalysisClaim`：分析结论原子，包含结论类型、置信度和 evidenceIds。
 - `ReviewDecision`：Reviewer 输出的结构化决策，用于驱动通过、修订或打回采集。
-- `AgentTrace`：Agent 执行 Trace，后续会扩展 Prompt、模型名、Token 消耗等字段。
+- `AgentTrace`：Agent 执行 Trace，记录 stepId、Prompt、模型名、原始模型输出、fallback 状态、耗时、异常和 Token 消耗。
 - `WorkflowTransition`：LangGraph4j 条件边决策记录，用于回放 REVIEW_GATE 的路由选择。
 
 ## 本地运行
@@ -125,10 +125,30 @@ curl -X POST http://localhost:8080/api/analysis-runs \
   -d "{\"prompt\":\"分析 Notion 和飞书文档在 AI 协作文档方向的竞品机会\"}"
 ```
 
+创建带公开来源 URL 的分析任务：
+
+```bash
+curl -X POST http://localhost:8080/api/analysis-runs \
+  -H "Content-Type: application/json" \
+  -d "{\"prompt\":\"分析 Notion 和飞书文档在 AI 协作文档方向的竞品机会\",\"sourceUrls\":[\"https://www.notion.so/product\",\"https://www.feishu.cn/product/docs\"]}"
+```
+
 查询任务详情：
 
 ```bash
 curl http://localhost:8080/api/analysis-runs/{runId}
+```
+
+查询 Agent Trace：
+
+```bash
+curl http://localhost:8080/api/analysis-runs/{runId}/traces
+```
+
+查询证据片段召回：
+
+```bash
+curl "http://localhost:8080/api/analysis-runs/{runId}/retrieval?query=价格%20套餐&topK=5"
 ```
 
 订阅 SSE 进度：
@@ -151,7 +171,7 @@ curl -X POST http://localhost:8080/api/analysis-runs/{runId}/agents/REVIEWER/rer
 
 ## Docker 依赖
 
-项目已经准备了 PostgreSQL + pgvector 和 Redis 的 Docker Compose 配置，当前后端暂未强依赖它们。
+项目已经准备了 PostgreSQL + pgvector 和 Redis 的 Docker Compose 配置。后端默认使用 PostgreSQL 保存 `analysis_run`，启动应用前需要先启动 PostgreSQL。
 
 启动依赖：
 
@@ -159,16 +179,33 @@ curl -X POST http://localhost:8080/api/analysis-runs/{runId}/agents/REVIEWER/rer
 docker compose up -d
 ```
 
+仅启动 PostgreSQL：
+
+```bash
+docker compose up -d postgres
+```
+
+启动后端：
+
+```powershell
+$env:POSTGRES_URL="jdbc:postgresql://localhost:5432/ai_insight"
+$env:POSTGRES_USER="ai_insight"
+$env:POSTGRES_PASSWORD="ai_insight"
+mvn spring-boot:run
+```
+
+当前 PostgreSQL 仓储会自动创建 `analysis_run` 表，并以 `jsonb` 保存完整运行态聚合，同时保留 `status`、`original_prompt`、`created_at`、`updated_at` 等查询字段。后续可以在此基础上拆分 `agent_trace`、`analysis_artifact`、`evidence_source` 等明细表。
+
 后续计划：
 
-- PostgreSQL + pgvector：保存资料切片、Embedding、证据引用和任务运行态。
+- PostgreSQL + pgvector：保存资料切片、Embedding、证据引用和更细粒度的任务运行态。
 - Redis：任务锁、短期事件广播、异步任务状态缓存。
 
 ## 后续规划
 
-- 接入真实公开信息采集，包括官网、价格页、文档、更新日志和公开评价。
+- 扩展采集来源，继续补充搜索结果、问卷、访谈、更新日志和公开评价数据。
 - 使用 Spring AI 构建文档切分、Embedding、向量召回和引用绑定链路。
-- 将内存仓储替换为 PostgreSQL 持久化模型。
+- 将当前 `analysis_run` 聚合持久化继续拆分为 trace、artifact、evidence 等明细表。
 - 实现前端 Workbench，展示 Agent 时间线、证据面板、报告版本、质检问题和单节点重跑。
 - 补充评测指标：引用覆盖率、字段完整率、Reviewer 检出数、补采前后评分变化和生成耗时。
 
@@ -180,6 +217,10 @@ docker compose up -d
 - LangGraph4j DAG 状态图编排
 - REVIEW_GATE 条件边决策追踪
 - 结构化 Schema 状态传递
+- Agent Prompt、模型输出、fallback、耗时和异常 Trace
+- analysis_run PostgreSQL 持久化
+- Researcher 支持用户提供公开 URL 并沉淀为可引用证据
+- EvidenceChunk 证据切片与关键词召回接口
 - Reviewer 自动打回 Researcher 的反馈闭环
 - SSE 事件推送
 - 单 Agent 重跑接口

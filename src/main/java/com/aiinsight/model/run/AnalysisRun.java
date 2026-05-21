@@ -29,6 +29,8 @@ public class AnalysisRun {
     private List<AgentStep> steps = new ArrayList<>();
     // 当前阶段先用内存对象表达来源片段，后续会映射到 pgvector / 文档块表。
     private List<EvidenceSource> evidenceSources = new ArrayList<>();
+    // EvidenceChunk 是 RAG 和 pgvector 的最小检索单元，用于把长网页拆成可召回片段。
+    private List<EvidenceChunk> evidenceChunks = new ArrayList<>();
     // 报告、竞品矩阵、复核结果等中间产物都以 artifact 形式保存，便于版本化和单节点重跑。
     private List<AnalysisArtifact> artifacts = new ArrayList<>();
     // 结构化 Schema 结果，供 Agent 间通过共享状态传递，而不是只解析 Markdown。

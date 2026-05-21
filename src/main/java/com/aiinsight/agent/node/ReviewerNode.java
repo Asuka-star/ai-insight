@@ -13,6 +13,7 @@ import com.aiinsight.llm.ChatRequest;
 import com.aiinsight.llm.LlmClient;
 import com.aiinsight.service.CitationCoverageEvaluator;
 import com.aiinsight.agent.AgentNode;
+import com.aiinsight.observability.AgentTraceContext;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Component;
 
@@ -47,9 +48,13 @@ public class ReviewerNode implements AgentNode {
             run.getReviewFindings().addAll(citationCoverageEvaluator.evaluate(draft.getContent()));
         }
         run.setReviewDecision(buildDecision(run));
-        String content = llmClient.isAvailable() && draft != null
-                ? reviewWithLlm(run, draft)
-                : fallbackReviewContent(run);
+        String content;
+        if (llmClient.isAvailable() && draft != null) {
+            content = reviewWithLlm(run, draft);
+        } else {
+            content = fallbackReviewContent(run);
+            AgentTraceContext.recordFallback("deterministic-reviewer-fallback", content);
+        }
         run.getArtifacts().add(new AnalysisArtifact(ArtifactType.REVIEW_FINDINGS, "Reviewer 复核结果", content, List.of()));
         return run;
     }

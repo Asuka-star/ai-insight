@@ -3,7 +3,9 @@ package com.aiinsight.service;
 import com.aiinsight.exception.RunNotFoundException;
 import com.aiinsight.dto.CreateAnalysisRunRequest;
 import com.aiinsight.model.enums.AgentName;
+import com.aiinsight.model.run.EvidenceChunk;
 import com.aiinsight.model.run.AnalysisRun;
+import com.aiinsight.model.run.AgentTrace;
 import com.aiinsight.model.enums.AnalysisStatus;
 import com.aiinsight.repository.AnalysisRunRepository;
 import com.aiinsight.workflow.AnalysisLangGraphWorkflow;
@@ -21,17 +23,20 @@ public class AnalysisWorkflowService {
     private final AnalysisEventBroker eventBroker;
     private final AsyncTaskExecutor analysisTaskExecutor;
     private final AnalysisLangGraphWorkflow graphWorkflow;
+    private final EvidenceRetrievalService evidenceRetrievalService;
 
     public AnalysisWorkflowService(AnalysisRunRepository repository,
                                    AnalysisRequestNormalizer normalizer,
                                    AnalysisEventBroker eventBroker,
                                    AsyncTaskExecutor analysisTaskExecutor,
-                                   AnalysisLangGraphWorkflow graphWorkflow) {
+                                   AnalysisLangGraphWorkflow graphWorkflow,
+                                   EvidenceRetrievalService evidenceRetrievalService) {
         this.repository = repository;
         this.normalizer = normalizer;
         this.eventBroker = eventBroker;
         this.analysisTaskExecutor = analysisTaskExecutor;
         this.graphWorkflow = graphWorkflow;
+        this.evidenceRetrievalService = evidenceRetrievalService;
     }
 
     public AnalysisRun start(CreateAnalysisRunRequest request) {
@@ -50,6 +55,14 @@ public class AnalysisWorkflowService {
 
     public Collection<AnalysisRun> list() {
         return repository.findAll();
+    }
+
+    public Collection<AgentTrace> traces(UUID runId) {
+        return get(runId).getTraces();
+    }
+
+    public Collection<EvidenceChunk> retrieveEvidence(UUID runId, String query, Integer topK) {
+        return evidenceRetrievalService.retrieve(get(runId), query, topK);
     }
 
     public String workflowMermaid() {
@@ -71,10 +84,12 @@ public class AnalysisWorkflowService {
         eventBroker.publish(run, "run_started", "Analysis workflow started");
         try {
             graphWorkflow.execute(runId);
+            run = get(runId);
             run.setStatus(AnalysisStatus.SUCCEEDED);
             repository.save(run);
             eventBroker.publish(run, "run_succeeded", "Analysis workflow succeeded");
         } catch (RuntimeException ex) {
+            run = repository.findById(runId).orElse(run);
             run.setStatus(AnalysisStatus.FAILED);
             run.setErrorMessage(ex.getMessage());
             repository.save(run);

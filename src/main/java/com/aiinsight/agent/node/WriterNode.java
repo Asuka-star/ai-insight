@@ -10,6 +10,7 @@ import com.aiinsight.llm.ChatOptions;
 import com.aiinsight.llm.ChatRequest;
 import com.aiinsight.llm.LlmClient;
 import com.aiinsight.agent.AgentNode;
+import com.aiinsight.observability.AgentTraceContext;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Component;
 
@@ -38,7 +39,13 @@ public class WriterNode implements AgentNode {
     public AnalysisRun execute(AnalysisRun run) {
         List<String> citations = run.getEvidenceSources().stream().map(EvidenceSource::getCitationKey).toList();
         // 未配置 LLM 时走 fallback，保证演示环境和单测不依赖外部模型。
-        String content = llmClient.isAvailable() ? generateWithLlm(run) : fallbackReport(run, citations);
+        String content;
+        if (llmClient.isAvailable()) {
+            content = generateWithLlm(run);
+        } else {
+            content = fallbackReport(run, citations);
+            AgentTraceContext.recordFallback("deterministic-writer-fallback", content);
+        }
         AnalysisArtifact artifact = new AnalysisArtifact(ArtifactType.REPORT_DRAFT, "竞品分析报告草稿", content, citations);
         run.getArtifacts().add(artifact);
         return run;

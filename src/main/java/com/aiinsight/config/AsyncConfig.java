@@ -12,6 +12,7 @@ public class AsyncConfig {
 
     @Bean
     AsyncTaskExecutor analysisTaskExecutor() {
+        // todo 这里记得换成ThreadPoolTaskExecutor
         return new TaskExecutorAdapter(Executors.newCachedThreadPool());
     }
 }

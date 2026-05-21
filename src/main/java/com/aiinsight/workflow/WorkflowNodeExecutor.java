@@ -2,14 +2,17 @@ package com.aiinsight.workflow;
 
 import com.aiinsight.agent.AgentNode;
 import com.aiinsight.exception.RunNotFoundException;
+import com.aiinsight.model.enums.StepStatus;
 import com.aiinsight.model.run.AgentStep;
 import com.aiinsight.model.run.AgentTrace;
 import com.aiinsight.model.run.AnalysisRun;
+import com.aiinsight.observability.AgentTraceContext;
 import com.aiinsight.repository.AnalysisRunRepository;
 import com.aiinsight.service.AnalysisEventBroker;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Component;
 
+import java.time.Instant;
 import java.util.UUID;
 
 @Component
@@ -24,6 +27,8 @@ public class WorkflowNodeExecutor {
         long startedAt = System.currentTimeMillis();
         AgentStep step = new AgentStep(node.name(), node.title());
         step.start(inputSummary);
+        AgentTrace trace = traceStarted(node, step, inputSummary);
+        AgentTraceContext.start(trace);
         run.getSteps().add(step);
         repository.save(run);
         eventBroker.publish(run, "agent_started", node.name() + " started");
@@ -34,28 +39,63 @@ public class WorkflowNodeExecutor {
                 run = updatedRun;
             }
             step.succeed(node.name() + " produced updated run state");
-            run.getTraces().add(trace(node, inputSummary, step.getOutputSummary(), "SUCCEEDED", startedAt));
+            completeTrace(trace, step, run, "SUCCEEDED", startedAt);
+            run.getTraces().add(trace);
             repository.save(run);
             eventBroker.publish(run, "agent_succeeded", node.name() + " succeeded");
             pauseForReadableEvents();
             return run;
         } catch (RuntimeException ex) {
             step.fail(ex.getMessage());
-            run.getTraces().add(trace(node, inputSummary, ex.getMessage(), "FAILED", startedAt));
+            AgentTraceContext.recordError(ex);
+            completeTrace(trace, step, run, "FAILED", startedAt);
+            trace.setErrorMessage(ex.getMessage());
+            run.getTraces().add(trace);
             repository.save(run);
             eventBroker.publish(run, "agent_failed", node.name() + " failed: " + ex.getMessage());
             throw ex;
+        } finally {
+            AgentTraceContext.clear();
         }
     }
 
-    private AgentTrace trace(AgentNode node, String inputSummary, String outputSummary, String decisionSummary, long startedAt) {
+    private AgentTrace traceStarted(AgentNode node, AgentStep step, String inputSummary) {
         AgentTrace trace = new AgentTrace();
+        trace.setStepId(step.getId());
         trace.setAgentName(node.name());
+        trace.setStatus(StepStatus.RUNNING);
         trace.setInputSnapshot(inputSummary);
-        trace.setOutputSnapshot(outputSummary);
-        trace.setDecisionSummary(decisionSummary);
-        trace.setLatencyMs(System.currentTimeMillis() - startedAt);
+        trace.setStartedAt(step.getStartedAt());
         return trace;
+    }
+
+    private void completeTrace(AgentTrace trace,
+                               AgentStep step,
+                               AnalysisRun run,
+                               String decisionSummary,
+                               long startedAt) {
+        trace.setStatus(step.getStatus());
+        trace.setDecisionSummary(decisionSummary);
+        if (trace.getOutputSnapshot() == null || trace.getOutputSnapshot().isBlank()) {
+            trace.setOutputSnapshot(stateSnapshot(run));
+        }
+        if (trace.getCompletedAt() == null) {
+            trace.setCompletedAt(step.getCompletedAt() == null ? Instant.now() : step.getCompletedAt());
+        }
+        trace.setLatencyMs(System.currentTimeMillis() - startedAt);
+    }
+
+    private String stateSnapshot(AnalysisRun run) {
+        return "status=%s, evidence=%d, competitors=%d, claims=%d, artifacts=%d, findings=%d, reviewAction=%s"
+                .formatted(
+                        run.getStatus(),
+                        run.getEvidenceSources().size(),
+                        run.getCompetitorProfiles().size(),
+                        run.getClaims().size(),
+                        run.getArtifacts().size(),
+                        run.getReviewFindings().size(),
+                        run.getReviewDecision().getAction()
+                );
     }
 
     private void pauseForReadableEvents() {

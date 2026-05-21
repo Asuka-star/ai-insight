@@ -1,9 +1,11 @@
 package com.aiinsight.llm;
 
+import com.aiinsight.observability.AgentTraceContext;
 import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.messages.Message;
 import org.springframework.ai.chat.messages.SystemMessage;
 import org.springframework.ai.chat.messages.UserMessage;
+import org.springframework.ai.chat.metadata.Usage;
 import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.chat.prompt.Prompt;
@@ -29,6 +31,7 @@ class SpringAiLlmClient implements LlmClient {
     @Override
     public String complete(ChatRequest request) {
         ChatOptions options = request.getOptions() == null ? ChatOptions.deterministic() : request.getOptions();
+        AgentTraceContext.recordModelRequest(properties.getModel(), request);
         OpenAiChatOptions springAiOptions = OpenAiChatOptions.builder()
                 .model(properties.getModel())
                 .temperature(options.getTemperature())
@@ -43,6 +46,12 @@ class SpringAiLlmClient implements LlmClient {
         if (content == null || content.isBlank()) {
             throw new IllegalStateException("Spring AI returned an empty chat message");
         }
+        Usage usage = response.getMetadata() == null ? null : response.getMetadata().getUsage();
+        AgentTraceContext.recordModelResponse(
+                content,
+                usage == null ? null : usage.getPromptTokens(),
+                usage == null ? null : usage.getCompletionTokens()
+        );
         return content.trim();
     }
 

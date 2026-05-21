@@ -19,6 +19,7 @@ public class CreateAnalysisRunRequest {
     private List<String> competitors = new ArrayList<>();
     private List<String> dimensions = new ArrayList<>();
     private List<String> sourcePreferences = new ArrayList<>();
+    private List<String> sourceUrls = new ArrayList<>();
 
     public void setCompetitors(List<String> competitors) {
         this.competitors = competitors == null ? new ArrayList<>() : new ArrayList<>(competitors);
@@ -30,5 +31,9 @@ public class CreateAnalysisRunRequest {
 
     public void setSourcePreferences(List<String> sourcePreferences) {
         this.sourcePreferences = sourcePreferences == null ? new ArrayList<>() : new ArrayList<>(sourcePreferences);
+    }
+
+    public void setSourceUrls(List<String> sourceUrls) {
+        this.sourceUrls = sourceUrls == null ? new ArrayList<>() : new ArrayList<>(sourceUrls);
     }
 }

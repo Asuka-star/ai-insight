@@ -9,6 +9,8 @@ import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 @Component
 public class AnalysisRequestNormalizer {
@@ -20,6 +22,7 @@ public class AnalysisRequestNormalizer {
     private static final List<String> DEFAULT_SOURCES = List.of(
             "official_site", "pricing_page", "product_docs", "release_notes", "public_reviews"
     );
+    private static final Pattern URL_PATTERN = Pattern.compile("https?://[^\\s，。；,;]+");
 
     public AnalysisRequirement normalize(CreateAnalysisRunRequest request) {
         String industry = StringUtils.hasText(request.getIndustry()) ? request.getIndustry() : inferIndustry(request.getPrompt());
@@ -28,7 +31,7 @@ public class AnalysisRequestNormalizer {
                 : request.getCompetitors();
         List<String> dimensions = request.getDimensions().isEmpty() ? DEFAULT_DIMENSIONS : request.getDimensions();
         List<String> sourcePreferences = request.getSourcePreferences().isEmpty() ? DEFAULT_SOURCES : request.getSourcePreferences();
-        return new AnalysisRequirement(request.getPrompt(), industry, competitors, dimensions, sourcePreferences);
+        return new AnalysisRequirement(request.getPrompt(), industry, competitors, dimensions, sourcePreferences, normalizeSourceUrls(request));
     }
 
     private String inferIndustry(String prompt) {
@@ -56,5 +59,17 @@ public class AnalysisRequestNormalizer {
             competitors.add("竞品 B");
         }
         return new ArrayList<>(competitors);
+    }
+
+    private List<String> normalizeSourceUrls(CreateAnalysisRunRequest request) {
+        Set<String> urls = new LinkedHashSet<>(request.getSourceUrls());
+        Matcher matcher = URL_PATTERN.matcher(request.getPrompt());
+        while (matcher.find()) {
+            urls.add(matcher.group());
+        }
+        return urls.stream()
+                .filter(StringUtils::hasText)
+                .map(String::trim)
+                .toList();
     }
 }

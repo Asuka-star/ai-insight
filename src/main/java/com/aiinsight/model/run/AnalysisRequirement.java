@@ -17,13 +17,15 @@ public class AnalysisRequirement {
     private List<String> competitors = new ArrayList<>();
     private List<String> dimensions = new ArrayList<>();
     private List<String> sourcePreferences = new ArrayList<>();
+    private List<String> sourceUrls = new ArrayList<>();
 
     public AnalysisRequirement(String originalPrompt, String industry, List<String> competitors,
-                               List<String> dimensions, List<String> sourcePreferences) {
+                               List<String> dimensions, List<String> sourcePreferences, List<String> sourceUrls) {
         this.originalPrompt = originalPrompt;
         this.industry = industry;
         this.competitors = new ArrayList<>(competitors);
         this.dimensions = new ArrayList<>(dimensions);
         this.sourcePreferences = new ArrayList<>(sourcePreferences);
+        this.sourceUrls = new ArrayList<>(sourceUrls);
     }
 }
