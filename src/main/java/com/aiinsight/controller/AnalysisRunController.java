@@ -1,7 +1,8 @@
-package com.aiinsight.api;
+package com.aiinsight.controller;
 
-import com.aiinsight.domain.AgentName;
-import com.aiinsight.domain.AnalysisRun;
+import com.aiinsight.dto.CreateAnalysisRunRequest;
+import com.aiinsight.model.AgentName;
+import com.aiinsight.model.AnalysisRun;
 import com.aiinsight.service.AnalysisEventBroker;
 import com.aiinsight.service.AnalysisWorkflowService;
 import jakarta.validation.Valid;

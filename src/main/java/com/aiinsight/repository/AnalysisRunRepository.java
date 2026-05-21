@@ -1,6 +1,6 @@
 package com.aiinsight.repository;
 
-import com.aiinsight.domain.AnalysisRun;
+import com.aiinsight.model.AnalysisRun;
 import org.springframework.stereotype.Repository;
 
 import java.util.Collection;

@@ -1,4 +1,4 @@
-package com.aiinsight.domain;
+package com.aiinsight.model;
 
 public enum AgentName {
     CLARIFIER,

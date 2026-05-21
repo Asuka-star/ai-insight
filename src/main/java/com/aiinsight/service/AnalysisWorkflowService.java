@@ -1,12 +1,13 @@
 package com.aiinsight.service;
 
-import com.aiinsight.api.CreateAnalysisRunRequest;
-import com.aiinsight.domain.AgentName;
-import com.aiinsight.domain.AgentStep;
-import com.aiinsight.domain.AnalysisRun;
-import com.aiinsight.domain.AnalysisStatus;
+import com.aiinsight.exception.RunNotFoundException;
+import com.aiinsight.dto.CreateAnalysisRunRequest;
+import com.aiinsight.model.AgentName;
+import com.aiinsight.model.AgentStep;
+import com.aiinsight.model.AnalysisRun;
+import com.aiinsight.model.AnalysisStatus;
 import com.aiinsight.repository.AnalysisRunRepository;
-import com.aiinsight.workflow.AgentNode;
+import com.aiinsight.agent.AgentNode;
 import org.springframework.core.task.AsyncTaskExecutor;
 import org.springframework.stereotype.Service;
 

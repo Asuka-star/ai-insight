@@ -1,7 +1,7 @@
 package com.aiinsight.service;
 
-import com.aiinsight.api.CreateAnalysisRunRequest;
-import com.aiinsight.domain.AnalysisRequirement;
+import com.aiinsight.dto.CreateAnalysisRunRequest;
+import com.aiinsight.model.AnalysisRequirement;
 import org.springframework.stereotype.Component;
 import org.springframework.util.StringUtils;
 

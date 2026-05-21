@@ -1,4 +1,4 @@
-package com.aiinsight.api;
+package com.aiinsight.dto;
 
 import jakarta.validation.constraints.NotBlank;
 import lombok.Getter;

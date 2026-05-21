@@ -1,16 +1,16 @@
 package com.aiinsight.service;
 
-import com.aiinsight.api.CreateAnalysisRunRequest;
-import com.aiinsight.domain.AnalysisStatus;
+import com.aiinsight.dto.CreateAnalysisRunRequest;
+import com.aiinsight.model.AnalysisStatus;
 import com.aiinsight.llm.LlmClient;
 import com.aiinsight.repository.AnalysisRunRepository;
-import com.aiinsight.workflow.node.AnalystNode;
-import com.aiinsight.workflow.node.ClarifierNode;
-import com.aiinsight.workflow.node.ExtractorNode;
-import com.aiinsight.workflow.node.ResearcherNode;
-import com.aiinsight.workflow.node.ReviewerNode;
-import com.aiinsight.workflow.node.RevisionNode;
-import com.aiinsight.workflow.node.WriterNode;
+import com.aiinsight.agent.node.AnalystNode;
+import com.aiinsight.agent.node.ClarifierNode;
+import com.aiinsight.agent.node.ExtractorNode;
+import com.aiinsight.agent.node.ResearcherNode;
+import com.aiinsight.agent.node.ReviewerNode;
+import com.aiinsight.agent.node.RevisionNode;
+import com.aiinsight.agent.node.WriterNode;
 import org.junit.jupiter.api.Test;
 import org.springframework.core.task.support.TaskExecutorAdapter;
 

@@ -1,6 +1,6 @@
 package com.aiinsight.service;
 
-import com.aiinsight.api.CreateAnalysisRunRequest;
+import com.aiinsight.dto.CreateAnalysisRunRequest;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;

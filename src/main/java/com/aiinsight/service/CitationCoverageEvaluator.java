@@ -1,7 +1,7 @@
 package com.aiinsight.service;
 
-import com.aiinsight.domain.ReviewFinding;
-import com.aiinsight.domain.ReviewSeverity;
+import com.aiinsight.model.ReviewFinding;
+import com.aiinsight.model.ReviewSeverity;
 import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;

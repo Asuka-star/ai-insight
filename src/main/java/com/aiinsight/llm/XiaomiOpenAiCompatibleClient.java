@@ -1,5 +1,8 @@
 package com.aiinsight.llm;
 
+import lombok.Getter;
+import lombok.NoArgsConstructor;
+import lombok.Setter;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.web.client.RestClient;
@@ -33,27 +36,27 @@ class XiaomiOpenAiCompatibleClient implements LlmClient {
                 .retrieve()
                 .body(OpenAiChatResponse.class);
 
-        if (response == null || response.choices() == null || response.choices().isEmpty()) {
+        if (response == null || response.getChoices() == null || response.getChoices().isEmpty()) {
             throw new IllegalStateException("Xiaomi LLM returned an empty response");
         }
-        OpenAiChatMessage message = response.choices().get(0).message();
-        if (message == null || message.content() == null || message.content().isBlank()) {
+        OpenAiChatMessage message = response.getChoices().get(0).getMessage();
+        if (message == null || message.getContent() == null || message.getContent().isBlank()) {
             throw new IllegalStateException("Xiaomi LLM returned an empty message");
         }
-        return message.content().trim();
+        return message.getContent().trim();
     }
 
     private Map<String, Object> toPayload(ChatRequest request) {
-        ChatOptions options = request.options() == null ? ChatOptions.deterministic() : request.options();
+        ChatOptions options = request.getOptions() == null ? ChatOptions.deterministic() : request.getOptions();
         // 只透传当前系统用到的最小参数集合，减少不同兼容接口之间的差异风险。
-        List<Map<String, String>> messages = request.messages().stream()
-                .map(message -> Map.of("role", message.role(), "content", message.content()))
+        List<Map<String, String>> messages = request.getMessages().stream()
+                .map(message -> Map.of("role", message.getRole(), "content", message.getContent()))
                 .toList();
         return Map.of(
                 "model", properties.getModel(),
                 "messages", messages,
-                "temperature", options.temperature(),
-                "max_tokens", options.maxTokens()
+                "temperature", options.getTemperature(),
+                "max_tokens", options.getMaxTokens()
         );
     }
 
@@ -62,12 +65,25 @@ class XiaomiOpenAiCompatibleClient implements LlmClient {
         return properties.getBaseUrl().replaceAll("/+$", "") + "/chat/completions";
     }
 
-    private record OpenAiChatResponse(List<OpenAiChoice> choices) {
+    @Getter
+    @Setter
+    @NoArgsConstructor
+    private static class OpenAiChatResponse {
+        private List<OpenAiChoice> choices;
     }
 
-    private record OpenAiChoice(OpenAiChatMessage message) {
+    @Getter
+    @Setter
+    @NoArgsConstructor
+    private static class OpenAiChoice {
+        private OpenAiChatMessage message;
     }
 
-    private record OpenAiChatMessage(String role, String content) {
+    @Getter
+    @Setter
+    @NoArgsConstructor
+    private static class OpenAiChatMessage {
+        private String role;
+        private String content;
     }
 }

@@ -1,7 +1,7 @@
 package com.aiinsight.service;
 
-import com.aiinsight.api.RunEvent;
-import com.aiinsight.domain.AnalysisRun;
+import com.aiinsight.dto.RunEvent;
+import com.aiinsight.model.AnalysisRun;
 import org.springframework.stereotype.Component;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
@@ -37,7 +37,7 @@ public class AnalysisEventBroker {
 
     private void send(SseEmitter emitter, RunEvent event) {
         try {
-            emitter.send(SseEmitter.event().name(event.type()).data(event));
+            emitter.send(SseEmitter.event().name(event.getType()).data(event));
         } catch (IOException | IllegalStateException ex) {
             // 写失败通常意味着客户端已断开，交给 completion 回调清理。
             emitter.complete();

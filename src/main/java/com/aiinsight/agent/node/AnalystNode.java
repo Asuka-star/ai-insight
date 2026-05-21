@@ -1,11 +1,11 @@
-package com.aiinsight.workflow.node;
+package com.aiinsight.agent.node;
 
-import com.aiinsight.domain.AgentName;
-import com.aiinsight.domain.AnalysisArtifact;
-import com.aiinsight.domain.AnalysisRun;
-import com.aiinsight.domain.ArtifactType;
-import com.aiinsight.domain.EvidenceSource;
-import com.aiinsight.workflow.AgentNode;
+import com.aiinsight.model.AgentName;
+import com.aiinsight.model.AnalysisArtifact;
+import com.aiinsight.model.AnalysisRun;
+import com.aiinsight.model.ArtifactType;
+import com.aiinsight.model.EvidenceSource;
+import com.aiinsight.agent.AgentNode;
 import org.springframework.stereotype.Component;
 
 import java.util.stream.Collectors;
