@@ -22,5 +22,7 @@ class CitationCoverageEvaluatorTest {
 
         assertThat(findings).hasSize(1);
         assertThat(findings.get(0).getCategory()).isEqualTo("citation_missing");
+        assertThat(findings.get(0).getParagraphIndex()).isEqualTo(1);
+        assertThat(findings.get(0).getExcerpt()).contains("机会点");
     }
 }

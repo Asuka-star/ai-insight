@@ -37,6 +37,8 @@ public class WebPageFetchService {
     public FetchedPage fetch(String url) {
         URI uri = URI.create(url);
         validateHttpUri(uri);
+        // The MVP uses a small robots check before fetching user-provided public URLs.
+        // A blocked or failed page returns an unusable FetchedPage so the workflow can degrade gracefully.
         RobotsDecision robotsDecision = robotsDecision(uri);
         if (!robotsDecision.allowed()) {
             return FetchedPage.blocked(url, robotsDecision.note());

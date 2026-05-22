@@ -40,8 +40,7 @@ public class RevisionNode implements AgentNode {
                 draft.getContent() + revisionNote,
                 draft.getCitationKeys()
         );
-        revised.setVersion(draft.getVersion() + 1);
-        run.getArtifacts().add(revised);
+        run.addArtifact(revised);
         run.getRecommendedActions().add("查看最终报告的引用覆盖情况，并决定是否补采更多信息源。");
         return run;
     }

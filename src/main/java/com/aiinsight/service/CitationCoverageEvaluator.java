@@ -16,20 +16,26 @@ public class CitationCoverageEvaluator {
 
     public List<ReviewFinding> evaluate(String reportContent) {
         List<ReviewFinding> findings = new ArrayList<>();
+        int paragraphIndex = 0;
         for (String paragraph : reportContent.split("\\R\\R+")) {
             String trimmed = paragraph.trim();
             if (trimmed.isEmpty() || trimmed.startsWith("#") || trimmed.startsWith("##")) {
+                paragraphIndex++;
                 continue;
             }
             // 先用确定性规则兜底，保证即使 LLM 质检漏判也能抓住“无引用结论”。
             if (looksLikeClaim(trimmed) && !CITATION_PATTERN.matcher(trimmed).find()) {
-                findings.add(new ReviewFinding(
+                ReviewFinding finding = new ReviewFinding(
                         ReviewSeverity.HIGH,
                         "citation_missing",
                         "发现未绑定引用的结论段落: " + abbreviate(trimmed),
                         "为该结论补充来源片段，或降级为待验证假设。"
-                ));
+                );
+                finding.setParagraphIndex(paragraphIndex);
+                finding.setExcerpt(trimmed);
+                findings.add(finding);
             }
+            paragraphIndex++;
         }
         return findings;
     }

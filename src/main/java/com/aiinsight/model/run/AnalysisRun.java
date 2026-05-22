@@ -1,6 +1,7 @@
 package com.aiinsight.model.run;
 
 import com.aiinsight.model.enums.AnalysisStatus;
+import com.aiinsight.model.enums.ArtifactType;
 import com.aiinsight.model.review.ReviewDecision;
 import com.aiinsight.model.review.ReviewFinding;
 import com.aiinsight.model.schema.AnalysisClaim;
@@ -52,6 +53,29 @@ public class AnalysisRun {
 
     public AnalysisRun(AnalysisRequirement requirement) {
         this.requirement = requirement;
+    }
+
+    public AnalysisArtifact addArtifact(AnalysisArtifact artifact) {
+        if (artifact == null) {
+            return null;
+        }
+        // Append-only artifacts keep reruns auditable. Version is scoped by artifact type,
+        // so v2 FINAL_REPORT and v2 REVIEW_FINDINGS can advance independently.
+        artifact.setVersion(nextArtifactVersion(artifact.getType()));
+        artifacts.add(artifact);
+        touch();
+        return artifact;
+    }
+
+    private int nextArtifactVersion(ArtifactType type) {
+        if (type == null) {
+            return 1;
+        }
+        return artifacts.stream()
+                .filter(artifact -> artifact.getType() == type)
+                .mapToInt(AnalysisArtifact::getVersion)
+                .max()
+                .orElse(0) + 1;
     }
 
     // 状态变化必须更新时间戳，前端可以用 updatedAt 做轻量轮询或排序。

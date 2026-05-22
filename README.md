@@ -2,7 +2,7 @@
 
 AI Insight 是面向字节跳动 AI 全栈挑战赛 AI-3 课题的后端原型项目，目标是实现一个**可溯源、可复核、可观测、可重跑**的竞品分析 Agent 协作系统。
 
-项目当前采用 Spring Boot 后端优先的方式推进，已经把 LangGraph4j 多 Agent 工作流、结构化 Schema、Reviewer 反馈闭环和 SSE 运行态打通，后续会逐步接入真实搜索、RAG、数据库持久化和前端工作台。
+项目采用 Spring Boot + React Workbench 推进，已经打通 LangGraph4j 多 Agent 工作流、结构化 Schema、Reviewer 反馈闭环、SSE 运行态、PostgreSQL JSONB 持久化和前端演示工作台。后续增强重点是更细粒度的表结构、语义检索和更丰富的数据源。
 
 ## 项目定位
 
@@ -51,7 +51,7 @@ src/main/java/com/aiinsight
 │   ├── review         # Reviewer 发现的问题与结构化决策
 │   ├── run            # analysis_run、步骤、Trace、证据、产物和工作流跳转
 │   └── schema         # 竞品画像、功能树、定价、用户画像和分析结论
-├── repository         # 当前内存仓储，后续替换为数据库
+├── repository         # PostgreSQL JSONB 运行态仓储
 ├── service            # 任务服务、事件推送、规则质检等服务
 └── workflow           # LangGraph4j 状态图、图状态和节点执行器
 ```
@@ -130,7 +130,7 @@ curl -X POST http://localhost:8080/api/analysis-runs \
 ```bash
 curl -X POST http://localhost:8080/api/analysis-runs \
   -H "Content-Type: application/json" \
-  -d "{\"prompt\":\"分析 Notion 和飞书文档在 AI 协作文档方向的竞品机会\",\"sourceUrls\":[\"https://www.notion.so/product\",\"https://www.feishu.cn/product/docs\"]}"
+  -d "{\"prompt\":\"分析 Notion 和飞书文档在 AI 协作文档方向的竞品机会\",\"sourceUrls\":[\"https://www.notion.com/product\",\"https://docs.feishu.cn/\"]}"
 ```
 
 查询任务详情：
@@ -196,18 +196,18 @@ mvn spring-boot:run
 
 当前 PostgreSQL 仓储会自动创建 `analysis_run` 表，并以 `jsonb` 保存完整运行态聚合，同时保留 `status`、`original_prompt`、`created_at`、`updated_at` 等查询字段。后续可以在此基础上拆分 `agent_trace`、`analysis_artifact`、`evidence_source` 等明细表。
 
-后续计划：
+可选后续增强：
 
 - PostgreSQL + pgvector：保存资料切片、Embedding、证据引用和更细粒度的任务运行态。
 - Redis：任务锁、短期事件广播、异步任务状态缓存。
 
-## 后续规划
+## 后续增强方向
 
 - 扩展采集来源，继续补充搜索结果、问卷、访谈、更新日志和公开评价数据。
 - 使用 Spring AI 构建文档切分、Embedding、向量召回和引用绑定链路。
 - 将当前 `analysis_run` 聚合持久化继续拆分为 trace、artifact、evidence 等明细表。
-- 实现前端 Workbench，展示 Agent 时间线、证据面板、报告版本、质检问题和单节点重跑。
-- 补充评测指标：引用覆盖率、字段完整率、Reviewer 检出数、补采前后评分变化和生成耗时。
+- 继续优化前端 Workbench 的报告对比、历史任务筛选和大包体代码拆分。
+- 扩展评测指标：补采前后评分变化、更多质量规则和跨样例 benchmark。
 
 ## 当前状态
 

@@ -5,6 +5,7 @@ target/
 *.log
 .env
 .codex/
+.playwright-mcp/
 logs/
 node_modules/
 frontend/dist/

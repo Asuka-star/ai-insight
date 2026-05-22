@@ -3,18 +3,31 @@ import {
   Activity,
   AlertTriangle,
   BookOpenCheck,
+  Clock3,
   GitBranch,
+  Gauge,
   Play,
   RefreshCw,
   RotateCcw,
   Search,
   ShieldCheck,
-  Sparkles
+  Sparkles,
+  UploadCloud
 } from "lucide-react";
-import type { AnalysisContextMessage, AgentName, AnalysisArtifact, AnalysisRun, ContextIntent, RunEvent } from "./types";
-import { addContext, createRun, getRun, getWorkflowMermaid, listRuns, rerunAgent, startAnalysis, updateRequirement } from "./api";
+import type { AnalysisContextMessage, AgentName, AnalysisArtifact, AnalysisRun, ContextIntent, ReviewFinding, RunEvent } from "./types";
+import { addContext, addEvidence, createRun, getRun, getWorkflowMermaid, listRuns, rerunAgent, startAnalysis, updateRequirement } from "./api";
 import { AGENTS, AGENT_LABELS, ARTIFACT_LABELS, SOURCE_OPTIONS } from "./constants";
-import { countCitedClaims, displayRunPhase, findDefaultArtifact, isActiveRun, resolveRunPhase, splitList } from "./utils";
+import {
+  calculateRunMetrics,
+  countCitedClaims,
+  displayRunPhase,
+  findDefaultArtifact,
+  formatDuration,
+  formatPercent,
+  isActiveRun,
+  resolveRunPhase,
+  splitList
+} from "./utils";
 import { StatusBadge } from "./components/StatusBadge";
 import { WorkflowGraph } from "./components/WorkflowGraph";
 import { AgentTimeline } from "./components/AgentTimeline";
@@ -37,13 +50,20 @@ export function App() {
   const [dimensions, setDimensions] = useState("");
   const [outputGoal, setOutputGoal] = useState("");
   const [sources, setSources] = useState<string[]>(SOURCE_OPTIONS.map((source) => source.value));
+  const [sourceUrls, setSourceUrls] = useState("");
   const [selectedArtifactId, setSelectedArtifactId] = useState<string>();
   const [artifactPinned, setArtifactPinned] = useState(false);
   const [selectedCitationKey, setSelectedCitationKey] = useState<string>();
+  const [selectedClaimId, setSelectedClaimId] = useState<string>();
   const [selectedAgent, setSelectedAgent] = useState<AgentName | null>(null);
   const [contextText, setContextText] = useState("");
   const [contextIntent, setContextIntent] = useState<ContextIntent>("ADJUST_SCOPE");
   const [contextTargetAgent, setContextTargetAgent] = useState<AgentName>();
+  const [evidenceTitle, setEvidenceTitle] = useState("");
+  const [evidenceSourceType, setEvidenceSourceType] = useState("note");
+  const [evidenceUrl, setEvidenceUrl] = useState("");
+  const [evidenceContent, setEvidenceContent] = useState("");
+  const [evidenceSensitive, setEvidenceSensitive] = useState(false);
   const [localContextMessages, setLocalContextMessages] = useState<AnalysisContextMessage[]>([]);
   const [mainView, setMainView] = useState<MainView>("dag");
   const [localScopeConfirmed, setLocalScopeConfirmed] = useState(false);
@@ -52,6 +72,23 @@ export function App() {
   const [workflowMermaid, setWorkflowMermaid] = useState("");
   const [isCreating, setIsCreating] = useState(false);
   const [isScopeBusy, setIsScopeBusy] = useState(false);
+  // Requirement may change without changing run.id, for example after ADJUST_SCOPE context.
+  // Keep a narrow sync key so the editable scope form follows backend scope updates.
+  const scopeSyncKey = useMemo(() => {
+    if (!run?.id) return "";
+    const scope = run.clarificationDraft ?? run.requirement;
+    if (!scope) return run.id;
+    return JSON.stringify({
+      id: run.id,
+      industry: scope.industry ?? "",
+      competitors: scope.competitors ?? [],
+      dimensions: scope.dimensions ?? [],
+      outputGoal: scope.outputGoal ?? "",
+      sourcePreferences: scope.sourcePreferences ?? [],
+      sourceUrls: scope.sourceUrls ?? [],
+      confirmed: Boolean(run.clarificationDraft?.confirmed)
+    });
+  }, [run]);
 
   const refreshRun = useCallback(async (runId?: string) => {
     const id = runId ?? run?.id;
@@ -83,11 +120,19 @@ export function App() {
     const eventTypes = [
       "subscribed",
       "run_created",
+      "clarification_ready",
+      "requirement_confirmed",
+      "run_start_requested",
       "run_started",
+      "context_added",
+      "evidence_added",
       "agent_started",
       "agent_succeeded",
       "agent_failed",
       "agent_rerun_completed",
+      "review_rework_started",
+      "review_rework_completed",
+      "run_cancelled",
       "run_succeeded",
       "run_failed"
     ];
@@ -136,6 +181,8 @@ export function App() {
   }, [selectedArtifact, selectedArtifactId]);
 
   useEffect(() => {
+    // The left-side scope form is editable, but backend clarification/context updates are authoritative.
+    // Sync only when the semantic scope changes to avoid resetting unrelated UI state on every poll.
     if (!run?.id) return;
     const scope = run.clarificationDraft ?? run.requirement;
     if (!scope) return;
@@ -143,11 +190,12 @@ export function App() {
     setCompetitors((scope.competitors ?? []).join(", "));
     setDimensions((scope.dimensions ?? []).join(", "));
     setOutputGoal(scope.outputGoal ?? "");
+    setSourceUrls((scope.sourceUrls ?? []).join("\n"));
     if (scope.sourcePreferences?.length) {
       setSources(scope.sourcePreferences);
     }
     setLocalScopeConfirmed(Boolean(run.clarificationDraft?.confirmed));
-  }, [run?.id]);
+  }, [scopeSyncKey]);
 
   async function handleCreateRun() {
     setIsCreating(true);
@@ -161,7 +209,9 @@ export function App() {
         industry,
         competitors: splitList(competitors),
         dimensions: splitList(dimensions),
-        sourcePreferences: sources
+        sourcePreferences: sources,
+        sourceUrls: splitLines(sourceUrls),
+        outputGoal
       });
       setBackendOk(true);
       setRun(nextRun);
@@ -183,6 +233,7 @@ export function App() {
         competitors: splitList(competitors),
         dimensions: splitList(dimensions),
         sourcePreferences: sources,
+        sourceUrls: splitLines(sourceUrls),
         outputGoal
       });
       setRun(nextRun);
@@ -246,6 +297,28 @@ export function App() {
     }
   }
 
+  async function handleAddEvidence() {
+    if (!run || !evidenceTitle.trim() || !evidenceContent.trim()) return;
+    setEventMessage("正在加入用户资料");
+    try {
+      const nextRun = await addEvidence(run.id, {
+        title: evidenceTitle.trim(),
+        sourceType: evidenceSourceType,
+        content: evidenceContent.trim(),
+        url: evidenceUrl.trim() || undefined,
+        sensitive: evidenceSensitive
+      });
+      setRun(nextRun);
+      setEvidenceTitle("");
+      setEvidenceUrl("");
+      setEvidenceContent("");
+      setEvidenceSensitive(false);
+      setEventMessage("用户资料已加入证据链");
+    } catch (error) {
+      setEventMessage(error instanceof Error ? `资料加入失败：${error.message}` : "资料加入失败");
+    }
+  }
+
   async function handleRerun(agentName: AgentName) {
     if (!run) return;
     setEventMessage(`正在重跑 ${AGENT_LABELS[agentName]}`);
@@ -253,11 +326,38 @@ export function App() {
     setRun(nextRun);
   }
 
+  function handleLocateFinding(finding: ReviewFinding) {
+    // Prefer the most structured target first: claim -> schema, otherwise fall back to the report artifact.
+    // Citation selection is independent so EvidencePanel can still highlight the source.
+    if (finding.citationKey) {
+      setSelectedCitationKey(finding.citationKey);
+    }
+    if (finding.claimId) {
+      setSelectedClaimId(finding.claimId);
+      setMainView("schema");
+      setEventMessage(`已定位到结构化结论 ${finding.claimId}`);
+      return;
+    }
+    if (finding.artifactId) {
+      setSelectedArtifactId(finding.artifactId);
+      setArtifactPinned(true);
+      setMainView("report");
+      setEventMessage(`已定位到报告段落 ${finding.paragraphIndex ?? ""}`);
+    }
+  }
+
+  const runMetrics = calculateRunMetrics(run);
   const metricCards = [
     { label: "Agent 步骤", value: run?.steps.length ?? 0, icon: Activity },
     { label: "证据来源", value: run?.evidenceSources.length ?? 0, icon: Search },
     { label: "质检问题", value: run?.reviewFindings.length ?? 0, icon: ShieldCheck },
-    { label: "引用标记", value: countCitedClaims(run), icon: BookOpenCheck }
+    { label: "引用标记", value: countCitedClaims(run), icon: BookOpenCheck },
+    { label: "Claim 覆盖", value: formatPercent(runMetrics.claimCoverage), icon: ShieldCheck },
+    { label: "Schema 完整", value: formatPercent(runMetrics.schemaCompleteness), icon: BookOpenCheck },
+    { label: "打回次数", value: runMetrics.reworkCount, icon: RefreshCw },
+    { label: "证据/Claim", value: runMetrics.evidencePerClaim, icon: Search },
+    { label: "Token", value: runMetrics.totalTokens, icon: Gauge },
+    { label: "耗时", value: formatDuration(runMetrics.totalLatencyMs), icon: Clock3 }
   ];
 
   const mainTabs: Array<{ key: MainView; label: string }> = [
@@ -323,6 +423,15 @@ export function App() {
                 </label>
               ))}
             </div>
+            <label>
+              公开来源 URL
+              <textarea
+                value={sourceUrls}
+                onChange={(event) => setSourceUrls(event.target.value)}
+                placeholder="每行一个公开网页 URL，例如官网、价格页、产品文档"
+                rows={3}
+              />
+            </label>
             <button className="primary-button" type="button" onClick={handleCreateRun} disabled={isCreating || !prompt.trim()}>
               <Play size={16} /> 创建任务草稿
             </button>
@@ -355,6 +464,51 @@ export function App() {
             onTargetAgentChange={setContextTargetAgent}
             onSubmit={handleSubmitContext}
           />
+
+          <section className="panel evidence-input-panel">
+            <div className="section-title">
+              <div>
+                <p className="eyebrow">资料</p>
+                <h2>补充资料</h2>
+              </div>
+              <UploadCloud size={18} />
+            </div>
+            <label>
+              标题
+              <input value={evidenceTitle} onChange={(event) => setEvidenceTitle(event.target.value)} placeholder="例如：内部访谈摘要" />
+            </label>
+            <div className="evidence-input-grid">
+              <label>
+                类型
+                <select value={evidenceSourceType} onChange={(event) => setEvidenceSourceType(event.target.value)}>
+                  <option value="note">手动资料</option>
+                  <option value="url">公开 URL</option>
+                  <option value="interview">访谈</option>
+                  <option value="survey">问卷</option>
+                </select>
+              </label>
+              <label className="check-row evidence-sensitive">
+                <input type="checkbox" checked={evidenceSensitive} onChange={(event) => setEvidenceSensitive(event.target.checked)} />
+                内部敏感资料
+              </label>
+            </div>
+            <label>
+              URL
+              <input value={evidenceUrl} onChange={(event) => setEvidenceUrl(event.target.value)} placeholder="可选，公开网页或资料链接" />
+            </label>
+            <label>
+              内容
+              <textarea
+                value={evidenceContent}
+                onChange={(event) => setEvidenceContent(event.target.value)}
+                placeholder="粘贴访谈、问卷、网页摘要或手动资料内容"
+                rows={4}
+              />
+            </label>
+            <button className="primary-button" type="button" onClick={handleAddEvidence} disabled={!run || !evidenceTitle.trim() || !evidenceContent.trim()}>
+              <UploadCloud size={15} /> 加入证据链
+            </button>
+          </section>
 
           <section className="panel">
             <div className="section-title">
@@ -422,7 +576,11 @@ export function App() {
                     ))}
                   </select>
                 </div>
-                <ArtifactViewer artifact={reportDisplayArtifact} onSelectCitation={setSelectedCitationKey} />
+                <ArtifactViewer
+                  artifact={reportDisplayArtifact}
+                  sources={run?.evidenceSources ?? []}
+                  onSelectCitation={setSelectedCitationKey}
+                />
               </div>
             ) : null}
 
@@ -434,13 +592,15 @@ export function App() {
                   profiles={run?.competitorProfiles ?? []}
                   claims={run?.claims ?? []}
                   transitions={run?.workflowTransitions ?? []}
+                  selectedClaimId={selectedClaimId}
+                  onSelectCitation={setSelectedCitationKey}
                 />
               </div>
             ) : null}
 
             {mainView === "matrix" ? (
               <div className="tab-content">
-                <ArtifactViewer artifact={matrixArtifact} onSelectCitation={setSelectedCitationKey} />
+                <ArtifactViewer artifact={matrixArtifact} sources={run?.evidenceSources ?? []} onSelectCitation={setSelectedCitationKey} />
               </div>
             ) : null}
 
@@ -486,6 +646,7 @@ export function App() {
             findings={run?.reviewFindings ?? []}
             decision={run?.reviewDecision}
             onRerunTarget={handleRerun}
+            onLocateFinding={handleLocateFinding}
             disabled={!run}
           />
 
@@ -531,4 +692,11 @@ function safeParseEvent(event: MessageEvent<string>): RunEvent | null {
   } catch {
     return null;
   }
+}
+
+function splitLines(value: string) {
+  return value
+    .split(/\r?\n/)
+    .map((item) => item.trim())
+    .filter(Boolean);
 }

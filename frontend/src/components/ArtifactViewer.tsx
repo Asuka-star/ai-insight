@@ -1,15 +1,18 @@
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { FileText } from "lucide-react";
-import type { AnalysisArtifact } from "../types";
+import type { AnalysisArtifact, EvidenceSource } from "../types";
 import { ARTIFACT_LABELS } from "../constants";
 
 interface ArtifactViewerProps {
   artifact?: AnalysisArtifact;
+  sources?: EvidenceSource[];
   onSelectCitation: (citationKey: string) => void;
 }
 
-export function ArtifactViewer({ artifact, onSelectCitation }: ArtifactViewerProps) {
+export function ArtifactViewer({ artifact, sources = [], onSelectCitation }: ArtifactViewerProps) {
+  const sourcesByKey = new Map(sources.map((source) => [source.citationKey, source]));
+
   if (!artifact) {
     return (
       <div className="empty-state">
@@ -31,7 +34,7 @@ export function ArtifactViewer({ artifact, onSelectCitation }: ArtifactViewerPro
         remarkPlugins={[remarkGfm]}
         components={{
           text({ children }) {
-            return <>{renderCitationText(String(children), onSelectCitation)}</>;
+            return <>{renderCitationText(String(children), sourcesByKey, onSelectCitation)}</>;
           }
         }}
       >
@@ -41,15 +44,31 @@ export function ArtifactViewer({ artifact, onSelectCitation }: ArtifactViewerPro
   );
 }
 
-function renderCitationText(text: string, onSelectCitation: (citationKey: string) => void) {
+function renderCitationText(
+  text: string,
+  sourcesByKey: Map<string, EvidenceSource>,
+  onSelectCitation: (citationKey: string) => void
+) {
   const parts = text.split(/(\[S\d+])/g);
   return parts.map((part, index) => {
     const match = part.match(/^\[(S\d+)]$/);
     if (!match) return part;
+    const source = sourcesByKey.get(match[1]);
     return (
-      <button key={`${part}-${index}`} className="citation-chip" type="button" onClick={() => onSelectCitation(match[1])}>
+      <button
+        key={`${part}-${index}`}
+        className="citation-chip"
+        type="button"
+        title={citationTitle(source)}
+        onClick={() => onSelectCitation(match[1])}
+      >
         {part}
       </button>
     );
   });
+}
+
+function citationTitle(source?: EvidenceSource) {
+  if (!source) return "未找到对应证据来源";
+  return `${source.title}\n${source.url}\n${source.snippet}`;
 }

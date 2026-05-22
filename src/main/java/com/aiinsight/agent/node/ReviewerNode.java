@@ -46,6 +46,7 @@ public class ReviewerNode implements AgentNode {
         if (draft != null) {
             // 规则结果进入结构化 finding，不能只存在于 LLM 文本回复里。
             run.getReviewFindings().addAll(citationCoverageEvaluator.evaluate(draft.getContent()));
+            enrichFindingLocations(run, draft);
         }
         run.setReviewDecision(buildDecision(run));
         String content;
@@ -55,7 +56,7 @@ public class ReviewerNode implements AgentNode {
             content = fallbackReviewContent(run);
             AgentTraceContext.recordFallback("deterministic-reviewer-fallback", content);
         }
-        run.getArtifacts().add(new AnalysisArtifact(ArtifactType.REVIEW_FINDINGS, "Reviewer 复核结果", content, List.of()));
+        run.addArtifact(new AnalysisArtifact(ArtifactType.REVIEW_FINDINGS, "Reviewer 复核结果", content, List.of()));
         return run;
     }
 
@@ -76,10 +77,20 @@ public class ReviewerNode implements AgentNode {
             decision.setTargetAgent(AgentName.WRITER);
             decision.setReason("报告存在无引用结论，需要 Writer 补充引用或降级为待验证假设。");
         }
-        decision.setAffectedClaimIds(run.getClaims().stream()
-                .filter(claim -> claim.getType() == ClaimType.OPPORTUNITY || claim.getEvidenceIds().isEmpty())
-                .map(claim -> claim.getId())
-                .toList());
+        // Decision metadata should follow the same claim bindings that the UI uses for "locate finding".
+        // If no finding can be bound, fall back to claims that still have no evidence.
+        List<String> affectedClaimIds = run.getReviewFindings().stream()
+                .map(finding -> finding.getClaimId())
+                .filter(id -> id != null && !id.isBlank())
+                .distinct()
+                .toList();
+        if (affectedClaimIds.isEmpty()) {
+            affectedClaimIds = run.getClaims().stream()
+                    .filter(claim -> claim.getEvidenceIds().isEmpty())
+                    .map(claim -> claim.getId())
+                    .toList();
+        }
+        decision.setAffectedClaimIds(affectedClaimIds);
         return decision;
     }
 
@@ -126,6 +137,37 @@ public class ReviewerNode implements AgentNode {
                 .map(finding -> "- [%s] %s: %s".formatted(finding.getSeverity(), finding.getCategory(), finding.getMessage()))
                 .reduce((left, right) -> left + "\n" + right)
                 .orElse("");
+    }
+
+    private void enrichFindingLocations(AnalysisRun run, AnalysisArtifact draft) {
+        for (var finding : run.getReviewFindings()) {
+            finding.setArtifactId(draft.getId());
+            finding.setClaimId(matchClaimId(run, finding.getExcerpt()));
+        }
+    }
+
+    private String matchClaimId(AnalysisRun run, String excerpt) {
+        // The deterministic reviewer only sees report excerpts, so this is a conservative bridge
+        // from rule findings back to structured claims for demo-time navigation.
+        if (excerpt != null && excerpt.contains("风险")) {
+            return run.getClaims().stream()
+                    .filter(claim -> claim.getType() == ClaimType.RISK)
+                    .map(claim -> claim.getId())
+                    .findFirst()
+                    .orElse(null);
+        }
+        if (excerpt != null && excerpt.contains("机会")) {
+            return run.getClaims().stream()
+                    .filter(claim -> claim.getType() == ClaimType.OPPORTUNITY)
+                    .map(claim -> claim.getId())
+                    .findFirst()
+                    .orElse(null);
+        }
+        return run.getClaims().stream()
+                .filter(claim -> claim.getType() == ClaimType.OPPORTUNITY || claim.getEvidenceIds().isEmpty())
+                .map(claim -> claim.getId())
+                .findFirst()
+                .orElse(null);
     }
 
     private AnalysisArtifact latestArtifact(AnalysisRun run, ArtifactType type) {

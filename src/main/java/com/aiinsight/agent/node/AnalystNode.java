@@ -65,10 +65,16 @@ public class AnalystNode implements AgentNode {
             content = fallbackContent;
             AgentTraceContext.recordFallback("deterministic-analyst-fallback", content);
         }
-        run.getArtifacts().add(new AnalysisArtifact(
+        run.addArtifact(new AnalysisArtifact(
                 ArtifactType.COMPETITIVE_MATRIX,
                 "竞品横向矩阵",
                 content,
+                run.getEvidenceSources().stream().map(EvidenceSource::getCitationKey).toList()
+        ));
+        run.addArtifact(new AnalysisArtifact(
+                ArtifactType.SWOT_ANALYSIS,
+                "SWOT 分析",
+                swotContent(run),
                 run.getEvidenceSources().stream().map(EvidenceSource::getCitationKey).toList()
         ));
         return run;
@@ -137,5 +143,24 @@ public class AnalystNode implements AgentNode {
         claim.setCompetitorNames(run.getRequirement().getCompetitors());
         claim.setEvidenceIds(run.getEvidenceSources().stream().map(EvidenceSource::getCitationKey).toList());
         return claim;
+    }
+
+    private String swotContent(AnalysisRun run) {
+        String evidence = run.getEvidenceSources().stream()
+                .map(EvidenceSource::getCitationKey)
+                .findFirst()
+                .map(key -> "[" + key + "]")
+                .orElse("[证据不足]");
+        String competitors = String.join("、", run.getRequirement().getCompetitors());
+        return """
+                | 维度 | 结论 | 证据 |
+                | --- | --- | --- |
+                | Strengths 优势 | %s 在协作、知识沉淀、权限和 AI 内容生成方面已有明确能力布局。 | %s |
+                | Weaknesses 劣势 | 价格策略、真实用户评价和企业落地案例仍需要更多公开资料验证。 | %s |
+                | Opportunities 机会 | 可以用可溯源报告、Reviewer 复核、单 Agent 重跑和证据闭环形成差异化。 | %s |
+                | Threats 威胁 | 若缺少持续资料采集和引用覆盖检查，报告容易退化为不可复核的主观总结。 | %s |
+
+                注：证据不足的 SWOT 项应在最终报告中保持“待验证”标记，并由 Reviewer 决定是否打回补采。
+                """.formatted(competitors, evidence, evidence, evidence, evidence);
     }
 }

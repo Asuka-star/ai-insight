@@ -56,7 +56,7 @@ public class ExtractorNode implements AgentNode {
             content = fallbackContent;
             AgentTraceContext.recordFallback("deterministic-extractor-fallback", content);
         }
-        run.getArtifacts().add(new AnalysisArtifact(
+        run.addArtifact(new AnalysisArtifact(
                 ArtifactType.COMPETITOR_PROFILE,
                 "竞品知识 Schema",
                 content,

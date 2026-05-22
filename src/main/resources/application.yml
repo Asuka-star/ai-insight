@@ -2,7 +2,7 @@ spring:
   application:
     name: ai-insight
   datasource:
-    url: ${POSTGRES_URL:jdbc:postgresql://localhost:5433/ai_insight}
+    url: ${POSTGRES_URL:jdbc:postgresql://localhost:5432/ai_insight}
     username: ${POSTGRES_USER:ai_insight}
     password: ${POSTGRES_PASSWORD:ai_insight}
     driver-class-name: org.postgresql.Driver

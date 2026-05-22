@@ -20,7 +20,9 @@ import com.aiinsight.model.enums.ClaimType;
 import com.aiinsight.model.enums.ContextIntent;
 import com.aiinsight.model.enums.ReviewAction;
 import com.aiinsight.model.enums.StepStatus;
+import com.aiinsight.model.run.AnalysisArtifact;
 import com.aiinsight.model.run.AnalysisRun;
+import com.aiinsight.model.schema.AnalysisClaim;
 import com.aiinsight.repository.AnalysisRunRepository;
 import com.aiinsight.workflow.AnalysisLangGraphWorkflow;
 import com.aiinsight.workflow.WorkflowNodeExecutor;
@@ -64,13 +66,14 @@ class AnalysisWorkflowServiceTest {
 
         AddAnalysisContextRequest context = new AddAnalysisContextRequest();
         context.setIntent(ContextIntent.ADJUST_SCOPE);
-        context.setContent("Add Confluence and pricing to the scope.");
+        context.setContent("再加入 Confluence，重点看企业权限和 AI 搜索能力，也补充价格页和公开评价。");
         var withContext = service.addContext(draft.getId(), context);
 
         assertThat(withContext.getStatus()).isEqualTo(AnalysisStatus.AWAITING_CONFIRMATION);
         assertThat(withContext.getContextMessages()).hasSize(1);
         assertThat(withContext.getRequirement().getCompetitors()).contains("Confluence");
-        assertThat(withContext.getRequirement().getDimensions()).contains("pricing");
+        assertThat(withContext.getRequirement().getDimensions()).contains("权限协作", "AI 搜索", "价格策略", "用户评价");
+        assertThat(withContext.getRequirement().getSourcePreferences()).contains("pricing_page", "public_reviews");
 
         var finished = service.startExecution(draft.getId());
 
@@ -228,8 +231,64 @@ class AnalysisWorkflowServiceTest {
         assertThat(finished.getArtifacts())
                 .filteredOn(artifact -> artifact.getType() == ArtifactType.REVIEW_FINDINGS)
                 .hasSize(2);
+        assertThat(finished.getArtifacts())
+                .filteredOn(artifact -> artifact.getType() == ArtifactType.REPORT_DRAFT)
+                .extracting(artifact -> artifact.getVersion())
+                .containsExactly(1, 2);
+        assertThat(finished.getArtifacts())
+                .filteredOn(artifact -> artifact.getType() == ArtifactType.SOURCE_LIST)
+                .extracting(artifact -> artifact.getVersion())
+                .containsExactly(1, 2);
+        assertThat(finished.getArtifacts()).anyMatch(artifact -> artifact.getType() == ArtifactType.SWOT_ANALYSIS);
         assertThat(finished.getArtifacts()).anyMatch(artifact -> artifact.getType() == ArtifactType.FINAL_REPORT);
         assertThat(finished.getReviewFindings()).isEmpty();
+    }
+
+    @Test
+    void rerunAgentAppendsNextArtifactVersion() {
+        AnalysisWorkflowService service = newService();
+        CreateAnalysisRunRequest request = new CreateAnalysisRunRequest();
+        request.setPrompt("Analyze Notion and Confluence for AI document collaboration.");
+
+        var run = service.start(request);
+        var rerun = service.rerunAgent(run.getId(), AgentName.WRITER);
+
+        assertThat(rerun.getArtifacts())
+                .filteredOn(artifact -> artifact.getType() == ArtifactType.REPORT_DRAFT)
+                .extracting(artifact -> artifact.getVersion())
+                .containsExactly(1, 2, 3);
+    }
+
+    @Test
+    void reviewerFindingsCarryArtifactAndClaimLocation() {
+        LlmClient noopLlmClient = new LlmClient() {
+            @Override
+            public boolean isAvailable() {
+                return false;
+            }
+
+            @Override
+            public String complete(com.aiinsight.llm.ChatRequest request) {
+                throw new IllegalStateException("LLM is not configured");
+            }
+        };
+        AnalysisRun run = new AnalysisRun();
+        AnalysisClaim claim = new AnalysisClaim();
+        claim.setType(ClaimType.OPPORTUNITY);
+        run.getClaims().add(claim);
+        AnalysisArtifact draft = run.addArtifact(new AnalysisArtifact(
+                ArtifactType.REPORT_DRAFT,
+                "draft",
+                "机会点是构建可复核的 Agent 工作流。",
+                List.of()
+        ));
+
+        new ReviewerNode(new CitationCoverageEvaluator(), noopLlmClient).execute(run);
+
+        assertThat(run.getReviewFindings()).hasSize(1);
+        assertThat(run.getReviewFindings().get(0).getArtifactId()).isEqualTo(draft.getId());
+        assertThat(run.getReviewFindings().get(0).getClaimId()).isEqualTo(claim.getId());
+        assertThat(run.getReviewFindings().get(0).getExcerpt()).contains("机会点");
     }
 
     private AnalysisWorkflowService newService() {

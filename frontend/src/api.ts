@@ -1,5 +1,6 @@
 import type {
   AddContextRequest,
+  AddUserEvidenceRequest,
   AgentName,
   AnalysisRun,
   CreateAnalysisRunRequest,
@@ -38,6 +39,14 @@ export async function startAnalysis(runId: string): Promise<AnalysisRun> {
 
 export async function addContext(runId: string, payload: AddContextRequest): Promise<AnalysisRun> {
   return requestJson(`/api/analysis-runs/${runId}/context`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload)
+  });
+}
+
+export async function addEvidence(runId: string, payload: AddUserEvidenceRequest): Promise<AnalysisRun> {
+  return requestJson(`/api/analysis-runs/${runId}/evidence`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload)

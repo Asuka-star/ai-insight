@@ -20,17 +20,31 @@ export function EvidencePanel({ sources, selectedCitationKey, onSelectCitation }
       <div className="evidence-list">
         {sources.length ? (
           sources.map((source) => (
-            <button
+            <article
               key={source.id}
-              type="button"
+              role="button"
+              tabIndex={0}
               className={`evidence-item ${selectedCitationKey === source.citationKey ? "active" : ""}`}
               onClick={() => onSelectCitation(source.citationKey)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" || event.key === " ") {
+                  event.preventDefault();
+                  onSelectCitation(source.citationKey);
+                }
+              }}
             >
               <span className="evidence-key">[{source.citationKey}]</span>
               <strong>{source.title}</strong>
               <p>{source.snippet}</p>
-              <small><ExternalLink size={12} /> {source.url}</small>
-            </button>
+              <small className="evidence-source-type">{source.sourceType}</small>
+              {isExternalUrl(source.url) ? (
+                <a className="evidence-link" href={source.url} target="_blank" rel="noreferrer" onClick={(event) => event.stopPropagation()}>
+                  <ExternalLink size={12} /> {source.url}
+                </a>
+              ) : (
+                <small><ExternalLink size={12} /> {source.url}</small>
+              )}
+            </article>
           ))
         ) : (
           <p className="muted-text">暂无证据来源</p>
@@ -38,4 +52,8 @@ export function EvidencePanel({ sources, selectedCitationKey, onSelectCitation }
       </div>
     </section>
   );
+}
+
+function isExternalUrl(url: string) {
+  return /^https?:\/\//i.test(url);
 }

@@ -40,7 +40,7 @@ public class ClarifierNode implements AgentNode {
             content = fallbackClarification(run);
             AgentTraceContext.recordFallback("deterministic-clarifier-fallback", content);
         }
-        run.getArtifacts().add(new AnalysisArtifact(ArtifactType.CLARIFICATION_BRIEF, "分析范围确认", content, List.of()));
+        run.addArtifact(new AnalysisArtifact(ArtifactType.CLARIFICATION_BRIEF, "分析范围确认", content, List.of()));
         run.getRecommendedActions().add("确认竞品、分析维度和信息源范围，必要时补充排除项。");
         return run;
     }

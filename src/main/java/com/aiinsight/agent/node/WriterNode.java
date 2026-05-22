@@ -47,7 +47,7 @@ public class WriterNode implements AgentNode {
             AgentTraceContext.recordFallback("deterministic-writer-fallback", content);
         }
         AnalysisArtifact artifact = new AnalysisArtifact(ArtifactType.REPORT_DRAFT, "竞品分析报告草稿", content, citations);
-        run.getArtifacts().add(artifact);
+        run.addArtifact(artifact);
         return run;
     }
 

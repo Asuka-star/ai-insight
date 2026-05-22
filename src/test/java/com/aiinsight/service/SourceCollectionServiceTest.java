@@ -71,4 +71,53 @@ class SourceCollectionServiceTest {
         assertThat(sources.get(0).getSourceType()).isEqualTo("user_interview");
         assertThat(sources.get(0).getComplianceNote()).contains("internal-only");
     }
+
+    @Test
+    void usesBuiltInPublicCatalogInsteadOfExampleComSeedEvidence() {
+        SourceCollectionService service = new SourceCollectionService(new WebPageFetchService());
+        AnalysisRequirement requirement = new AnalysisRequirement(
+                "Analyze Notion and Confluence",
+                "AI documents",
+                List.of("Notion", "Confluence"),
+                List.of("core features"),
+                List.of("official_site"),
+                List.of()
+        );
+        AnalysisRun run = new AnalysisRun(requirement);
+
+        var sources = service.collect(run, true);
+
+        assertThat(sources).hasSize(6);
+        assertThat(sources).allSatisfy(source -> assertThat(source.getUrl()).doesNotContain("example.com"));
+        assertThat(sources)
+                .extracting(source -> source.getSourceType())
+                .contains("catalog_reference_official_site", "catalog_reference_pricing_page", "catalog_reference_usage_feedback");
+        assertThat(sources)
+                .extracting(source -> source.getComplianceNote())
+                .allMatch(note -> note.contains("not a live fetch"));
+        assertThat(sources)
+                .extracting(source -> source.getUrl())
+                .anyMatch(url -> url.contains("notion.com"))
+                .anyMatch(url -> url.contains("atlassian.com/software/confluence"));
+    }
+
+    @Test
+    void unknownCompetitorsUseExplicitSeedEvidenceScheme() {
+        SourceCollectionService service = new SourceCollectionService(new WebPageFetchService());
+        AnalysisRequirement requirement = new AnalysisRequirement(
+                "Analyze UnknownDoc",
+                "AI documents",
+                List.of("UnknownDoc"),
+                List.of("core features"),
+                List.of("official_site"),
+                List.of()
+        );
+        AnalysisRun run = new AnalysisRun(requirement);
+
+        var sources = service.collect(run, false);
+
+        assertThat(sources).hasSize(1);
+        assertThat(sources.get(0).getUrl()).startsWith("seed-evidence://");
+        assertThat(sources.get(0).getUrl()).doesNotContain("example.com");
+    }
 }

@@ -24,6 +24,7 @@ export type ArtifactType =
   | "SOURCE_LIST"
   | "COMPETITOR_PROFILE"
   | "COMPETITIVE_MATRIX"
+  | "SWOT_ANALYSIS"
   | "REPORT_DRAFT"
   | "REVIEW_FINDINGS"
   | "REPORT_REVISION"
@@ -35,6 +36,8 @@ export interface CreateAnalysisRunRequest {
   competitors: string[];
   dimensions: string[];
   sourcePreferences: string[];
+  sourceUrls?: string[];
+  outputGoal?: string;
 }
 
 export interface AnalysisRequirement {
@@ -43,6 +46,7 @@ export interface AnalysisRequirement {
   competitors: string[];
   dimensions: string[];
   sourcePreferences: string[];
+  sourceUrls?: string[];
   outputGoal?: string;
 }
 
@@ -51,6 +55,7 @@ export interface UpdateAnalysisRequirementRequest {
   competitors: string[];
   dimensions: string[];
   sourcePreferences: string[];
+  sourceUrls?: string[];
   outputGoal?: string;
 }
 
@@ -59,6 +64,7 @@ export interface ClarificationDraft {
   competitors: string[];
   dimensions: string[];
   sourcePreferences: string[];
+  sourceUrls?: string[];
   outputGoal?: string;
   clarificationQuestions: string[];
   confirmed: boolean;
@@ -82,6 +88,14 @@ export interface AddContextRequest {
   targetAgent?: AgentName;
 }
 
+export interface AddUserEvidenceRequest {
+  title: string;
+  sourceType?: "url" | "interview" | "survey" | "note" | string;
+  content: string;
+  url?: string;
+  sensitive?: boolean;
+}
+
 export interface AgentStep {
   id: string;
   agentName: AgentName;
@@ -99,7 +113,9 @@ export interface EvidenceSource {
   citationKey: string;
   title: string;
   url: string;
+  sourceType?: string;
   snippet: string;
+  complianceNote?: string;
   retrievedAt?: string;
 }
 
@@ -119,19 +135,32 @@ export interface ReviewFinding {
   category: string;
   message: string;
   recommendation: string;
+  artifactId?: string;
+  claimId?: string;
+  citationKey?: string;
+  paragraphIndex?: number;
+  excerpt?: string;
 }
 
 export interface AgentTrace {
   id: string;
+  stepId?: string;
   agentName: AgentName;
+  status?: StepStatus;
   prompt?: string;
   inputSnapshot?: string;
   outputSnapshot?: string;
+  rawModelOutput?: string;
   decisionSummary?: string;
   modelName?: string;
+  fallbackUsed?: boolean;
   promptTokens?: number;
   completionTokens?: number;
+  totalTokens?: number;
   latencyMs?: number;
+  errorMessage?: string;
+  startedAt?: string;
+  completedAt?: string;
   createdAt?: string;
 }
 

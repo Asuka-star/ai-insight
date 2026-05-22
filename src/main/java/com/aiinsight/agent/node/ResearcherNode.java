@@ -54,7 +54,7 @@ public class ResearcherNode implements AgentNode {
         String content = run.getEvidenceSources().stream()
                 .map(source -> "- [%s] %s: %s".formatted(source.getCitationKey(), source.getTitle(), source.getSnippet()))
                 .collect(Collectors.joining("\n"));
-        run.getArtifacts().add(new AnalysisArtifact(
+        run.addArtifact(new AnalysisArtifact(
                 ArtifactType.SOURCE_LIST,
                 "资料采集清单",
                 content,

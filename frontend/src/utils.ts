@@ -74,3 +74,53 @@ export function countCitedClaims(run?: AnalysisRun | null): number {
     .filter((artifact) => artifact.type === "FINAL_REPORT" || artifact.type === "REPORT_DRAFT")
     .reduce((count, artifact) => count + (artifact.content.match(/\[S\d+]/g)?.length ?? 0), 0);
 }
+
+export function calculateRunMetrics(run?: AnalysisRun | null) {
+  // These metrics are intentionally computed client-side from the run aggregate so demos can
+  // explain credibility without adding another backend DTO just for read-only dashboard cards.
+  const claims = run?.claims ?? [];
+  const profiles = run?.competitorProfiles ?? [];
+  const traces = run?.traces ?? [];
+  const citedClaims = claims.filter((claim) => claim.evidenceIds?.length).length;
+  const completeProfiles = profiles.filter((profile) =>
+    Boolean(profile.positioning)
+      && Boolean(profile.featureTree?.roots?.length)
+      && Boolean(profile.pricingModel?.strategySummary)
+      && Boolean(profile.personas?.length)
+      && Boolean(profile.evidenceIds?.length)
+  ).length;
+  const citationMentions = countCitedClaims(run);
+  const reworkCount = (run?.workflowTransitions ?? []).filter((transition) => transition.route && transition.route !== "finish").length;
+  const totalTokens = traces.reduce((sum, trace) => sum + (trace.totalTokens ?? 0), 0);
+  const totalLatencyMs = traces.reduce((sum, trace) => sum + (trace.latencyMs ?? 0), 0);
+
+  return {
+    claimCoverage: percent(citedClaims, claims.length),
+    schemaCompleteness: percent(completeProfiles, profiles.length),
+    citationMentions,
+    reworkCount,
+    totalTokens,
+    totalLatencyMs,
+    evidencePerClaim: claims.length ? round((run?.evidenceSources.length ?? 0) / claims.length, 1) : 0
+  };
+}
+
+export function formatPercent(value: number): string {
+  return `${value}%`;
+}
+
+export function formatDuration(ms: number): string {
+  if (!ms) return "0ms";
+  if (ms < 1000) return `${ms}ms`;
+  return `${round(ms / 1000, 1)}s`;
+}
+
+function percent(part: number, total: number): number {
+  if (!total) return 0;
+  return Math.round((part / total) * 100);
+}
+
+function round(value: number, precision: number): number {
+  const factor = 10 ** precision;
+  return Math.round(value * factor) / factor;
+}

@@ -1,4 +1,4 @@
-import { AlertTriangle, CheckCircle2, ShieldCheck } from "lucide-react";
+import { AlertTriangle, CheckCircle2, LocateFixed, ShieldCheck } from "lucide-react";
 import type { AgentName, ReviewDecision, ReviewFinding } from "../types";
 import { AGENT_LABELS } from "../constants";
 
@@ -6,10 +6,11 @@ interface ReviewPanelProps {
   findings: ReviewFinding[];
   decision?: ReviewDecision;
   onRerunTarget: (agent: AgentName) => void;
+  onLocateFinding?: (finding: ReviewFinding) => void;
   disabled?: boolean;
 }
 
-export function ReviewPanel({ findings, decision, onRerunTarget, disabled }: ReviewPanelProps) {
+export function ReviewPanel({ findings, decision, onRerunTarget, onLocateFinding, disabled }: ReviewPanelProps) {
   return (
     <section className="panel">
       <div className="section-title">
@@ -38,6 +39,12 @@ export function ReviewPanel({ findings, decision, onRerunTarget, disabled }: Rev
               <strong>{finding.category}</strong>
               <p>{finding.message}</p>
               <small>{finding.recommendation}</small>
+              {finding.excerpt ? <small>摘录：{finding.excerpt}</small> : null}
+              {finding.claimId || finding.citationKey || finding.artifactId ? (
+                <button className="finding-locate" type="button" onClick={() => onLocateFinding?.(finding)}>
+                  <LocateFixed size={13} /> 定位问题
+                </button>
+              ) : null}
             </div>
           ))
         ) : (

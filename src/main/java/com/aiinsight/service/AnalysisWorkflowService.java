@@ -338,20 +338,43 @@ public class AnalysisWorkflowService {
         if (requirement == null || content == null) {
             return;
         }
-        appendIfMentioned(requirement.getCompetitors(), content, "Notion");
-        appendIfMentioned(requirement.getCompetitors(), content, "Confluence");
-        appendIfMentioned(requirement.getCompetitors(), content, "Airtable");
-        appendIfMentioned(requirement.getDimensions(), content, "AI search");
-        appendIfMentioned(requirement.getDimensions(), content, "permission collaboration");
-        appendIfMentioned(requirement.getDimensions(), content, "pricing");
-        appendIfMentioned(requirement.getSourcePreferences(), content, "public_reviews");
-        appendIfMentioned(requirement.getSourcePreferences(), content, "pricing_page");
+        appendIfMentionedAny(requirement.getCompetitors(), content, "Notion", "notion");
+        appendIfMentionedAny(requirement.getCompetitors(), content, "飞书文档", "飞书文档", "飞书 docs", "feishu docs", "lark docs");
+        appendIfMentionedAny(requirement.getCompetitors(), content, "钉钉文档", "钉钉文档", "dingdocs");
+        appendIfMentionedAny(requirement.getCompetitors(), content, "语雀", "语雀", "yuque");
+        appendIfMentionedAny(requirement.getCompetitors(), content, "Confluence", "confluence");
+        appendIfMentionedAny(requirement.getCompetitors(), content, "Airtable", "airtable");
+        appendIfMentionedAny(requirement.getCompetitors(), content, "腾讯文档", "腾讯文档", "tencent docs");
+
+        appendIfMentionedAny(requirement.getDimensions(), content, "AI 搜索", "AI 搜索", "ai search", "智能搜索");
+        appendIfMentionedAny(requirement.getDimensions(), content, "权限协作", "权限协作", "权限", "permission collaboration", "access control");
+        appendIfMentionedAny(requirement.getDimensions(), content, "价格策略", "价格策略", "定价", "价格", "pricing");
+        appendIfMentionedAny(requirement.getDimensions(), content, "用户评价", "用户评价", "公开评价", "评论", "口碑", "review");
+        appendIfMentionedAny(requirement.getDimensions(), content, "产品定位", "产品定位", "定位");
+        appendIfMentionedAny(requirement.getDimensions(), content, "核心功能", "核心功能", "功能对比", "功能");
+        appendIfMentionedAny(requirement.getDimensions(), content, "商业模式", "商业模式", "付费模式", "business model");
+        appendIfMentionedAny(requirement.getDimensions(), content, "风险提示", "风险", "风险提示", "threat");
+
+        appendIfMentionedAny(requirement.getSourcePreferences(), content, "official_site", "官网", "官方网站", "official site");
+        appendIfMentionedAny(requirement.getSourcePreferences(), content, "pricing_page", "价格页", "定价页", "pricing page", "pricing_page");
+        appendIfMentionedAny(requirement.getSourcePreferences(), content, "product_docs", "产品文档", "帮助文档", "docs", "product docs");
+        appendIfMentionedAny(requirement.getSourcePreferences(), content, "release_notes", "更新日志", "release notes", "changelog");
+        appendIfMentionedAny(requirement.getSourcePreferences(), content, "public_reviews", "公开评价", "用户评价", "public reviews", "public_reviews");
     }
 
-    private void appendIfMentioned(List<String> values, String content, String value) {
-        if (!StringUtils.hasText(content) || !content.toLowerCase().contains(value.toLowerCase())) {
+    private void appendIfMentionedAny(List<String> values, String content, String value, String... patterns) {
+        if (!StringUtils.hasText(content)) {
             return;
         }
+        for (String pattern : patterns) {
+            if (content.toLowerCase().contains(pattern.toLowerCase())) {
+                appendUnique(values, value);
+                return;
+            }
+        }
+    }
+
+    private void appendUnique(List<String> values, String value) {
         boolean exists = values.stream().anyMatch(item -> item.equalsIgnoreCase(value));
         if (!exists) {
             values.add(value);

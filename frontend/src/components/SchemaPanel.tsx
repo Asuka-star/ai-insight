@@ -1,15 +1,25 @@
 import { Boxes, GitPullRequestArrow, ListChecks } from "lucide-react";
-import type { AnalysisClaim, CompetitorProfile, ResearchPackage, WorkflowTransition } from "../types";
+import type { AnalysisClaim, CompetitorProfile, FeatureNode, ResearchPackage, WorkflowTransition } from "../types";
 
 interface SchemaPanelProps {
   researchPackage?: ResearchPackage;
   profiles: CompetitorProfile[];
   claims: AnalysisClaim[];
   transitions: WorkflowTransition[];
+  selectedClaimId?: string;
   embedded?: boolean;
+  onSelectCitation?: (citationKey: string) => void;
 }
 
-export function SchemaPanel({ researchPackage, profiles, claims, transitions, embedded }: SchemaPanelProps) {
+export function SchemaPanel({
+  researchPackage,
+  profiles,
+  claims,
+  transitions,
+  selectedClaimId,
+  embedded,
+  onSelectCitation
+}: SchemaPanelProps) {
   const sourceCount = researchPackage?.sources?.length ?? 0;
   const missingCount = researchPackage?.missingEvidenceTypes?.length ?? 0;
 
@@ -40,14 +50,54 @@ export function SchemaPanel({ researchPackage, profiles, claims, transitions, em
       <div className="schema-section">
         <div className="schema-heading">
           <ListChecks size={15} />
+          <strong>采集资料包</strong>
+        </div>
+        <div className="schema-card">
+          <span>ResearchPackage</span>
+          <p>{sourceCount ? `已采集 ${sourceCount} 条来源` : "暂无资料来源"}</p>
+          <small>采集时间：{formatDateTime(researchPackage?.collectedAt)}</small>
+          {researchPackage?.sources?.length ? (
+            <div className="schema-chip-list">
+              {researchPackage.sources.map((source) => (
+                <button
+                  className="schema-chip evidence-chip"
+                  type="button"
+                  title={`${source.title}\n${source.url}\n${source.snippet}`}
+                  key={source.id ?? source.citationKey}
+                  onClick={() => onSelectCitation?.(source.citationKey)}
+                >
+                  [{source.citationKey}] {source.title}
+                </button>
+              ))}
+            </div>
+          ) : null}
+        </div>
+      </div>
+
+      <div className="schema-section">
+        <div className="schema-heading">
+          <ListChecks size={15} />
           <strong>分析结论</strong>
         </div>
         {claims.length ? (
           claims.map((claim) => (
-            <div className="schema-card" key={claim.id}>
+            <div className={`schema-card ${selectedClaimId === claim.id ? "active" : ""}`} key={claim.id}>
               <span>{claim.type ?? "CLAIM"} / {claim.confidence ?? "MEDIUM"}</span>
               <p>{claim.content}</p>
-              <small>{(claim.evidenceIds ?? []).join(", ") || "未绑定证据"}</small>
+              <dl className="schema-kv">
+                <div>
+                  <dt>涉及竞品</dt>
+                  <dd>{joinOrEmpty(claim.competitorNames)}</dd>
+                </div>
+                <div>
+                  <dt>生成 Agent</dt>
+                  <dd>{claim.generatedBy || "未知"}</dd>
+                </div>
+                <div>
+                  <dt>证据</dt>
+                  <dd><EvidenceChips values={claim.evidenceIds} onSelectCitation={onSelectCitation} /></dd>
+                </div>
+              </dl>
             </div>
           ))
         ) : (
@@ -65,9 +115,99 @@ export function SchemaPanel({ researchPackage, profiles, claims, transitions, em
             <div className="schema-card" key={profile.productName ?? profile.companyName}>
               <span>{profile.productName ?? "未知产品"}</span>
               <p>{profile.positioning}</p>
-              <small>
-                {(profile.featureTree?.roots?.length ?? 0)} 个功能根节点 / {(profile.pricingModel?.plans?.length ?? 0)} 个定价方案
-              </small>
+              <dl className="schema-kv">
+                <div>
+                  <dt>公司</dt>
+                  <dd>{profile.companyName || "待验证"}</dd>
+                </div>
+                <div>
+                  <dt>目标用户</dt>
+                  <dd>{joinOrEmpty(profile.targetUsers)}</dd>
+                </div>
+                <div>
+                  <dt>优势</dt>
+                  <dd>{joinOrEmpty(profile.strengths)}</dd>
+                </div>
+                <div>
+                  <dt>弱势</dt>
+                  <dd>{joinOrEmpty(profile.weaknesses)}</dd>
+                </div>
+                <div>
+                  <dt>证据</dt>
+                  <dd><EvidenceChips values={profile.evidenceIds} onSelectCitation={onSelectCitation} /></dd>
+                </div>
+              </dl>
+
+              <div className="schema-detail-grid">
+                <section className="schema-detail">
+                  <strong>功能树</strong>
+                  {profile.featureTree?.roots?.length ? (
+                    <div className="feature-tree">
+                      {profile.featureTree.roots.map((node, index) => (
+                        <FeatureNodeView node={node} onSelectCitation={onSelectCitation} key={`${node.name}-${index}`} />
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="muted-text">暂无功能树。</p>
+                  )}
+                </section>
+
+                <section className="schema-detail">
+                  <strong>定价模型</strong>
+                  <p>{profile.pricingModel?.strategySummary || "暂无定价摘要。"}</p>
+                  <small>{profile.pricingModel?.hasFreePlan ? "包含免费版线索" : "免费版待验证"} / <EvidenceChips values={profile.pricingModel?.evidenceIds} onSelectCitation={onSelectCitation} inline /></small>
+                  {profile.pricingModel?.plans?.length ? (
+                    <div className="schema-list">
+                      {profile.pricingModel.plans.map((plan, index) => (
+                        <div className="schema-list-item" key={`${plan.name}-${index}`}>
+                          <strong>{plan.name || "未命名套餐"}</strong>
+                          <p>{plan.priceText || "价格待验证"} · {plan.billingCycle || "周期待验证"}</p>
+                          <small>{plan.targetSegment || "目标客群待验证"} / <EvidenceChips values={plan.evidenceIds} onSelectCitation={onSelectCitation} inline /></small>
+                          <div className="schema-chip-list">
+                            {(plan.includedFeatures ?? []).map((feature) => (
+                              <span className="schema-chip" key={feature}>{feature}</span>
+                            ))}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  ) : null}
+                </section>
+
+                <section className="schema-detail wide">
+                  <strong>用户画像</strong>
+                  {profile.personas?.length ? (
+                    <div className="schema-list">
+                      {profile.personas.map((persona, index) => (
+                        <div className="schema-list-item" key={`${persona.name}-${index}`}>
+                          <strong>{persona.name || "未命名画像"}</strong>
+                          <p>{persona.segment || "细分场景待验证"} · {persona.companySize || "规模待验证"}</p>
+                          <dl className="schema-kv compact">
+                            <div>
+                              <dt>任务</dt>
+                              <dd>{joinOrEmpty(persona.jobsToBeDone)}</dd>
+                            </div>
+                            <div>
+                              <dt>痛点</dt>
+                              <dd>{joinOrEmpty(persona.painPoints)}</dd>
+                            </div>
+                            <div>
+                              <dt>顾虑</dt>
+                              <dd>{joinOrEmpty(persona.buyingConcerns)}</dd>
+                            </div>
+                            <div>
+                              <dt>证据</dt>
+                              <dd><EvidenceChips values={persona.evidenceIds} onSelectCitation={onSelectCitation} /></dd>
+                            </div>
+                          </dl>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="muted-text">暂无用户画像。</p>
+                  )}
+                </section>
+              </div>
             </div>
           ))
         ) : (
@@ -96,11 +236,65 @@ export function SchemaPanel({ researchPackage, profiles, claims, transitions, em
   );
 }
 
+function FeatureNodeView({ node, onSelectCitation }: { node: FeatureNode; onSelectCitation?: (citationKey: string) => void }) {
+  return (
+    <div className="feature-node">
+      <strong>{node.name || "未命名功能"}</strong>
+      <p>{node.description || "暂无描述"}</p>
+      <small><EvidenceChips values={node.evidenceIds} onSelectCitation={onSelectCitation} /></small>
+      {node.children?.length ? (
+        <div className="feature-children">
+          {node.children.map((child, index) => (
+            <FeatureNodeView node={child} onSelectCitation={onSelectCitation} key={`${child.name}-${index}`} />
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function SchemaStat({ label, value }: { label: string; value: number }) {
   return (
     <div className="schema-stat">
       <strong>{value}</strong>
       <span>{label}</span>
     </div>
+  );
+}
+
+function joinOrEmpty(values?: string[]) {
+  return values?.length ? values.join("、") : "待验证";
+}
+
+function formatDateTime(value?: string) {
+  if (!value) return "暂无";
+  return new Date(value).toLocaleString("zh-CN", { hour12: false });
+}
+
+function EvidenceChips({
+  values,
+  onSelectCitation,
+  inline
+}: {
+  values?: string[];
+  onSelectCitation?: (citationKey: string) => void;
+  inline?: boolean;
+}) {
+  if (!values?.length) {
+    return <span>未绑定证据</span>;
+  }
+  return (
+    <span className={inline ? "schema-evidence-chips inline" : "schema-evidence-chips"}>
+      {values.map((value) => (
+        <button
+          className="citation-chip schema-citation"
+          type="button"
+          key={value}
+          onClick={() => onSelectCitation?.(value)}
+        >
+          [{value}]
+        </button>
+      ))}
+    </span>
   );
 }

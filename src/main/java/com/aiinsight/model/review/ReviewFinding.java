@@ -17,6 +17,11 @@ public class ReviewFinding {
     private String category;
     private String message;
     private String recommendation;
+    private UUID artifactId;
+    private String claimId;
+    private String citationKey;
+    private Integer paragraphIndex;
+    private String excerpt;
 
     public ReviewFinding(ReviewSeverity severity, String category, String message, String recommendation) {
         this.severity = severity;
