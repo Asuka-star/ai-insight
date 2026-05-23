@@ -169,25 +169,27 @@ public class WebPageFetchService {
         private final String rawText;
         private final String complianceNote;
         private final boolean usable;
+        private final String status;
 
-        private FetchedPage(String url, String title, String rawText, String complianceNote, boolean usable) {
+        private FetchedPage(String url, String title, String rawText, String complianceNote, boolean usable, String status) {
             this.url = url;
             this.title = title;
             this.rawText = rawText;
             this.complianceNote = complianceNote;
             this.usable = usable;
+            this.status = status;
         }
 
         static FetchedPage success(String url, String title, String rawText, String complianceNote) {
-            return new FetchedPage(url, title, rawText, complianceNote, true);
+            return new FetchedPage(url, title, rawText, complianceNote, true, "FETCHED");
         }
 
         static FetchedPage blocked(String url, String complianceNote) {
-            return new FetchedPage(url, url, "", complianceNote, false);
+            return new FetchedPage(url, url, "", complianceNote, false, "BLOCKED_BY_ROBOTS");
         }
 
         static FetchedPage failed(String url, String complianceNote) {
-            return new FetchedPage(url, url, "", complianceNote, false);
+            return new FetchedPage(url, url, "", complianceNote, false, "FETCH_FAILED");
         }
     }
 }

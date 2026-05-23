@@ -36,7 +36,12 @@ export function EvidencePanel({ sources, selectedCitationKey, onSelectCitation }
               <span className="evidence-key">[{source.citationKey}]</span>
               <strong>{source.title}</strong>
               <p>{source.snippet}</p>
-              <small className="evidence-source-type">{source.sourceType}</small>
+              <div className="evidence-badges">
+                <small className="evidence-source-type">{source.sourceType}</small>
+                {source.collectionStatus ? <small>{source.collectionStatus}</small> : null}
+                {source.freshness ? <small>{source.freshness}</small> : null}
+              </div>
+              {source.complianceNote ? <small className="evidence-note">{source.complianceNote}</small> : null}
               {isExternalUrl(source.url) ? (
                 <a className="evidence-link" href={source.url} target="_blank" rel="noreferrer" onClick={(event) => event.stopPropagation()}>
                   <ExternalLink size={12} /> {source.url}

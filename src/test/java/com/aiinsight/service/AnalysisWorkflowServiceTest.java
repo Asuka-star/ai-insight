@@ -306,6 +306,7 @@ class AnalysisWorkflowServiceTest {
         AnalysisRunRepository repository = new TestAnalysisRunRepository();
         AnalysisEventBroker eventBroker = new AnalysisEventBroker();
         WorkflowNodeExecutor nodeExecutor = new WorkflowNodeExecutor(repository, eventBroker);
+        SourceCollectionService sourceCollectionService = new SourceCollectionService(fetchAlwaysFails());
         AnalysisLangGraphWorkflow graphWorkflow = new AnalysisLangGraphWorkflow(
                 List.of(
                         new RevisionNode(),
@@ -313,7 +314,7 @@ class AnalysisWorkflowServiceTest {
                         new ReviewerNode(new CitationCoverageEvaluator(), noopLlmClient),
                         new AnalystNode(noopLlmClient),
                         new ExtractorNode(noopLlmClient),
-                        new ResearcherNode(new SourceCollectionService(new WebPageFetchService()), new EvidenceChunkService()),
+                        new ResearcherNode(sourceCollectionService, new EvidenceChunkService()),
                         new ClarifierNode(noopLlmClient)
                 ),
                 nodeExecutor,
@@ -328,9 +329,18 @@ class AnalysisWorkflowServiceTest {
                 new TaskExecutorAdapter(Runnable::run),
                 graphWorkflow,
                 new EvidenceRetrievalService(),
-                new SourceCollectionService(new WebPageFetchService()),
+                sourceCollectionService,
                 new EvidenceChunkService()
         );
+    }
+
+    private WebPageFetchService fetchAlwaysFails() {
+        return new WebPageFetchService() {
+            @Override
+            public FetchedPage fetch(String url) {
+                return FetchedPage.failed(url, "simulated fetch failure");
+            }
+        };
     }
 
     private static class TestAnalysisRunRepository implements AnalysisRunRepository {

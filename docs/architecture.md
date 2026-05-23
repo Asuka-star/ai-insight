@@ -285,10 +285,19 @@ EvidenceSource
   title
   url
   sourceType
+  collectionStatus
+  freshness
   snippet
   rawText
   complianceNote
 ```
+
+采集状态约定：
+
+- `FETCHED` + `LIVE_FETCHED`：已按 robots 策略抓取到公开页面正文。
+- `BLOCKED_BY_ROBOTS` / `FETCH_FAILED` + `CATALOG_REFERENCE`：尝试抓取失败或受限，降级为内置公开来源入口，报告前需要人工确认 freshness。
+- `USER_PROVIDED`：用户补充资料，敏感资料会标记 `INTERNAL_ONLY`。
+- `SEED_FALLBACK` + `SYNTHETIC_SEED`：未知竞品没有公开 catalog 时的演示兜底，不应作为最终提交事实来源。
 
 引用约定：
 

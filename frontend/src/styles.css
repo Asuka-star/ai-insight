@@ -897,12 +897,31 @@ h3 {
   color: var(--faint);
 }
 
+.evidence-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.evidence-badges small {
+  width: fit-content;
+  border-radius: 4px;
+  background: #eef4f1;
+  padding: 1px 6px;
+  font-size: 11px;
+}
+
 .evidence-source-type {
   width: fit-content;
   border-radius: 4px;
   background: #eef4f1;
   padding: 1px 6px;
   font-size: 11px;
+}
+
+.evidence-note {
+  display: block;
+  overflow-wrap: anywhere;
 }
 
 .evidence-link {

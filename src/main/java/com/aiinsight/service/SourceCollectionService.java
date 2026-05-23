@@ -8,9 +8,11 @@ import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 
 import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 
 @Service
 @RequiredArgsConstructor
@@ -85,11 +87,11 @@ public class SourceCollectionService {
             if (source != null) {
                 sources.add(source);
                 index++;
+            } else {
+                run.getRecommendedActions().add("公开 URL 采集失败，已跳过并尝试使用内置公开来源候选补齐：" + url);
             }
         }
-        if (sources.isEmpty()) {
-            index = appendSeedEvidence(run, sources, index);
-        }
+        index = appendCatalogEvidence(run, sources, index, recollecting);
         if (recollecting) {
             appendSupplementalEvidence(run, sources, index);
         }
@@ -109,6 +111,8 @@ public class SourceCollectionService {
                 evidence.getTitle(),
                 url,
                 "user_" + sourceType,
+                "USER_PROVIDED",
+                evidence.isSensitive() ? "INTERNAL_ONLY" : "USER_PROVIDED",
                 snippet(evidence.getContent()),
                 evidence.getContent(),
                 complianceNote
@@ -130,32 +134,54 @@ public class SourceCollectionService {
                 page.getTitle(),
                 page.getUrl(),
                 "public_web_page",
+                page.getStatus(),
+                "LIVE_FETCHED",
                 snippet(page.getRawText()),
                 page.getRawText(),
                 page.getComplianceNote()
         );
     }
 
-    private int appendSeedEvidence(AnalysisRun run, List<EvidenceSource> sources, int index) {
+    private int appendCatalogEvidence(AnalysisRun run, List<EvidenceSource> sources, int index, boolean recollecting) {
         for (String competitor : run.getRequirement().getCompetitors()) {
             PublicSourceCatalog catalog = catalogFor(competitor);
-            // Known competitors get official public entry URLs; unknown ones use seed-evidence://
-            // to avoid presenting fabricated example.com pages as real sources.
-            String snippet = catalog == null
-                    ? competitor + " 强调协作、知识沉淀、权限管理和 AI 辅助内容生成能力。"
-                    : catalog.officialSnippet();
-            sources.add(new EvidenceSource(
-                    "S" + index,
-                    competitor + " 官方产品资料",
-                    catalog == null ? fallbackUrl(competitor) : catalog.officialUrl(),
-                    catalog == null ? "seed_official_site" : "catalog_reference_official_site",
-                    snippet,
-                    snippet,
-                    catalog == null
-                            ? "MVP seed evidence used because no user-provided public source URL was available."
-                            : "Built-in public source catalog reference. The URL is an official public entry point, but this entry is not a live fetch. Verify page freshness before final submission."
-            ));
-            index++;
+            if (catalog == null) {
+                if (!hasCompetitorCoverage(sources, competitor)) {
+                    sources.add(seedSource("S" + index, competitor, "official_site"));
+                    index++;
+                }
+                continue;
+            }
+            if (!hasCompetitorCoverage(sources, competitor)) {
+                sources.add(fromCatalogCandidate(
+                        "S" + index,
+                        competitor + " 官方产品资料",
+                        catalog.officialUrl(),
+                        "catalog_reference_official_site",
+                        catalog.officialSnippet()
+                ));
+                index++;
+            }
+            if (shouldCollectPricing(run, recollecting) && !hasSourceTypeForCompetitor(sources, competitor, "pricing")) {
+                sources.add(fromCatalogCandidate(
+                        "S" + index,
+                        competitor + " 价格页资料",
+                        catalog.pricingUrl(),
+                        "catalog_reference_pricing_page",
+                        catalog.pricingSnippet()
+                ));
+                index++;
+            }
+            if (shouldCollectFeedback(run, recollecting) && !hasSourceTypeForCompetitor(sources, competitor, "feedback")) {
+                sources.add(fromCatalogCandidate(
+                        "S" + index,
+                        competitor + " 使用反馈资料",
+                        catalog.feedbackUrl(),
+                        "catalog_reference_usage_feedback",
+                        catalog.feedbackSnippet()
+                ));
+                index++;
+            }
         }
         return index;
     }
@@ -168,34 +194,159 @@ public class SourceCollectionService {
             String pricingSnippet = catalog == null
                     ? competitor + " 的价格页用于补充免费版、团队版、企业版等套餐信息，价格细节仍以页面原文为准。"
                     : catalog.pricingSnippet();
-            sources.add(new EvidenceSource(
-                    "S" + index,
-                    competitor + " 价格页资料",
-                    catalog == null ? fallbackUrl(competitor) + "/pricing" : catalog.pricingUrl(),
-                    catalog == null ? "seed_pricing_page" : "catalog_reference_pricing_page",
-                    pricingSnippet,
-                    pricingSnippet,
-                    catalog == null
-                            ? "MVP supplemental seed evidence used to simulate Reviewer-requested recollection."
-                            : "Built-in public source catalog pricing reference. The URL is an official public entry point, but this entry is not a live fetch. Verify page freshness before final submission."
-            ));
-            index++;
+            if (!hasSourceTypeForCompetitor(sources, competitor, "pricing")) {
+                sources.add(catalog == null
+                        ? seedSource("S" + index, competitor, "pricing_page")
+                        : fromCatalogCandidate("S" + index, competitor + " 价格页资料", catalog.pricingUrl(),
+                        "catalog_reference_pricing_page", pricingSnippet));
+                index++;
+            }
             String reviewSnippet = catalog == null
                     ? competitor + " 的用户评价用于补充上手成本、协作体验和 AI 功能满意度等信息。"
                     : catalog.feedbackSnippet();
-            sources.add(new EvidenceSource(
-                    "S" + index,
-                    competitor + " 用户评价资料",
-                    catalog == null ? fallbackUrl(competitor) + "/reviews" : catalog.feedbackUrl(),
-                    catalog == null ? "seed_public_review" : "catalog_reference_usage_feedback",
-                    reviewSnippet,
-                    reviewSnippet,
-                    catalog == null
-                            ? "MVP supplemental seed evidence used to simulate Reviewer-requested recollection."
-                            : "Built-in public source catalog usage-feedback reference. The URL is a public entry point, but this entry is not a live fetch. Verify page freshness before final submission."
-            ));
-            index++;
+            if (!hasSourceTypeForCompetitor(sources, competitor, "feedback")) {
+                sources.add(catalog == null
+                        ? seedSource("S" + index, competitor, "public_review")
+                        : fromCatalogCandidate("S" + index, competitor + " 用户评价资料", catalog.feedbackUrl(),
+                        "catalog_reference_usage_feedback", reviewSnippet));
+                index++;
+            }
         }
+    }
+
+    private EvidenceSource fromCatalogCandidate(String citationKey,
+                                                String title,
+                                                String url,
+                                                String fallbackSourceType,
+                                                String fallbackSnippet) {
+        WebPageFetchService.FetchedPage page;
+        try {
+            page = webPageFetchService.fetch(url);
+        } catch (RuntimeException ex) {
+            page = WebPageFetchService.FetchedPage.failed(url, "页面抓取失败：" + ex.getMessage());
+        }
+        if (page.isUsable() && StringUtils.hasText(page.getRawText())) {
+            return new EvidenceSource(
+                    citationKey,
+                    page.getTitle(),
+                    page.getUrl(),
+                    "public_web_page",
+                    page.getStatus(),
+                    "LIVE_FETCHED",
+                    snippet(page.getRawText()),
+                    page.getRawText(),
+                    page.getComplianceNote()
+            );
+        }
+        String complianceNote = "Live fetch status=" + page.getStatus()
+                + ". Falling back to built-in public source catalog reference. "
+                + "The URL is an official public entry point; verify page freshness before final submission. "
+                + page.getComplianceNote();
+        return new EvidenceSource(
+                citationKey,
+                title,
+                url,
+                fallbackSourceType,
+                page.getStatus(),
+                "CATALOG_REFERENCE",
+                fallbackSnippet,
+                fallbackSnippet,
+                complianceNote
+        );
+    }
+
+    private EvidenceSource seedSource(String citationKey, String competitor, String evidenceType) {
+        String sourceType = switch (evidenceType) {
+            case "pricing_page" -> "seed_pricing_page";
+            case "public_review" -> "seed_public_review";
+            default -> "seed_official_site";
+        };
+        String suffix = switch (evidenceType) {
+            case "pricing_page" -> "/pricing";
+            case "public_review" -> "/reviews";
+            default -> "";
+        };
+        String title = switch (evidenceType) {
+            case "pricing_page" -> competitor + " 价格页资料";
+            case "public_review" -> competitor + " 用户评价资料";
+            default -> competitor + " 官方产品资料";
+        };
+        String content = switch (evidenceType) {
+            case "pricing_page" -> competitor + " 的价格页用于补充免费版、团队版、企业版等套餐信息，价格细节仍以页面原文为准。";
+            case "public_review" -> competitor + " 的用户评价用于补充上手成本、协作体验和 AI 功能满意度等信息。";
+            default -> competitor + " 强调协作、知识沉淀、权限管理和 AI 辅助内容生成能力。";
+        };
+        return new EvidenceSource(
+                citationKey,
+                title,
+                fallbackUrl(competitor) + suffix,
+                sourceType,
+                "SEED_FALLBACK",
+                "SYNTHETIC_SEED",
+                content,
+                content,
+                "MVP seed fallback used because no user-provided URL or built-in public catalog entry was available."
+        );
+    }
+
+    private boolean shouldCollectPricing(AnalysisRun run, boolean recollecting) {
+        return recollecting
+                || mentionsAny(run.getRequirement().getSourcePreferences(), "pricing", "价格", "定价")
+                || mentionsAny(run.getRequirement().getDimensions(), "pricing", "价格", "定价", "商业模式");
+    }
+
+    private boolean shouldCollectFeedback(AnalysisRun run, boolean recollecting) {
+        return recollecting
+                || mentionsAny(run.getRequirement().getSourcePreferences(), "review", "评价", "反馈", "访谈", "问卷")
+                || mentionsAny(run.getRequirement().getDimensions(), "review", "评价", "反馈", "用户");
+    }
+
+    private boolean hasCompetitorCoverage(List<EvidenceSource> sources, String competitor) {
+        return sources.stream().anyMatch(source -> sourceMatchesCompetitor(source, competitor));
+    }
+
+    private boolean hasSourceTypeForCompetitor(List<EvidenceSource> sources, String competitor, String typeKeyword) {
+        return sources.stream().anyMatch(source ->
+                sourceMatchesCompetitor(source, competitor)
+                        && containsIgnoreCase(source.getSourceType(), typeKeyword));
+    }
+
+    private boolean sourceMatchesCompetitor(EvidenceSource source, String competitor) {
+        if (!StringUtils.hasText(competitor)) {
+            return false;
+        }
+        PublicSourceCatalog catalog = catalogFor(competitor);
+        Set<String> needles = new LinkedHashSet<>();
+        needles.add(competitor);
+        if (catalog != null) {
+            needles.add(host(catalog.officialUrl()));
+            needles.add(host(catalog.pricingUrl()));
+            needles.add(host(catalog.feedbackUrl()));
+        }
+        return needles.stream().anyMatch(needle ->
+                containsIgnoreCase(source.getTitle(), needle)
+                        || containsIgnoreCase(source.getUrl(), needle));
+    }
+
+    private boolean mentionsAny(List<String> values, String... patterns) {
+        return values.stream().anyMatch(value -> {
+            for (String pattern : patterns) {
+                if (containsIgnoreCase(value, pattern)) {
+                    return true;
+                }
+            }
+            return false;
+        });
+    }
+
+    private boolean containsIgnoreCase(String text, String pattern) {
+        return text != null && pattern != null && text.toLowerCase(Locale.ROOT).contains(pattern.toLowerCase(Locale.ROOT));
+    }
+
+    private String host(String url) {
+        String normalized = url.replaceFirst("^https?://", "");
+        int slash = normalized.indexOf('/');
+        return slash >= 0 ? normalized.substring(0, slash) : normalized;
     }
 
     private PublicSourceCatalog catalogFor(String competitor) {

@@ -229,8 +229,9 @@
 当前情况：
 
 - 如果用户提供 URL，后端会抓取网页并检查 robots。
-- 如果没有 URL，后端优先使用内置公开来源 catalog；未知竞品才降级为 `seed-evidence://`。
+- 如果没有 URL，后端会按竞品和来源偏好生成公开来源候选，先尝试 live fetch，失败后降级为内置公开来源 catalog；未知竞品才降级为 `seed-evidence://`。
 - 补采时也使用 catalog_reference 类型的价格页和用户反馈参考，并在 complianceNote 中说明不是实时抓取。
+- EvidenceSource 已记录 `collectionStatus` 和 `freshness`，前端证据面板会展示实时抓取、catalog 降级、用户资料或 seed fallback 状态。
 
 需要实现：
 

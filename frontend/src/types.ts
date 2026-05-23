@@ -114,6 +114,8 @@ export interface EvidenceSource {
   title: string;
   url: string;
   sourceType?: string;
+  collectionStatus?: string;
+  freshness?: string;
   snippet: string;
   complianceNote?: string;
   retrievedAt?: string;
