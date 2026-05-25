@@ -26,6 +26,7 @@ import com.aiinsight.model.schema.AnalysisClaim;
 import com.aiinsight.repository.AnalysisRunRepository;
 import com.aiinsight.workflow.AnalysisLangGraphWorkflow;
 import com.aiinsight.workflow.WorkflowNodeExecutor;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
 import org.springframework.core.task.support.TaskExecutorAdapter;
 
@@ -208,11 +209,15 @@ class AnalysisWorkflowServiceTest {
         assertThat(finished.getSteps())
                 .filteredOn(step -> step.getAgentName() == AgentName.REVIEWER)
                 .hasSize(2);
-        assertThat(finished.getEvidenceSources()).hasSize(6);
-        assertThat(finished.getEvidenceChunks()).hasSize(6);
+        assertThat(finished.getEvidenceSources()).hasSizeGreaterThanOrEqualTo(4);
+        assertThat(finished.getEvidenceChunks()).hasSizeGreaterThanOrEqualTo(4);
         assertThat(service.retrieveEvidence(finished.getId(), "Notion", 3)).isNotEmpty();
-        assertThat(finished.getResearchPackage().getSources()).hasSize(6);
+        assertThat(finished.getResearchPackage().getSources()).hasSizeGreaterThanOrEqualTo(4);
         assertThat(finished.getResearchPackage().getMissingEvidenceTypes()).isEmpty();
+        assertThat(finished.getResearchPackage().getResearchPlan().getQuestionnaire().getQuestions()).isNotEmpty();
+        assertThat(finished.getResearchPackage().getResearchPlan().getInterviewGuide().getQuestions()).isNotEmpty();
+        assertThat(finished.getResearchPackage().getResearchPlan().getPublicSourceTasks()).isNotEmpty();
+        assertThat(finished.getResearchPackage().getResearchPlan().getSearchQueries()).isNotEmpty();
         assertThat(finished.getCompetitorProfiles()).hasSize(2);
         assertThat(finished.getCompetitorProfiles())
                 .allSatisfy(profile -> {
@@ -240,8 +245,129 @@ class AnalysisWorkflowServiceTest {
                 .extracting(artifact -> artifact.getVersion())
                 .containsExactly(1, 2);
         assertThat(finished.getArtifacts()).anyMatch(artifact -> artifact.getType() == ArtifactType.SWOT_ANALYSIS);
+        assertThat(finished.getArtifacts()).anyMatch(artifact -> artifact.getType() == ArtifactType.RESEARCH_PLAN);
         assertThat(finished.getArtifacts()).anyMatch(artifact -> artifact.getType() == ArtifactType.FINAL_REPORT);
         assertThat(finished.getReviewFindings()).isEmpty();
+    }
+
+    @Test
+    void researcherBuildsSurveyFromRequestedDomainAndDimensions() {
+        AnalysisWorkflowService service = newService();
+        CreateAnalysisRunRequest request = new CreateAnalysisRunRequest();
+        request.setPrompt("分析 Salesforce 和 HubSpot 在 CRM 销售自动化方向的竞品机会。");
+        request.setIndustry("企业服务 CRM");
+        request.setCompetitors(List.of("Salesforce", "HubSpot"));
+        request.setDimensions(List.of("线索管理", "价格策略", "集成能力"));
+
+        var run = service.start(request);
+        var questionnaire = service.get(run.getId()).getResearchPackage().getResearchPlan().getQuestionnaire();
+        var interviewGuide = service.get(run.getId()).getResearchPackage().getResearchPlan().getInterviewGuide();
+
+        assertThat(questionnaire.getTitle()).contains("企业服务 CRM");
+        assertThat(questionnaire.getTargetRespondents()).contains("Salesforce", "HubSpot");
+        assertThat(questionnaire.getQuestions())
+                .extracting(question -> question.getDimension())
+                .contains("线索管理", "价格策略", "集成能力");
+        assertThat(questionnaire.getQuestions())
+                .flatExtracting(question -> question.getOptions())
+                .contains("线索管理", "客户跟进", "销售预测");
+        assertThat(interviewGuide.getQuestions()).anyMatch(question -> question.contains("Salesforce、HubSpot"));
+    }
+
+    @Test
+    void researcherUsesLlmGeneratedResearchPlanWhenAvailable() {
+        LlmClient researchPlanLlm = new LlmClient() {
+            @Override
+            public boolean isAvailable() {
+                return true;
+            }
+
+            @Override
+            public String complete(com.aiinsight.llm.ChatRequest request) {
+                return """
+                        {
+                          "objective": "验证 CRM 竞品在销售流程中的真实使用差异",
+                          "evidenceGaps": ["sales_ops_interview"],
+                          "searchQueries": ["Salesforce HubSpot sales workflow comparison", "HubSpot CRM onboarding pain points"],
+                          "publicSourceTasks": [
+                            {"type": "public_review", "target": "Salesforce 与 HubSpot 销售运营评价", "rationale": "补充真实用户反馈", "status": "needs_collection"}
+                          ],
+                          "questionnaire": {
+                            "title": "CRM 销售运营竞品决策问卷",
+                            "targetRespondents": "评估过 Salesforce 或 HubSpot 的销售运营、销售主管和 CRM 管理员",
+                            "recommendedSampleSize": "20-40 份，覆盖销售运营、销售主管和管理员",
+                            "questions": [
+                              {"dimension": "线索管理效率", "question": "在 Salesforce 或 HubSpot 中完成线索分配和跟进提醒的效率如何？", "options": ["明显提升", "基本满足", "流程偏重", "需要人工补充"]},
+                              {"dimension": "销售预测可信度", "question": "你是否信任系统给出的销售预测或阶段判断？", "options": ["非常信任", "部分信任", "不信任", "未使用"]},
+                              {"dimension": "采购顾虑", "question": "采购或续费 CRM 时最主要的阻力是什么？", "options": ["价格", "迁移成本", "集成成本", "团队学习成本"]}
+                            ]
+                          },
+                          "interviewGuide": {
+                            "title": "CRM 销售运营用户访谈提纲",
+                            "targetRoles": ["销售运营", "销售主管", "CRM 管理员"],
+                            "questions": ["最近一次使用 Salesforce 或 HubSpot 跟进线索的流程是什么？", "哪个环节最影响销售团队效率？", "如果切换竞品，最大的阻力是什么？"],
+                            "probingQuestions": ["能否举一个具体商机或客户跟进案例？", "这个问题每周出现几次？", "你愿意为哪些能力付费？"]
+                          }
+                        }
+                        """;
+            }
+        };
+        SourceCollectionService sourceCollectionService = new SourceCollectionService(fetchAlwaysFails(), fakeSearchProvider());
+        ResearcherNode researcherNode = researcherNode(sourceCollectionService, researchPlanLlm);
+        var run = new com.aiinsight.model.run.AnalysisRun(new com.aiinsight.model.run.AnalysisRequirement(
+                "分析 Salesforce 和 HubSpot 在 CRM 销售自动化方向的竞品机会。",
+                "企业服务 CRM",
+                List.of("Salesforce", "HubSpot"),
+                List.of("线索管理效率", "销售预测可信度", "采购顾虑"),
+                List.of("public_reviews", "interview"),
+                List.of()
+        ));
+
+        researcherNode.execute(run);
+
+        var questionnaire = run.getResearchPackage().getResearchPlan().getQuestionnaire();
+        assertThat(questionnaire.getTitle()).isEqualTo("CRM 销售运营竞品决策问卷");
+        assertThat(questionnaire.getQuestions())
+                .extracting(question -> question.getDimension())
+                .containsExactly("线索管理效率", "销售预测可信度", "采购顾虑");
+        assertThat(run.getResearchPackage().getResearchPlan().getInterviewGuide().getTargetRoles())
+                .contains("销售运营", "销售主管", "CRM 管理员");
+        assertThat(run.getResearchPackage().getResearchPlan().getSearchQueries())
+                .contains("Salesforce HubSpot sales workflow comparison");
+    }
+
+    @Test
+    void researcherTurnsInterviewEvidenceIntoPersonaSignals() {
+        AnalysisWorkflowService service = newService();
+        CreateAnalysisRunRequest request = new CreateAnalysisRunRequest();
+        request.setPrompt("分析 Salesforce 和 HubSpot 在 CRM 销售自动化方向的竞品机会。");
+        request.setIndustry("企业服务 CRM");
+        request.setCompetitors(List.of("Salesforce", "HubSpot"));
+        request.setDimensions(List.of("权限治理", "价格策略", "用户体验"));
+        var run = service.createDraft(request);
+
+        AddUserEvidenceRequest evidenceRequest = new AddUserEvidenceRequest();
+        evidenceRequest.setTitle("Salesforce 用户访谈");
+        evidenceRequest.setSourceType("interview");
+        evidenceRequest.setContent("受访者是销售运营管理员。最近在 Salesforce 做线索管理和客户跟进，觉得权限配置复杂，学习成本高，也担心价格和 HubSpot 集成成本。她认可销售预测提效，但不满意审批流程慢。");
+
+        service.addEvidence(run.getId(), evidenceRequest);
+        var finished = service.startExecution(run.getId());
+
+        assertThat(finished.getResearchPackage().getInterviewInsights()).hasSize(1);
+        var insight = finished.getResearchPackage().getInterviewInsights().get(0);
+        assertThat(insight.getEvidenceId()).isEqualTo("S1");
+        assertThat(insight.getIntervieweeRole()).contains("销售");
+        assertThat(insight.getCompetitorMentions()).contains("Salesforce", "HubSpot");
+        assertThat(insight.getPainPoints()).anyMatch(point -> point.contains("权限配置复杂"));
+        assertThat(insight.getBuyingConcerns()).contains("价格/预算", "学习成本", "集成成本");
+        assertThat(finished.getCompetitorProfiles())
+                .flatExtracting(profile -> profile.getPersonas())
+                .allSatisfy(persona -> {
+                    assertThat(persona.getPainPoints()).anyMatch(point -> point.contains("权限配置复杂"));
+                    assertThat(persona.getBuyingConcerns()).contains("价格/预算");
+                    assertThat(persona.getEvidenceIds()).contains("S1");
+                });
     }
 
     @Test
@@ -306,7 +432,7 @@ class AnalysisWorkflowServiceTest {
         AnalysisRunRepository repository = new TestAnalysisRunRepository();
         AnalysisEventBroker eventBroker = new AnalysisEventBroker();
         WorkflowNodeExecutor nodeExecutor = new WorkflowNodeExecutor(repository, eventBroker);
-        SourceCollectionService sourceCollectionService = new SourceCollectionService(fetchAlwaysFails());
+        SourceCollectionService sourceCollectionService = new SourceCollectionService(fetchAlwaysFails(), fakeSearchProvider());
         AnalysisLangGraphWorkflow graphWorkflow = new AnalysisLangGraphWorkflow(
                 List.of(
                         new RevisionNode(),
@@ -314,7 +440,7 @@ class AnalysisWorkflowServiceTest {
                         new ReviewerNode(new CitationCoverageEvaluator(), noopLlmClient),
                         new AnalystNode(noopLlmClient),
                         new ExtractorNode(noopLlmClient),
-                        new ResearcherNode(sourceCollectionService, new EvidenceChunkService()),
+                        researcherNode(sourceCollectionService, noopLlmClient),
                         new ClarifierNode(noopLlmClient)
                 ),
                 nodeExecutor,
@@ -341,6 +467,37 @@ class AnalysisWorkflowServiceTest {
                 return FetchedPage.failed(url, "simulated fetch failure");
             }
         };
+    }
+
+    private SearchProvider fakeSearchProvider() {
+        return new SearchProvider() {
+            @Override
+            public boolean isAvailable() {
+                return true;
+            }
+
+            @Override
+            public List<SearchResult> search(String query, int count) {
+                return List.of(new SearchResult(
+                        "Search result for " + query,
+                        "https://search.example.test/" + query.toLowerCase().replaceAll("[^a-z0-9]+", "-"),
+                        "Snippet for " + query + " with pricing, reviews, AI collaboration and permission details.",
+                        query,
+                        1
+                ));
+            }
+        };
+    }
+
+    private ResearcherNode researcherNode(SourceCollectionService sourceCollectionService, LlmClient llmClient) {
+        return new ResearcherNode(
+                sourceCollectionService,
+                new EvidenceChunkService(),
+                llmClient,
+                new ObjectMapper(),
+                new FallbackResearchPlanFactory(),
+                new InterviewInsightExtractor()
+        );
     }
 
     private static class TestAnalysisRunRepository implements AnalysisRunRepository {

@@ -13,6 +13,7 @@ import com.aiinsight.model.run.EvidenceSource;
 import com.aiinsight.model.schema.CompetitorProfile;
 import com.aiinsight.model.schema.FeatureNode;
 import com.aiinsight.model.schema.FeatureTree;
+import com.aiinsight.model.schema.InterviewInsight;
 import com.aiinsight.model.schema.PricingModel;
 import com.aiinsight.model.schema.PricingPlan;
 import com.aiinsight.model.schema.UserPersona;
@@ -20,7 +21,10 @@ import com.aiinsight.observability.AgentTraceContext;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Component;
 
+import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.stream.Collectors;
 
 @Component
@@ -43,7 +47,7 @@ public class ExtractorNode implements AgentNode {
     public AnalysisRun execute(AnalysisRun run) {
         run.getCompetitorProfiles().clear();
         run.getRequirement().getCompetitors().stream()
-                .map(competitor -> toCompetitorProfile(competitor, sourcesFor(run, competitor)))
+                .map(competitor -> toCompetitorProfile(competitor, sourcesFor(run, competitor), run))
                 .forEach(profile -> run.getCompetitorProfiles().add(profile));
 
         String fallbackContent = run.getEvidenceSources().stream()
@@ -99,16 +103,41 @@ public class ExtractorNode implements AgentNode {
         ));
     }
 
-    private CompetitorProfile toCompetitorProfile(String productName, List<EvidenceSource> sources) {
+    private CompetitorProfile toCompetitorProfile(String productName, List<EvidenceSource> sources, AnalysisRun run) {
         List<String> evidenceIds = sources.stream().map(EvidenceSource::getCitationKey).toList();
+        List<InterviewInsight> interviewInsights = insightsFor(run, productName);
+        List<String> interviewEvidenceIds = interviewInsights.stream()
+                .map(InterviewInsight::getEvidenceId)
+                .filter(id -> id != null && !id.isBlank())
+                .toList();
+        List<String> personaEvidenceIds = mergeDistinct(evidenceIds, interviewEvidenceIds);
+        List<String> interviewRoles = interviewInsights.stream()
+                .map(InterviewInsight::getIntervieweeRole)
+                .filter(role -> role != null && !role.isBlank())
+                .distinct()
+                .toList();
+        List<String> painPoints = interviewInsights.stream()
+                .flatMap(insight -> insight.getPainPoints().stream())
+                .distinct()
+                .limit(4)
+                .toList();
+        List<String> buyingConcerns = interviewInsights.stream()
+                .flatMap(insight -> insight.getBuyingConcerns().stream())
+                .distinct()
+                .limit(4)
+                .toList();
         boolean pricingEvidencePresent = hasPricingEvidence(sources);
         CompetitorProfile profile = new CompetitorProfile();
         profile.setProductName(productName);
         profile.setCompanyName(productName);
         profile.setPositioning("AI 协作与知识沉淀工具");
-        profile.setTargetUsers(List.of("团队知识管理用户", "项目协作团队"));
+        profile.setTargetUsers(interviewRoles.isEmpty()
+                ? List.of("团队知识管理用户", "项目协作团队")
+                : mergeDistinct(List.of("团队知识管理用户", "项目协作团队"), interviewRoles));
         profile.setStrengths(List.of("协作能力明确", "知识沉淀场景清晰"));
-        profile.setWeaknesses(pricingEvidencePresent
+        profile.setWeaknesses(!painPoints.isEmpty()
+                ? painPoints.stream().map(point -> "访谈显示：" + point).limit(3).toList()
+                : pricingEvidencePresent
                 ? List.of("用户迁移成本和学习成本仍需持续验证")
                 : List.of("价格策略和用户评价仍需补充证据"));
         profile.setEvidenceIds(evidenceIds);
@@ -136,9 +165,13 @@ public class ExtractorNode implements AgentNode {
         persona.setSegment("知识管理与项目协作");
         persona.setCompanySize("中小团队到企业团队");
         persona.setJobsToBeDone(List.of("沉淀项目知识", "协作撰写文档", "复用团队模板"));
-        persona.setPainPoints(List.of("信息分散", "权限治理复杂", "重复内容生产"));
-        persona.setBuyingConcerns(List.of("迁移成本", "成员学习成本", "价格方案"));
-        persona.setEvidenceIds(evidenceIds);
+        persona.setPainPoints(painPoints.isEmpty()
+                ? List.of("信息分散", "权限治理复杂", "重复内容生产")
+                : painPoints);
+        persona.setBuyingConcerns(buyingConcerns.isEmpty()
+                ? List.of("迁移成本", "成员学习成本", "价格方案")
+                : buyingConcerns);
+        persona.setEvidenceIds(personaEvidenceIds);
         profile.setPersonas(List.of(persona));
         return profile;
     }
@@ -178,6 +211,23 @@ public class ExtractorNode implements AgentNode {
 
     private boolean containsIgnoreCase(String text, String pattern) {
         return text != null && text.toLowerCase().contains(pattern.toLowerCase());
+    }
+
+    private List<InterviewInsight> insightsFor(AnalysisRun run, String productName) {
+        if (run.getResearchPackage() == null || run.getResearchPackage().getInterviewInsights() == null) {
+            return List.of();
+        }
+        return run.getResearchPackage().getInterviewInsights().stream()
+                .filter(insight -> insight.getCompetitorMentions().isEmpty()
+                        || insight.getCompetitorMentions().stream().anyMatch(value -> containsIgnoreCase(value, productName)))
+                .toList();
+    }
+
+    private List<String> mergeDistinct(List<String> first, List<String> second) {
+        Set<String> values = new LinkedHashSet<>();
+        values.addAll(first == null ? List.of() : first);
+        values.addAll(second == null ? List.of() : second);
+        return new ArrayList<>(values);
     }
 
     private List<PricingPlan> createPricingPlans(boolean pricingEvidencePresent, List<String> evidenceIds) {

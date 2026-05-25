@@ -3,6 +3,7 @@ package com.aiinsight.model.enums;
 public enum ArtifactType {
     CLARIFICATION_BRIEF,
     SOURCE_LIST,
+    RESEARCH_PLAN,
     COMPETITOR_PROFILE,
     COMPETITIVE_MATRIX,
     SWOT_ANALYSIS,

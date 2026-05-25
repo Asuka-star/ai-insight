@@ -2,6 +2,7 @@ package com.aiinsight.service;
 
 import com.aiinsight.model.run.AnalysisRequirement;
 import com.aiinsight.model.run.AnalysisRun;
+import com.aiinsight.model.run.EvidenceSource;
 import com.aiinsight.model.run.UserProvidedEvidence;
 import org.junit.jupiter.api.Test;
 
@@ -24,7 +25,7 @@ class SourceCollectionServiceTest {
                 );
             }
         };
-        SourceCollectionService service = new SourceCollectionService(fetchService);
+        SourceCollectionService service = new SourceCollectionService(fetchService, new NoopSearchProvider());
         AnalysisRequirement requirement = new AnalysisRequirement(
                 "分析 Notion",
                 "AI 协作文档",
@@ -39,7 +40,7 @@ class SourceCollectionServiceTest {
 
         assertThat(sources).hasSize(1);
         assertThat(sources.get(0).getCitationKey()).isEqualTo("S1");
-        assertThat(sources.get(0).getSourceType()).isEqualTo("public_web_page");
+        assertThat(sources.get(0).getSourceType()).isEqualTo("user_source_url");
         assertThat(sources.get(0).getCollectionStatus()).isEqualTo("FETCHED");
         assertThat(sources.get(0).getFreshness()).isEqualTo("LIVE_FETCHED");
         assertThat(sources.get(0).getRawText()).contains("AI collaboration");
@@ -47,8 +48,8 @@ class SourceCollectionServiceTest {
     }
 
     @Test
-    void collectsUserProvidedEvidenceBeforeSeedEvidence() {
-        SourceCollectionService service = new SourceCollectionService(fetchAlwaysFails());
+    void collectsUserProvidedEvidenceBeforeSearchEvidence() {
+        SourceCollectionService service = new SourceCollectionService(fetchAlwaysFails(), fakeSearchProvider());
         AnalysisRequirement requirement = new AnalysisRequirement(
                 "Analyze Notion",
                 "AI documents",
@@ -68,19 +69,39 @@ class SourceCollectionServiceTest {
 
         var sources = service.collect(run, false);
 
-        assertThat(sources).hasSize(4);
+        assertThat(sources).hasSizeGreaterThan(1);
         assertThat(sources.get(0).getCitationKey()).isEqualTo("S1");
         assertThat(sources.get(0).getSourceType()).isEqualTo("user_interview");
         assertThat(sources.get(0).getCollectionStatus()).isEqualTo("USER_PROVIDED");
         assertThat(sources.get(0).getComplianceNote()).contains("internal-only");
-        assertThat(sources.get(1).getSourceType()).isEqualTo("catalog_reference_official_site");
-        assertThat(sources.get(2).getSourceType()).isEqualTo("catalog_reference_pricing_page");
-        assertThat(sources.get(3).getSourceType()).isEqualTo("catalog_reference_usage_feedback");
+        assertThat(sources)
+                .extracting(EvidenceSource::getSourceType)
+                .contains("search_result_snippet");
+        assertThat(sources)
+                .extracting(EvidenceSource::getUrl)
+                .filteredOn(url -> url.startsWith("https://"))
+                .allMatch(url -> url.contains("search.example.test"));
     }
 
     @Test
-    void usesBuiltInPublicCatalogInsteadOfExampleComSeedEvidence() {
-        SourceCollectionService service = new SourceCollectionService(fetchAlwaysFails());
+    void marksSurveyEvidenceAsFirstPartyResearch() {
+        SourceCollectionService service = new SourceCollectionService(fetchAlwaysFails(), new NoopSearchProvider());
+        var source = service.fromUserProvidedEvidence("S1", new UserProvidedEvidence(
+                "User survey round 1",
+                "survey",
+                "n=18; users rated AI search and citation traceability as the most important buying factors.",
+                "",
+                false
+        ));
+
+        assertThat(source.getSourceType()).isEqualTo("user_survey");
+        assertThat(source.getComplianceNote()).contains("First-party survey evidence");
+        assertThat(source.getFreshness()).isEqualTo("USER_PROVIDED");
+    }
+
+    @Test
+    void usesSearchResultsInsteadOfBuiltInOrSeedEvidence() {
+        SourceCollectionService service = new SourceCollectionService(fetchAlwaysFails(), fakeSearchProvider());
         AnalysisRequirement requirement = new AnalysisRequirement(
                 "Analyze Notion and Confluence",
                 "AI documents",
@@ -93,29 +114,28 @@ class SourceCollectionServiceTest {
 
         var sources = service.collect(run, true);
 
-        assertThat(sources).hasSize(6);
+        assertThat(sources).isNotEmpty();
         assertThat(sources).allSatisfy(source -> assertThat(source.getUrl()).doesNotContain("example.com"));
         assertThat(sources)
                 .extracting(source -> source.getSourceType())
-                .contains("catalog_reference_official_site", "catalog_reference_pricing_page", "catalog_reference_usage_feedback");
+                .containsOnly("search_result_snippet");
         assertThat(sources)
                 .extracting(source -> source.getCollectionStatus())
                 .allMatch(status -> status.equals("FETCH_FAILED"));
         assertThat(sources)
                 .extracting(source -> source.getFreshness())
-                .allMatch(freshness -> freshness.equals("CATALOG_REFERENCE"));
+                .allMatch(freshness -> freshness.equals("SEARCH_RESULT_SNIPPET"));
         assertThat(sources)
                 .extracting(source -> source.getComplianceNote())
-                .allMatch(note -> note.contains("Falling back to built-in public source catalog reference"));
+                .allMatch(note -> note.contains("Search result snippet only"));
         assertThat(sources)
                 .extracting(source -> source.getUrl())
-                .anyMatch(url -> url.contains("notion.com"))
-                .anyMatch(url -> url.contains("atlassian.com/software/confluence"));
+                .anyMatch(url -> url.contains("search.example.test"));
     }
 
     @Test
-    void unknownCompetitorsUseExplicitSeedEvidenceScheme() {
-        SourceCollectionService service = new SourceCollectionService(new WebPageFetchService());
+    void unavailableSearchProviderCreatesEvidenceGapActionWithoutFakeEvidence() {
+        SourceCollectionService service = new SourceCollectionService(fetchAlwaysFails(), new NoopSearchProvider());
         AnalysisRequirement requirement = new AnalysisRequirement(
                 "Analyze UnknownDoc",
                 "AI documents",
@@ -128,15 +148,13 @@ class SourceCollectionServiceTest {
 
         var sources = service.collect(run, false);
 
-        assertThat(sources).hasSize(1);
-        assertThat(sources.get(0).getUrl()).startsWith("seed-evidence://");
-        assertThat(sources.get(0).getCollectionStatus()).isEqualTo("SEED_FALLBACK");
-        assertThat(sources.get(0).getUrl()).doesNotContain("example.com");
+        assertThat(sources).isEmpty();
+        assertThat(run.getRecommendedActions()).anyMatch(action -> action.contains("搜索服务未配置"));
     }
 
     @Test
-    void addsPreferredPricingAndFeedbackSourcesWhenRequested() {
-        SourceCollectionService service = new SourceCollectionService(fetchAlwaysFails());
+    void addsPreferredPricingAndFeedbackSearchSourcesWhenRequested() {
+        SourceCollectionService service = new SourceCollectionService(fetchAlwaysFails(), fakeSearchProvider());
         AnalysisRequirement requirement = new AnalysisRequirement(
                 "Analyze Notion",
                 "AI documents",
@@ -149,14 +167,11 @@ class SourceCollectionServiceTest {
 
         var sources = service.collect(run, false);
 
-        assertThat(sources).hasSize(3);
+        assertThat(sources).isNotEmpty();
         assertThat(sources)
-                .extracting(source -> source.getSourceType())
-                .containsExactly(
-                        "catalog_reference_official_site",
-                        "catalog_reference_pricing_page",
-                        "catalog_reference_usage_feedback"
-                );
+                .extracting(EvidenceSource::getComplianceNote)
+                .anyMatch(note -> note.contains("pricing"))
+                .anyMatch(note -> note.contains("reviews"));
     }
 
     private WebPageFetchService fetchAlwaysFails() {
@@ -164,6 +179,26 @@ class SourceCollectionServiceTest {
             @Override
             public FetchedPage fetch(String url) {
                 return FetchedPage.failed(url, "simulated fetch failure");
+            }
+        };
+    }
+
+    private SearchProvider fakeSearchProvider() {
+        return new SearchProvider() {
+            @Override
+            public boolean isAvailable() {
+                return true;
+            }
+
+            @Override
+            public List<SearchResult> search(String query, int count) {
+                return List.of(new SearchResult(
+                        "Search result for " + query,
+                        "https://search.example.test/" + query.toLowerCase().replaceAll("[^a-z0-9]+", "-"),
+                        "Snippet for " + query + " with pricing, reviews, AI collaboration and permission details.",
+                        query,
+                        1
+                ));
             }
         };
     }

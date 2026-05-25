@@ -2,7 +2,7 @@ spring:
   application:
     name: ai-insight
   datasource:
-    url: ${POSTGRES_URL:jdbc:postgresql://localhost:5432/ai_insight}
+    url: ${POSTGRES_URL:jdbc:postgresql://localhost:5433/ai_insight}
     username: ${POSTGRES_USER:ai_insight}
     password: ${POSTGRES_PASSWORD:ai_insight}
     driver-class-name: org.postgresql.Driver
@@ -24,3 +24,11 @@ ai-insight:
       completions-path: ${XIAOMI_LLM_COMPLETIONS_PATH:/chat/completions}
       model: ${XIAOMI_LLM_MODEL:mimo-v2.5-pro}
       timeout: 60s
+  search:
+    tavily:
+      api-key: ${TAVILY_API_KEY:}
+      base-url: ${TAVILY_BASE_URL:https://api.tavily.com/search}
+      max-results: ${TAVILY_MAX_RESULTS:5}
+      search-depth: ${TAVILY_SEARCH_DEPTH:basic}
+      include-raw-content: ${TAVILY_INCLUDE_RAW_CONTENT:true}
+      timeout: 20s
