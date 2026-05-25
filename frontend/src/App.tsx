@@ -1,11 +1,11 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { type CSSProperties, type PointerEvent as ReactPointerEvent, useCallback, useEffect, useMemo, useState } from "react";
 import {
   Activity,
   AlertTriangle,
   BookOpenCheck,
   Clock3,
-  GitBranch,
   Gauge,
+  GripVertical,
   Play,
   RefreshCw,
   RotateCcw,
@@ -15,7 +15,7 @@ import {
   UploadCloud
 } from "lucide-react";
 import type { AnalysisContextMessage, AgentName, AnalysisArtifact, AnalysisRun, ContextIntent, ReviewFinding, RunEvent } from "./types";
-import { addContext, addEvidence, createRun, getRun, getWorkflowMermaid, listRuns, rerunAgent, startAnalysis, updateRequirement } from "./api";
+import { addContext, addEvidence, createRun, listRuns, getRun, rerunAgent, startAnalysis, updateRequirement } from "./api";
 import { AGENTS, AGENT_LABELS, ARTIFACT_LABELS, SOURCE_OPTIONS } from "./constants";
 import {
   calculateRunMetrics,
@@ -41,6 +41,13 @@ import { ContextPanel } from "./components/ContextPanel";
 import { ArtifactVersionsPanel } from "./components/ArtifactVersionsPanel";
 
 type MainView = "dag" | "report" | "schema" | "matrix" | "versions";
+
+const MIN_LEFT_RAIL_WIDTH = 240;
+const MAX_LEFT_RAIL_WIDTH = 420;
+const MIN_CENTER_WIDTH = 420;
+const MIN_RIGHT_RAIL_WIDTH = 280;
+const MAX_RIGHT_RAIL_WIDTH = 520;
+const RESIZE_LAYOUT_RESERVE = 72;
 
 export function App() {
   const [run, setRun] = useState<AnalysisRun | null>(null);
@@ -69,9 +76,10 @@ export function App() {
   const [localScopeConfirmed, setLocalScopeConfirmed] = useState(false);
   const [eventMessage, setEventMessage] = useState("等待创建任务");
   const [backendOk, setBackendOk] = useState(false);
-  const [workflowMermaid, setWorkflowMermaid] = useState("");
   const [isCreating, setIsCreating] = useState(false);
   const [isScopeBusy, setIsScopeBusy] = useState(false);
+  const [leftRailWidth, setLeftRailWidth] = useState(286);
+  const [rightRailWidth, setRightRailWidth] = useState(342);
   // Requirement may change without changing run.id, for example after ADJUST_SCOPE context.
   // Keep a narrow sync key so the editable scope form follows backend scope updates.
   const scopeSyncKey = useMemo(() => {
@@ -108,9 +116,6 @@ export function App() {
       setBackendOk(false);
       setEventMessage(error.message);
     });
-    getWorkflowMermaid()
-      .then(setWorkflowMermaid)
-      .catch(() => setWorkflowMermaid("后端暂未返回 Mermaid 定义"));
   }, []);
 
   useEffect(() => {
@@ -196,6 +201,53 @@ export function App() {
     }
     setLocalScopeConfirmed(Boolean(run.clarificationDraft?.confirmed));
   }, [scopeSyncKey]);
+
+  const workspaceStyle = useMemo(() => ({
+    "--left-rail-width": `${leftRailWidth}px`,
+    "--right-rail-width": `${rightRailWidth}px`
+  }) as CSSProperties, [leftRailWidth, rightRailWidth]);
+
+  const startRailResize = useCallback((
+    side: "left" | "right",
+    event: ReactPointerEvent<HTMLButtonElement>
+  ) => {
+    event.preventDefault();
+    const workspace = event.currentTarget.closest(".workspace") as HTMLElement | null;
+    const workspaceWidth = workspace?.clientWidth ?? window.innerWidth;
+    const startX = event.clientX;
+    const startLeftWidth = leftRailWidth;
+    const startRightWidth = rightRailWidth;
+    document.body.classList.add("is-resizing-rail");
+
+    const handlePointerMove = (moveEvent: PointerEvent) => {
+      const deltaX = moveEvent.clientX - startX;
+      if (side === "left") {
+        const maxWidth = Math.min(
+          MAX_LEFT_RAIL_WIDTH,
+          workspaceWidth - startRightWidth - MIN_CENTER_WIDTH - RESIZE_LAYOUT_RESERVE
+        );
+        setLeftRailWidth(clamp(startLeftWidth + deltaX, MIN_LEFT_RAIL_WIDTH, Math.max(MIN_LEFT_RAIL_WIDTH, maxWidth)));
+        return;
+      }
+
+      const maxWidth = Math.min(
+        MAX_RIGHT_RAIL_WIDTH,
+        workspaceWidth - startLeftWidth - MIN_CENTER_WIDTH - RESIZE_LAYOUT_RESERVE
+      );
+      setRightRailWidth(clamp(startRightWidth - deltaX, MIN_RIGHT_RAIL_WIDTH, Math.max(MIN_RIGHT_RAIL_WIDTH, maxWidth)));
+    };
+
+    const stopResize = () => {
+      document.body.classList.remove("is-resizing-rail");
+      window.removeEventListener("pointermove", handlePointerMove);
+      window.removeEventListener("pointerup", stopResize);
+      window.removeEventListener("pointercancel", stopResize);
+    };
+
+    window.addEventListener("pointermove", handlePointerMove);
+    window.addEventListener("pointerup", stopResize);
+    window.addEventListener("pointercancel", stopResize);
+  }, [leftRailWidth, rightRailWidth]);
 
   async function handleCreateRun() {
     setIsCreating(true);
@@ -387,7 +439,7 @@ export function App() {
         </div>
       </header>
 
-      <main className="workspace">
+      <main className="workspace" style={workspaceStyle}>
         <aside className="left-rail">
           <section className="panel task-panel">
             <div className="section-title">
@@ -510,27 +562,17 @@ export function App() {
             </button>
           </section>
 
-          <section className="panel">
-            <div className="section-title">
-              <div>
-                <p className="eyebrow">指标</p>
-                <h2>运行指标</h2>
-              </div>
-            </div>
-            <div className="metric-grid">
-              {metricCards.map((metric) => {
-                const Icon = metric.icon;
-                return (
-                  <div className="metric-card" key={metric.label}>
-                    <Icon size={18} />
-                    <strong>{metric.value}</strong>
-                    <span>{metric.label}</span>
-                  </div>
-                );
-              })}
-            </div>
-          </section>
         </aside>
+
+        <button
+          className="rail-resize-handle"
+          type="button"
+          aria-label="调整左侧栏宽度"
+          title="调整左侧栏宽度"
+          onPointerDown={(event) => startRailResize("left", event)}
+        >
+          <GripVertical size={16} />
+        </button>
 
         <section className="center-stage">
           <section className="panel main-stage-panel">
@@ -618,6 +660,16 @@ export function App() {
           </section>
         </section>
 
+        <button
+          className="rail-resize-handle"
+          type="button"
+          aria-label="调整右侧栏宽度"
+          title="调整右侧栏宽度"
+          onPointerDown={(event) => startRailResize("right", event)}
+        >
+          <GripVertical size={16} />
+        </button>
+
         <aside className="right-rail">
           <section className="panel">
             <div className="section-title">
@@ -653,12 +705,22 @@ export function App() {
           <section className="panel">
             <div className="section-title">
               <div>
-                <p className="eyebrow">Mermaid</p>
-                <h2>后端图定义</h2>
+                <p className="eyebrow">指标</p>
+                <h2>运行指标</h2>
               </div>
-              <GitBranch size={18} />
             </div>
-            <pre className="mermaid-source">{workflowMermaid}</pre>
+            <div className="metric-grid">
+              {metricCards.map((metric) => {
+                const Icon = metric.icon;
+                return (
+                  <div className="metric-card" key={metric.label}>
+                    <Icon size={18} />
+                    <strong>{metric.value}</strong>
+                    <span>{metric.label}</span>
+                  </div>
+                );
+              })}
+            </div>
           </section>
         </aside>
       </main>
@@ -699,4 +761,8 @@ function splitLines(value: string) {
     .split(/\r?\n/)
     .map((item) => item.trim())
     .filter(Boolean);
+}
+
+function clamp(value: number, min: number, max: number) {
+  return Math.min(Math.max(value, min), max);
 }

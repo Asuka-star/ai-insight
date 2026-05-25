@@ -59,14 +59,6 @@ export async function rerunAgent(runId: string, agentName: AgentName): Promise<A
   });
 }
 
-export async function getWorkflowMermaid(): Promise<string> {
-  const response = await fetch("/api/analysis-runs/workflow/mermaid");
-  if (!response.ok) {
-    throw new Error(`HTTP ${response.status}`);
-  }
-  return response.text();
-}
-
 async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, init);
   if (!response.ok) {
