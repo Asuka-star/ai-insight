@@ -6,7 +6,6 @@ import {
   Clock3,
   Gauge,
   GripVertical,
-  Play,
   RefreshCw,
   RotateCcw,
   Search,
@@ -51,7 +50,6 @@ const RESIZE_LAYOUT_RESERVE = 72;
 
 export function App() {
   const [run, setRun] = useState<AnalysisRun | null>(null);
-  const [prompt, setPrompt] = useState("");
   const [industry, setIndustry] = useState("");
   const [competitors, setCompetitors] = useState("");
   const [dimensions, setDimensions] = useState("");
@@ -74,7 +72,7 @@ export function App() {
   const [localContextMessages, setLocalContextMessages] = useState<AnalysisContextMessage[]>([]);
   const [mainView, setMainView] = useState<MainView>("dag");
   const [localScopeConfirmed, setLocalScopeConfirmed] = useState(false);
-  const [eventMessage, setEventMessage] = useState("等待创建任务");
+  const [eventMessage, setEventMessage] = useState("等待填写范围确认");
   const [backendOk, setBackendOk] = useState(false);
   const [isCreating, setIsCreating] = useState(false);
   const [isScopeBusy, setIsScopeBusy] = useState(false);
@@ -251,25 +249,28 @@ export function App() {
 
   async function handleCreateRun() {
     setIsCreating(true);
-    setEventMessage("正在创建分析任务草稿");
+    setEventMessage("正在生成范围确认内容");
     setArtifactPinned(false);
     setSelectedCitationKey(undefined);
     setLocalContextMessages([]);
     try {
+      const competitorList = splitList(competitors);
+      const dimensionList = splitList(dimensions);
+      const sourceUrlList = splitLines(sourceUrls);
       const nextRun = await createRun({
-        prompt,
+        prompt: buildScopePrompt(industry, outputGoal, competitorList, dimensionList, sourceUrlList),
         industry,
-        competitors: splitList(competitors),
-        dimensions: splitList(dimensions),
+        competitors: competitorList,
+        dimensions: dimensionList,
         sourcePreferences: sources,
-        sourceUrls: splitLines(sourceUrls),
+        sourceUrls: sourceUrlList,
         outputGoal
       });
       setBackendOk(true);
       setRun(nextRun);
     } catch (error) {
       setBackendOk(false);
-      setEventMessage(error instanceof Error ? error.message : "创建任务失败");
+      setEventMessage(error instanceof Error ? error.message : "范围确认生成失败");
     } finally {
       setIsCreating(false);
     }
@@ -441,54 +442,6 @@ export function App() {
 
       <main className="workspace" style={workspaceStyle}>
         <aside className="left-rail">
-          <section className="panel task-panel">
-            <div className="section-title">
-              <div>
-                <p className="eyebrow">任务</p>
-                <h2>分析任务</h2>
-              </div>
-            </div>
-            <label>
-              分析需求
-              <textarea
-                value={prompt}
-                onChange={(event) => setPrompt(event.target.value)}
-                placeholder="请输入要分析的产品、竞品范围、关注维度或业务问题"
-                rows={5}
-              />
-            </label>
-            <div className="source-options">
-              {SOURCE_OPTIONS.map((source) => (
-                <label key={source.value} className="check-row">
-                  <input
-                    type="checkbox"
-                    checked={sources.includes(source.value)}
-                    onChange={(event) => {
-                      setSources((current) =>
-                        event.target.checked
-                          ? [...current, source.value]
-                          : current.filter((value) => value !== source.value)
-                      );
-                    }}
-                  />
-                  {source.label}
-                </label>
-              ))}
-            </div>
-            <label>
-              公开来源 URL
-              <textarea
-                value={sourceUrls}
-                onChange={(event) => setSourceUrls(event.target.value)}
-                placeholder="每行一个公开网页 URL，例如官网、价格页、产品文档"
-                rows={3}
-              />
-            </label>
-            <button className="primary-button" type="button" onClick={handleCreateRun} disabled={isCreating || !prompt.trim()}>
-              <Play size={16} /> 创建任务草稿
-            </button>
-          </section>
-
           <ScopeConfirmationPanel
             run={run}
             localConfirmed={localScopeConfirmed}
@@ -496,12 +449,18 @@ export function App() {
             competitors={competitors}
             dimensions={dimensions}
             outputGoal={outputGoal}
+            sources={sources}
+            sourceUrls={sourceUrls}
             onIndustryChange={setIndustry}
             onCompetitorsChange={setCompetitors}
             onDimensionsChange={setDimensions}
             onOutputGoalChange={setOutputGoal}
+            onSourcesChange={setSources}
+            onSourceUrlsChange={setSourceUrls}
+            onCreate={handleCreateRun}
             onConfirm={handleConfirmRequirement}
             onStart={handleStartAnalysis}
+            creating={isCreating}
             busy={isScopeBusy}
           />
 
@@ -761,6 +720,22 @@ function splitLines(value: string) {
     .split(/\r?\n/)
     .map((item) => item.trim())
     .filter(Boolean);
+}
+
+function buildScopePrompt(
+  industry: string,
+  outputGoal: string,
+  competitors: string[],
+  dimensions: string[],
+  sourceUrls: string[]
+) {
+  return [
+    industry.trim() ? `行业方向：${industry.trim()}` : "",
+    outputGoal.trim() ? `报告用途：${outputGoal.trim()}` : "",
+    competitors.length ? `竞品列表：${competitors.join("、")}` : "",
+    dimensions.length ? `分析维度：${dimensions.join("、")}` : "",
+    sourceUrls.length ? `公开来源：${sourceUrls.join("、")}` : ""
+  ].filter(Boolean).join("\n") || "竞品分析";
 }
 
 function clamp(value: number, min: number, max: number) {

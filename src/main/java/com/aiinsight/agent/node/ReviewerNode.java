@@ -30,6 +30,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
@@ -167,7 +168,8 @@ public class ReviewerNode implements AgentNode {
                 || category.equals("claim_missing_evidence")
                 || category.contains("low_quality_source")
                 || category.contains("snippet_only")
-                || category.contains("blocked_source");
+                || category.contains("blocked_source")
+                || category.contains("fetch_failed_source");
     }
 
     private boolean needsAnalysisRework(ReviewFinding finding) {
@@ -192,39 +194,164 @@ public class ReviewerNode implements AgentNode {
     }
 
     private String reviewWithLlm(AnalysisRun run, AnalysisArtifact draft) {
-        // LLM 只做语义层面的增量抽查：规则引擎已经覆盖 citation/claim 的确定性问题，
-        // 这里压缩输入，避免把整篇报告和完整规则报告塞进模型导致 LENGTH 截断。
+        CompletableFuture<LlmSubtaskResult> claimEvidenceTask = CompletableFuture.supplyAsync(
+                () -> runReviewSubtask(run, "claim-evidence", () -> reviewClaimEvidenceWithLlm(run))
+        );
+        CompletableFuture<LlmSubtaskResult> reportOverclaimTask = CompletableFuture.supplyAsync(
+                () -> runReviewSubtask(run, "report-overclaim", () -> reviewReportOverclaimWithLlm(run, draft))
+        );
+        CompletableFuture<LlmSubtaskResult> schemaConsistencyTask = CompletableFuture.supplyAsync(
+                () -> runReviewSubtask(run, "schema-consistency", () -> reviewSchemaConsistencyWithLlm(run))
+        );
+        CompletableFuture<LlmSubtaskResult> sourceQualityTask = CompletableFuture.supplyAsync(
+                () -> runReviewSubtask(run, "source-quality", () -> reviewSourceQualityWithLlm(run))
+        );
+        CompletableFuture.allOf(claimEvidenceTask, reportOverclaimTask, schemaConsistencyTask, sourceQualityTask).join();
+
+        List<LlmSubtaskResult> results = List.of(
+                claimEvidenceTask.join(),
+                reportOverclaimTask.join(),
+                schemaConsistencyTask.join(),
+                sourceQualityTask.join()
+        );
+        recordParallelReviewerTrace(results);
+        results.stream()
+                .filter(result -> !result.succeeded())
+                .forEach(result -> run.getRecommendedActions().add(
+                        "LLM Reviewer 子任务失败，已跳过该语义检查：" + result.name() + " - " + result.errorMessage()));
+        if (results.stream().noneMatch(LlmSubtaskResult::succeeded)) {
+            String reasons = results.stream()
+                    .map(result -> result.name() + ": " + result.errorMessage())
+                    .collect(Collectors.joining("；"));
+            throw new IllegalStateException("Reviewer LLM 子任务全部失败：" + reasons);
+        }
+
+        int added = results.stream()
+                .filter(LlmSubtaskResult::succeeded)
+                .mapToInt(result -> mergeLlmFindings(run, result.result().findings()))
+                .sum();
+        String subtaskSummary = results.stream()
+                .map(result -> "- %s：%s%s".formatted(
+                        result.name(),
+                        result.succeeded()
+                                ? "完成，新增候选问题 " + result.result().findings().size() + " 条"
+                                : "失败",
+                        result.succeeded() ? "" : "（" + result.errorMessage() + "）"
+                ))
+                .collect(Collectors.joining("\n"));
+        return "## LLM 并发语义质检\n\n"
+                + subtaskSummary
+                + "\n\n结构化新增问题：" + added
+                + "\n\n"
+                + fallbackReviewReportFactory.build(run);
+    }
+
+    private LlmReviewResult reviewClaimEvidenceWithLlm(AnalysisRun run) {
         String prompt = """
-                你是竞品分析小组中的 Reviewer Agent。请基于规则引擎摘要和关键报告片段，补充发现事实一致性、引用弱支撑和过度推断问题。
+                你是竞品分析工作流中的 claim-evidence Reviewer。请只检查结构化 claim 是否被 evidenceIds 真正支撑。
 
                 输出要求:
                 1. 只输出可解析 JSON，不要输出 Markdown，不要包裹代码块。
                 2. JSON 格式为 {"summary":"一句话总结","findings":[...]}。
                 3. findings 最多 5 项，每项必须包含 severity、category、message、recommendation。
-                4. severity 只能是 HIGH、MEDIUM、LOW。
-                5. 如果能定位，请填写 claimId、citationKey、paragraphIndex、excerpt。
-                6. message 和 recommendation 各不超过 80 字。
-                7. 检查结构化 claim 的置信度是否与证据质量匹配。
-                8. 对 snippet-only、抓取失败、robots 阻断的来源给出人工复核建议。
-                9. 不要复述规则引擎已有问题，不要替 Writer 重写全文。
+                4. category 优先使用 claim_evidence_mismatch、claim_weak_support、claim_confidence_mismatch。
+                5. severity 只能是 HIGH、MEDIUM、LOW；证据完全不支撑高置信 claim 时用 HIGH。
+                6. 必须尽量填写 claimId 和 citationKey；message 和 recommendation 各不超过 80 字。
+                7. 不要复述规则引擎已有问题，只补充语义层面的不一致。
 
-                重点证据:
+                Claim 与证据:
+                %s
+
+                规则引擎摘要:
+                %s
+                """.formatted(
+                claimEvidencePairs(run),
+                compactRuleFindings(run)
+        );
+        return completeReviewSubtask(prompt);
+    }
+
+    private LlmReviewResult reviewReportOverclaimWithLlm(AnalysisRun run, AnalysisArtifact draft) {
+        String prompt = """
+                你是竞品分析工作流中的 report-overclaim Reviewer。请只检查报告是否把证据推断得过强、结论是否越过证据边界。
+
+                输出要求:
+                1. 只输出可解析 JSON，不要 Markdown。
+                2. JSON 格式为 {"summary":"一句话总结","findings":[...]}。
+                3. findings 最多 5 项，每项包含 severity、category、message、recommendation。
+                4. category 优先使用 report_overclaim、citation_support_mismatch、unsupported_recommendation。
+                5. 如果能定位，请填写 citationKey、paragraphIndex、excerpt。
+                6. 仅当报告存在明确过度推断时输出 finding；不要替 Writer 重写全文。
+
+                报告关键片段:
+                %s
+
+                相关证据:
+                %s
+
+                结构化 Claims:
+                %s
+                """.formatted(
+                compactReportExcerpts(draft),
+                compactEvidenceBlock(run, draft),
+                compactClaimsBlock(run)
+        );
+        return completeReviewSubtask(prompt);
+    }
+
+    private LlmReviewResult reviewSchemaConsistencyWithLlm(AnalysisRun run) {
+        String prompt = """
+                你是竞品分析工作流中的 schema-consistency Reviewer。请检查竞品画像、claims、矩阵和 SWOT 是否互相矛盾。
+
+                输出要求:
+                1. 只输出可解析 JSON，不要 Markdown。
+                2. JSON 格式为 {"summary":"一句话总结","findings":[...]}。
+                3. findings 最多 5 项，每项包含 severity、category、message、recommendation。
+                4. category 优先使用 schema_consistency、matrix_claim_conflict、swot_claim_conflict。
+                5. 如果定位到结构化结论，请填写 claimId；如果定位到文本，请填写 excerpt。
+                6. 只指出会影响竞品分析可信度的问题。
+
+                竞品画像摘要:
                 %s
 
                 结构化 Claims:
                 %s
 
-                规则引擎摘要:
-                %s
-
-                报告关键片段:
+                矩阵与 SWOT:
                 %s
                 """.formatted(
-                compactEvidenceBlock(run, draft),
+                compactProfileBlock(run),
                 compactClaimsBlock(run),
-                compactRuleFindings(run),
-                compactReportExcerpts(draft)
+                compactAnalysisArtifacts(run)
         );
+        return completeReviewSubtask(prompt);
+    }
+
+    private LlmReviewResult reviewSourceQualityWithLlm(AnalysisRun run) {
+        String prompt = """
+                你是竞品分析工作流中的 source-quality Reviewer。请检查来源质量是否足以支撑最终报告。
+
+                输出要求:
+                1. 只输出可解析 JSON，不要 Markdown。
+                2. JSON 格式为 {"summary":"一句话总结","findings":[...]}。
+                3. findings 最多 5 项，每项包含 severity、category、message、recommendation。
+                4. category 优先使用 low_quality_source、snippet_only_source、blocked_source、fetch_failed_source。
+                5. 必须填写 citationKey；抓取失败或 snippet-only 影响关键结论时用 MEDIUM/HIGH。
+                6. 不要要求补充已经存在且质量足够的来源。
+
+                来源质量摘要:
+                %s
+
+                规则引擎摘要:
+                %s
+                """.formatted(
+                sourceQualityBlock(run),
+                compactRuleFindings(run)
+        );
+        return completeReviewSubtask(prompt);
+    }
+
+    private LlmReviewResult completeReviewSubtask(String prompt) {
         String raw = llmClient.complete(new ChatRequest(
                 List.of(
                         ChatMessage.system("你是严格的事实核查和引用覆盖 Reviewer Agent。"),
@@ -232,17 +359,34 @@ public class ReviewerNode implements AgentNode {
                 ),
                 ChatOptions.reviewer()
         ));
-        LlmReviewResult result = parseLlmReviewResult(raw);
-        int added = mergeLlmFindings(run, result.findings());
-        if (result.findings().isEmpty()) {
-            return "## LLM 语义质检\n\n模型未返回可结构化的问题。\n\n## 原始输出\n\n" + raw;
+        return parseLlmReviewResult(raw);
+    }
+
+    private LlmSubtaskResult runReviewSubtask(AnalysisRun run, String name, ReviewSubtask subtask) {
+        try {
+            return new LlmSubtaskResult(name, subtask.run(), null);
+        } catch (RuntimeException ex) {
+            log.warn("Reviewer LLM subtask failed: runId={}, name={}, exceptionType={}, message={}, evidenceSources={}, claims={}, findings={}",
+                    run.getId(),
+                    name,
+                    ex.getClass().getName(),
+                    ex.getMessage(),
+                    run.getEvidenceSources().size(),
+                    run.getClaims().size(),
+                    run.getReviewFindings().size());
+            return new LlmSubtaskResult(name, null, ex.getMessage());
         }
-        String summary = StringUtils.hasText(result.summary()) ? result.summary() : "LLM 已完成语义质检。";
-        return "## LLM 语义质检\n\n"
-                + summary
-                + "\n\n结构化新增问题：" + added
-                + "\n\n"
-                + fallbackReviewReportFactory.build(run);
+    }
+
+    private void recordParallelReviewerTrace(List<LlmSubtaskResult> results) {
+        String summary = results.stream()
+                .map(result -> "%s=%s%s".formatted(
+                        result.name(),
+                        result.succeeded() ? "succeeded" : "failed",
+                        result.succeeded() ? "" : " (" + result.errorMessage() + ")"
+                ))
+                .collect(Collectors.joining("\n"));
+        AgentTraceContext.recordModelResponse("Parallel Reviewer LLM subtasks:\n" + summary, null, null);
     }
 
     private LlmReviewResult parseLlmReviewResult(String raw) {
@@ -387,6 +531,96 @@ public class ReviewerNode implements AgentNode {
                 .collect(Collectors.joining("\n"));
     }
 
+    private String claimEvidencePairs(AnalysisRun run) {
+        if (run.getClaims().isEmpty()) {
+            return "暂无结构化 claim。";
+        }
+        return run.getClaims().stream()
+                .limit(8)
+                .map(claim -> """
+                        - claimId=%s type=%s confidence=%s competitors=%s
+                          content=%s
+                          evidence=%s
+                        """.formatted(
+                        claim.getId(),
+                        claim.getType(),
+                        claim.getConfidence(),
+                        claim.getCompetitorNames(),
+                        abbreviate(claim.getContent(), 180),
+                        evidenceSnippets(run, claim.getEvidenceIds())
+                ))
+                .collect(Collectors.joining("\n"));
+    }
+
+    private String evidenceSnippets(AnalysisRun run, List<String> evidenceIds) {
+        if (evidenceIds == null || evidenceIds.isEmpty()) {
+            return "未绑定证据";
+        }
+        return evidenceIds.stream()
+                .map(id -> run.getEvidenceSources().stream()
+                        .filter(source -> id.equals(source.getCitationKey()))
+                        .findFirst()
+                        .map(source -> "[%s] %s | status=%s | %s".formatted(
+                                source.getCitationKey(),
+                                abbreviate(source.getTitle(), 70),
+                                source.getCollectionStatus(),
+                                abbreviate(source.getSnippet(), 160)
+                        ))
+                        .orElse("[" + id + "] 未知来源"))
+                .collect(Collectors.joining("\n"));
+    }
+
+    private String compactProfileBlock(AnalysisRun run) {
+        if (run.getCompetitorProfiles().isEmpty()) {
+            return "暂无竞品画像。";
+        }
+        return run.getCompetitorProfiles().stream()
+                .limit(6)
+                .map(profile -> "- 产品=%s | 定位=%s | 目标用户=%s | 优势=%s | 弱势=%s | 定价=%s | 证据=%s".formatted(
+                        profile.getProductName(),
+                        abbreviate(profile.getPositioning(), 80),
+                        abbreviate(String.join("、", profile.getTargetUsers()), 80),
+                        abbreviate(String.join("、", profile.getStrengths()), 90),
+                        abbreviate(String.join("、", profile.getWeaknesses()), 90),
+                        profile.getPricingModel() == null ? "暂无" : abbreviate(profile.getPricingModel().getStrategySummary(), 90),
+                        profile.getEvidenceIds()
+                ))
+                .collect(Collectors.joining("\n"));
+    }
+
+    private String compactAnalysisArtifacts(AnalysisRun run) {
+        AnalysisArtifact matrix = latestArtifact(run, ArtifactType.COMPETITIVE_MATRIX);
+        AnalysisArtifact swot = latestArtifact(run, ArtifactType.SWOT_ANALYSIS);
+        return """
+                竞品矩阵:
+                %s
+
+                SWOT:
+                %s
+                """.formatted(
+                matrix == null ? "暂无矩阵 artifact。" : abbreviate(matrix.getContent(), 1200),
+                swot == null ? "暂无 SWOT artifact。" : abbreviate(swot.getContent(), 1200)
+        );
+    }
+
+    private String sourceQualityBlock(AnalysisRun run) {
+        if (run.getEvidenceSources().isEmpty()) {
+            return "暂无证据来源。";
+        }
+        return run.getEvidenceSources().stream()
+                .limit(16)
+                .map(source -> "[%s] title=%s | type=%s | status=%s | freshness=%s | note=%s | snippet=%s".formatted(
+                        source.getCitationKey(),
+                        abbreviate(source.getTitle(), 70),
+                        source.getSourceType(),
+                        source.getCollectionStatus(),
+                        source.getFreshness(),
+                        abbreviate(source.getComplianceNote(), 100),
+                        abbreviate(source.getSnippet(), 140)
+                ))
+                .collect(Collectors.joining("\n"));
+    }
+
     private String compactRuleFindings(AnalysisRun run) {
         if (run.getReviewFindings().isEmpty()) {
             return "规则引擎未发现问题。";
@@ -498,6 +732,16 @@ public class ReviewerNode implements AgentNode {
     }
 
     private record LlmReviewResult(String summary, List<LlmFindingDraft> findings) {
+    }
+
+    private interface ReviewSubtask {
+        LlmReviewResult run();
+    }
+
+    private record LlmSubtaskResult(String name, LlmReviewResult result, String errorMessage) {
+        boolean succeeded() {
+            return result != null && errorMessage == null;
+        }
     }
 
     private static class LlmFindingDraft {

@@ -31,6 +31,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
@@ -93,11 +94,44 @@ public class AnalystNode implements AgentNode {
 
     private AnalysisDraft analysisDraftWithLlm(AnalysisRun run) {
         AnalysisDraft fallback = fallbackAnalysisDraftFactory.build(run);
-        // LLM 分析以 fallback 草稿为“保底答案”和格式参考：模型可以补充更贴近业务的
-        // claims / matrix / SWOT，但任何不可解析输出都会回落到 deterministic 分析。
+        CompletableFuture<LlmSubtaskResult<List<AnalysisClaim>>> claimsTask = CompletableFuture.supplyAsync(
+                () -> runAnalystSubtask(run, "claims", () -> generateClaimsWithLlm(run))
+        );
+        CompletableFuture<LlmSubtaskResult<String>> matrixTask = CompletableFuture.supplyAsync(
+                () -> runAnalystSubtask(run, "competitive-matrix", () -> generateMatrixWithLlm(run))
+        );
+        CompletableFuture<LlmSubtaskResult<String>> swotTask = CompletableFuture.supplyAsync(
+                () -> runAnalystSubtask(run, "swot", () -> generateSwotWithLlm(run))
+        );
+        CompletableFuture.allOf(claimsTask, matrixTask, swotTask).join();
+
+        LlmSubtaskResult<List<AnalysisClaim>> claimsResult = claimsTask.join();
+        LlmSubtaskResult<String> matrixResult = matrixTask.join();
+        LlmSubtaskResult<String> swotResult = swotTask.join();
+        List<LlmSubtaskResult<?>> results = List.of(claimsResult, matrixResult, swotResult);
+        recordParallelAnalystTrace(results);
+        results.stream()
+                .filter(result -> !result.succeeded())
+                .forEach(result -> run.getRecommendedActions().add(
+                        "LLM 分析子任务失败，已对该字段使用规则兜底：" + result.name() + " - " + result.errorMessage()));
+        if (results.stream().noneMatch(LlmSubtaskResult::succeeded)) {
+            String reasons = results.stream()
+                    .map(result -> result.name() + ": " + result.errorMessage())
+                    .collect(Collectors.joining("；"));
+            run.getRecommendedActions().add("LLM 分析生成失败，已使用规则分析兜底：" + reasons);
+            return null;
+        }
+        return new AnalysisDraft(
+                claimsResult.succeeded() && !claimsResult.value().isEmpty() ? claimsResult.value() : fallback.claims(),
+                matrixResult.succeeded() && hasText(matrixResult.value()) ? matrixResult.value() : fallback.matrixMarkdown(),
+                swotResult.succeeded() && hasText(swotResult.value()) ? swotResult.value() : fallback.swotMarkdown()
+        );
+    }
+
+    private List<AnalysisClaim> generateClaimsWithLlm(AnalysisRun run) {
         String prompt = """
                 你是竞品分析工作流中的分析 Agent。请只生成结构化 claims，不要生成矩阵或 SWOT。
-                后端会根据 claims 和规则模板生成矩阵/SWOT，你只负责提炼可追溯结论。
+                矩阵和 SWOT 会由另外两个并行 LLM 子任务生成；你只负责提炼可追溯结论。
 
                 输出约束：
                 1. 只输出 JSON，不要 Markdown 代码块。
@@ -135,34 +169,118 @@ public class AnalystNode implements AgentNode {
                 compactProfileBlock(run),
                 compactEvidenceBlock(run)
         );
+        String raw = llmClient.complete(new ChatRequest(
+                List.of(
+                        ChatMessage.system("你是严谨的竞品分析 Agent。你必须输出可解析 JSON，并让每条结论都能追溯到证据或明确标注待验证。"),
+                        ChatMessage.user(prompt)
+                ),
+                ChatOptions.analyst()
+        ));
+        AnalysisDraft parsed = parseAnalysisDraft(raw, run);
+        if (parsed == null || parsed.claims().isEmpty()) {
+            throw new IllegalStateException("无法解析 claims JSON");
+        }
+        return parsed.claims();
+    }
+
+    private String generateMatrixWithLlm(AnalysisRun run) {
+        String prompt = """
+                你是竞品分析工作流中的矩阵分析 Agent。请单独生成竞品横向矩阵 Markdown。
+                输出必须是 JSON 对象，不要 Markdown 代码块，不要解释。
+
+                JSON 结构：
+                {"matrixMarkdown":"## 竞品横向矩阵\\n\\n| 竞品 | ... | 证据 |\\n| --- | --- | --- |\\n..."}
+
+                约束：
+                1. 必须是 Markdown 表格，覆盖所有竞品。
+                2. 列必须贴合用户关注维度，至少包含竞品、核心定位、关键能力、短板/风险、证据。
+                3. 证据列只能使用已知 citation，如 [S1]；证据不足写“证据不足，待验证”。
+                4. 不要编造价格、客户、市场份额或证据外事实。
+
+                分析需求：
+                %s
+
+                结构化竞品画像：
+                %s
+
+                证据片段：
+                %s
+                """.formatted(
+                requirementSummary(run),
+                compactProfileBlock(run),
+                compactEvidenceBlock(run)
+        );
+        String raw = llmClient.complete(new ChatRequest(
+                List.of(
+                        ChatMessage.system("你是严谨的竞品矩阵分析 Agent。只输出可解析 JSON。"),
+                        ChatMessage.user(prompt)
+                ),
+                ChatOptions.analyst()
+        ));
+        return parseMarkdownField(raw, "matrixMarkdown");
+    }
+
+    private String generateSwotWithLlm(AnalysisRun run) {
+        String prompt = """
+                你是竞品分析工作流中的 SWOT 分析 Agent。请单独生成 SWOT Markdown。
+                输出必须是 JSON 对象，不要 Markdown 代码块，不要解释。
+
+                JSON 结构：
+                {"swotMarkdown":"| 维度 | 结论 | 证据 |\\n| --- | --- | --- |\\n..."}
+
+                约束：
+                1. 必须包含 Strengths、Weaknesses、Opportunities、Threats 四行。
+                2. 每行结论不超过 120 字，并绑定证据 citation；证据不足写“证据不足，待验证”。
+                3. 机会和威胁必须面向用户输出目标，不要泛泛而谈。
+                4. 不要编造价格、客户、市场份额或证据外事实。
+
+                分析需求：
+                %s
+
+                结构化竞品画像：
+                %s
+
+                证据片段：
+                %s
+                """.formatted(
+                requirementSummary(run),
+                compactProfileBlock(run),
+                compactEvidenceBlock(run)
+        );
+        String raw = llmClient.complete(new ChatRequest(
+                List.of(
+                        ChatMessage.system("你是严谨的 SWOT 分析 Agent。只输出可解析 JSON。"),
+                        ChatMessage.user(prompt)
+                ),
+                ChatOptions.analyst()
+        ));
+        return parseMarkdownField(raw, "swotMarkdown");
+    }
+
+    private <T> LlmSubtaskResult<T> runAnalystSubtask(AnalysisRun run, String name, LlmSubtask<T> subtask) {
         try {
-            String raw = llmClient.complete(new ChatRequest(
-                    List.of(
-                            ChatMessage.system("你是严谨的竞品分析 Agent。你必须输出可解析 JSON，并让每条结论都能追溯到证据或明确标注待验证。"),
-                            ChatMessage.user(prompt)
-                    ),
-                    ChatOptions.analyst()
-            ));
-            AnalysisDraft parsed = parseAnalysisDraft(raw, run);
-            if (parsed == null || parsed.claims().isEmpty()) {
-                return null;
-            }
-            return new AnalysisDraft(
-                    parsed.claims(),
-                    hasText(parsed.matrixMarkdown()) ? parsed.matrixMarkdown() : fallback.matrixMarkdown(),
-                    hasText(parsed.swotMarkdown()) ? parsed.swotMarkdown() : fallback.swotMarkdown()
-            );
-        } catch (RuntimeException ex) {
-            log.warn("Analyst LLM analysis failed: runId={}, exceptionType={}, message={}, competitors={}, evidenceSources={}, profiles={}",
-                    run.getId(),
+            return new LlmSubtaskResult<>(name, subtask.run(), null);
+        } catch (Exception ex) {
+            log.warn("Analyst LLM subtask failed: name={}, exceptionType={}, message={}, competitors={}, evidenceSources={}, profiles={}",
+                    name,
                     ex.getClass().getName(),
                     ex.getMessage(),
                     run.getRequirement().getCompetitors(),
                     run.getEvidenceSources().size(),
                     run.getCompetitorProfiles().size());
-            run.getRecommendedActions().add("LLM 分析生成失败，已使用规则分析兜底：" + ex.getMessage());
-            return null;
+            return new LlmSubtaskResult<>(name, null, ex.getMessage());
         }
+    }
+
+    private void recordParallelAnalystTrace(List<LlmSubtaskResult<?>> results) {
+        String summary = results.stream()
+                .map(result -> "%s=%s%s".formatted(
+                        result.name(),
+                        result.succeeded() ? "succeeded" : "failed",
+                        result.succeeded() ? "" : " (" + result.errorMessage() + ")"
+                ))
+                .collect(Collectors.joining("\n"));
+        AgentTraceContext.recordModelResponse("Parallel Analyst LLM subtasks:\n" + summary, null, null);
     }
 
     private AnalysisDraft parseAnalysisDraft(String raw, AnalysisRun run) {
@@ -183,6 +301,22 @@ public class AnalystNode implements AgentNode {
             return new AnalysisDraft(claims, matrix, swot);
         } catch (IllegalArgumentException | JsonProcessingException ex) {
             return null;
+        }
+    }
+
+    private String parseMarkdownField(String raw, String fieldName) {
+        if (!hasText(raw)) {
+            throw new IllegalStateException("模型输出为空");
+        }
+        try {
+            JsonNode root = objectMapper.readTree(extractJson(raw));
+            String markdown = root.has(fieldName) ? root.get(fieldName).asText() : "";
+            if (!hasText(markdown)) {
+                throw new IllegalStateException("模型输出缺少字段：" + fieldName);
+            }
+            return markdown;
+        } catch (JsonProcessingException ex) {
+            throw new IllegalStateException("无法解析 " + fieldName + " JSON", ex);
         }
     }
 
@@ -531,5 +665,25 @@ public class AnalystNode implements AgentNode {
     }
 
     private record ChunkScore(com.aiinsight.model.run.EvidenceChunk chunk, double score) {
+    }
+
+    private interface LlmSubtask<T> {
+        T run() throws Exception;
+    }
+
+    private record LlmSubtaskResult<T>(String name, T value, String errorMessage) {
+        boolean succeeded() {
+            if (value instanceof List<?> list) {
+                return !list.isEmpty() && errorMessage == null;
+            }
+            if (value instanceof String text) {
+                return hasStaticText(text) && errorMessage == null;
+            }
+            return value != null && errorMessage == null;
+        }
+
+        private static boolean hasStaticText(String text) {
+            return text != null && !text.isBlank();
+        }
     }
 }

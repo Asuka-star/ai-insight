@@ -292,12 +292,7 @@ h3 {
   font-size: 12px;
 }
 
-.task-panel {
-  display: grid;
-  gap: 10px;
-}
-
-.task-panel label,
+.scope-panel label,
 .scope-grid label,
 .evidence-input-panel label {
   display: grid;

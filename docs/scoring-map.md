@@ -18,7 +18,7 @@
 
 实现位置：
 
-- `ClarifierNode`：澄清范围。
+- 范围确认：澄清结构化分析范围，不进入主分析 DAG。
 - `ResearcherNode`：采集证据。
 - `ExtractorNode`：抽取竞品 Schema。
 - `AnalystNode`：生成矩阵、Claim 和 SWOT。
@@ -144,8 +144,8 @@ Trace 字段：
 
 产品机制：
 
-- 创建任务草稿。
-- Clarifier 生成结构化范围。
+- 填写范围确认。
+- 范围确认阶段生成结构化范围。
 - 用户确认或修改后再启动。
 - 上下文补充不是普通聊天，而是带 intent 的任务变更。
 

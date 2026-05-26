@@ -80,19 +80,19 @@ https://www.atlassian.com/software/confluence/pricing
 
 ## 3. 演示步骤
 
-### 3.1 创建任务草稿
+### 3.1 填写范围确认
 
 操作：
 
 1. 在左侧“分析需求”输入推荐 prompt。
 2. 勾选官网、价格页、产品文档、更新日志、公开评价。
 3. 在“公开来源 URL”输入真实公开页面。
-4. 点击“创建任务草稿”。
+4. 点击“填写范围确认”。
 
 讲解要点：
 
-- 创建任务不会马上跑完整报告，而是先进入任务草稿。
-- Clarifier 负责把自然语言需求转成结构化分析工单。
+- 填写范围确认不会马上跑完整报告，而是先进入待确认状态。
+- 范围确认阶段负责把自然语言需求转成结构化分析工单，并生成待确认范围。
 - 这一步体现系统不是纯聊天，而是任务型 Agent 工作流。
 
 观察点：
@@ -151,7 +151,7 @@ https://www.atlassian.com/software/confluence/pricing
 讲解要点：
 
 - 后端使用 LangGraph4j 编排 DAG。
-- 节点顺序为 Clarifier、Researcher、Extractor、Analyst、Writer、Reviewer、Revision。
+- 主流程节点顺序为 Researcher、Extractor、Analyst、Writer、Reviewer、Revision。
 - Reviewer 后面有条件边 `REVIEW_GATE`，可按 `ReviewDecision` 打回 Researcher、Analyst 或 Writer。
 
 观察点：

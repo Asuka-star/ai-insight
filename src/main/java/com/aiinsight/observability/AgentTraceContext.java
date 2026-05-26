@@ -62,6 +62,8 @@ public final class AgentTraceContext {
         current().ifPresent(trace -> {
             boolean llmAttempted = trace.getPrompt() != null && !trace.getPrompt().isBlank()
                     && trace.getPromptTokens() != null && trace.getPromptTokens() > 0;
+            boolean hasRawModelOutput = trace.getRawModelOutput() != null && !trace.getRawModelOutput().isBlank();
+            boolean hasCompletionTokens = trace.getCompletionTokens() != null && trace.getCompletionTokens() > 0;
             trace.setModelName(modelName);
             trace.setFallbackUsed(true);
             if (trace.getPrompt() == null || trace.getPrompt().isBlank()) {
@@ -78,10 +80,16 @@ public final class AgentTraceContext {
                     llmAttempted,
                     trace.getPromptTokens(),
                     output == null ? 0 : output.length());
-            trace.setRawModelOutput(output);
-            trace.setOutputSnapshot(summarize(output));
-            trace.setCompletionTokens(estimateTokens(output));
-            trace.setTotalTokens(trace.getPromptTokens() + trace.getCompletionTokens());
+            if (!hasRawModelOutput) {
+                trace.setRawModelOutput(output);
+            }
+            trace.setOutputSnapshot("Fallback output: " + summarize(output));
+            if (!hasCompletionTokens) {
+                trace.setCompletionTokens(estimateTokens(output));
+            }
+            if (trace.getPromptTokens() != null && trace.getCompletionTokens() != null) {
+                trace.setTotalTokens(trace.getPromptTokens() + trace.getCompletionTokens());
+            }
         });
     }
 

@@ -18,7 +18,7 @@ AI Insight 是面向字节跳动 AI 全栈挑战赛 AI-3 课题的后端原型�
 
 ```text
 用户输入竞品分析需求
--> Clarifier 确认分析范围
+-> 填写范围确认并启动分析流程
 -> Researcher 采集证据
 -> Extractor 抽取竞品知识 Schema
 -> Analyst 生成横向对比和分析结论

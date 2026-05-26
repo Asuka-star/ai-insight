@@ -1,6 +1,5 @@
 export type AnalysisStatus =
   | "DRAFT"
-  | "CLARIFYING"
   | "AWAITING_CONFIRMATION"
   | "PENDING"
   | "RUNNING"

@@ -22,13 +22,16 @@ export function latestStepByAgent(run?: AnalysisRun): Map<AgentName, AgentStep[]
 }
 
 export function isActiveRun(run?: AnalysisRun | null): boolean {
-  return run?.status === "PENDING" || run?.status === "RUNNING" || run?.status === "CLARIFYING" || run?.status === "REVIEWING" || run?.status === "REVISING";
+  return run?.status === "PENDING" || run?.status === "RUNNING" || run?.status === "REVIEWING" || run?.status === "REVISING";
 }
 
 export function resolveRunPhase(run?: AnalysisRun | null): AnalysisStatus | string {
   if (!run) return "EMPTY";
   if (run.phase) return run.phase;
-  if (run.status === "PENDING" && (run.clarificationDraft || !run.steps?.length)) {
+  if (
+    run.status === "AWAITING_CONFIRMATION"
+    || (run.status === "PENDING" && run.clarificationDraft && !run.clarificationDraft.confirmed)
+  ) {
     return "AWAITING_CONFIRMATION";
   }
   return run.status;
@@ -38,7 +41,6 @@ export function displayRunPhase(status?: string): string {
   const labels: Record<string, string> = {
     EMPTY: "未创建",
     DRAFT: "草稿",
-    CLARIFYING: "澄清中",
     AWAITING_CONFIRMATION: "待确认",
     PENDING: "待执行",
     RUNNING: "运行中",

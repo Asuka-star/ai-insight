@@ -1,27 +1,28 @@
 package com.aiinsight.agent.node;
 
 import com.aiinsight.agent.AgentNode;
-import com.aiinsight.llm.ChatMessage;
-import com.aiinsight.llm.ChatOptions;
-import com.aiinsight.llm.ChatRequest;
-import com.aiinsight.llm.LlmClient;
 import com.aiinsight.model.enums.AgentName;
 import com.aiinsight.model.enums.ArtifactType;
 import com.aiinsight.model.run.AnalysisArtifact;
+import com.aiinsight.model.run.AnalysisRequirement;
 import com.aiinsight.model.run.AnalysisRun;
+import com.aiinsight.model.run.ClarificationDraft;
 import com.aiinsight.observability.AgentTraceContext;
+import com.aiinsight.service.ClarificationDraftService;
 import lombok.RequiredArgsConstructor;
-import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
+import org.springframework.util.StringUtils;
 
+import java.time.Instant;
+import java.util.ArrayList;
 import java.util.List;
+import java.util.stream.Collectors;
 
 @Component
 @RequiredArgsConstructor
-@Slf4j
 public class ClarifierNode implements AgentNode {
 
-    private final LlmClient llmClient;
+    private final ClarificationDraftService clarificationDraftService;
 
     @Override
     public AgentName name() {
@@ -30,87 +31,112 @@ public class ClarifierNode implements AgentNode {
 
     @Override
     public String title() {
-        return "澄清分析范围";
+        return "澄清任务范围";
     }
 
     @Override
     public AnalysisRun execute(AnalysisRun run) {
-        String content;
-        if (llmClient.isAvailable()) {
-            try {
-                content = clarifyWithLlm(run);
-            } catch (RuntimeException ex) {
-                log.warn("Clarifier fallback activated: runId={}, reason=llm_exception, exceptionType={}, message={}, competitors={}, dimensions={}",
-                        run.getId(),
-                        ex.getClass().getName(),
-                        ex.getMessage(),
-                        run.getRequirement().getCompetitors(),
-                        run.getRequirement().getDimensions());
-                content = fallbackClarification(run);
-                AgentTraceContext.recordFallback("deterministic-clarifier-fallback", content);
-            }
-        } else {
-            log.warn("Clarifier fallback activated: runId={}, reason=llm_unavailable, competitors={}, dimensions={}",
-                    run.getId(),
-                    run.getRequirement().getCompetitors(),
-                    run.getRequirement().getDimensions());
-            content = fallbackClarification(run);
-            AgentTraceContext.recordFallback("deterministic-clarifier-fallback", content);
+        ClarificationDraft previous = run.getClarificationDraft();
+        var result = clarificationDraftService.clarifyScope(run.getRequirement());
+        ClarificationDraft draft = result.draft();
+        preserveConfirmationState(draft, previous);
+        run.setClarificationDraft(draft);
+        applyDraftToRequirement(run.getRequirement(), draft);
+
+        String brief = clarificationBriefMarkdown(run.getRequirement(), draft);
+        if (result.fallbackUsed()) {
+            AgentTraceContext.recordFallback("deterministic-clarifier-fallback", brief);
         }
-        run.addArtifact(new AnalysisArtifact(ArtifactType.CLARIFICATION_BRIEF, "分析范围确认", content, List.of()));
-        run.getRecommendedActions().add("确认竞品、分析维度和信息源范围，必要时补充排除项。");
+        if (StringUtils.hasText(result.fallbackReason())) {
+            run.getRecommendedActions().add(result.fallbackReason());
+        }
+        run.addArtifact(new AnalysisArtifact(
+                ArtifactType.CLARIFICATION_BRIEF,
+                "任务理解与范围摘要",
+                brief,
+                List.of()
+        ));
         return run;
     }
 
-    private String clarifyWithLlm(AnalysisRun run) {
-        String prompt = """
-                你是竞品分析工作流中的澄清 Agent。请基于用户原始需求和系统归一化后的结构化需求，输出一份简洁的中文 Markdown 范围确认说明。
-                输出约束：
-                1. 除产品名、专有名词、枚举值、URL 和 [S1] 这类引用编号外，全部使用中文。
-                2. 必须包含：已确认行业、竞品范围、分析维度、信息源偏好、仍需确认的问题。
-                3. 不要扩写成报告正文，只做任务范围澄清。
-                4. 如果字段为空或不确定，请写“待确认”。
-
-                用户原始需求：
-                %s
-
-                结构化需求：
-                行业=%s
-                竞品=%s
-                分析维度=%s
-                信息源偏好=%s
-                报告用途=%s
-                """.formatted(
-                run.getRequirement().getOriginalPrompt(),
-                run.getRequirement().getIndustry(),
-                run.getRequirement().getCompetitors(),
-                run.getRequirement().getDimensions(),
-                run.getRequirement().getSourcePreferences(),
-                run.getRequirement().getOutputGoal()
-        );
-        return llmClient.complete(new ChatRequest(
-                List.of(
-                        ChatMessage.system("你负责澄清竞品分析任务范围，必须保留结构化范围约束，并使用中文输出。"),
-                        ChatMessage.user(prompt)
-                ),
-                ChatOptions.clarifier()
-        ));
+    private void preserveConfirmationState(ClarificationDraft draft, ClarificationDraft previous) {
+        if (previous == null) {
+            return;
+        }
+        draft.setConfirmed(previous.isConfirmed());
+        draft.setConfirmedAt(previous.getConfirmedAt());
+        draft.setCreatedAt(previous.getCreatedAt() == null ? Instant.now() : previous.getCreatedAt());
     }
 
-    private String fallbackClarification(AnalysisRun run) {
-        var requirement = run.getRequirement();
-        return """
-                ## 分析范围
+    private void applyDraftToRequirement(AnalysisRequirement requirement, ClarificationDraft draft) {
+        if (requirement == null || draft == null) {
+            return;
+        }
+        if (StringUtils.hasText(draft.getIndustry())) {
+            requirement.setIndustry(draft.getIndustry());
+        }
+        if (!draft.getCompetitors().isEmpty()) {
+            requirement.setCompetitors(new ArrayList<>(draft.getCompetitors()));
+        }
+        if (!draft.getDimensions().isEmpty()) {
+            requirement.setDimensions(new ArrayList<>(draft.getDimensions()));
+        }
+        if (!draft.getSourcePreferences().isEmpty()) {
+            requirement.setSourcePreferences(new ArrayList<>(draft.getSourcePreferences()));
+        }
+        if (!draft.getSourceUrls().isEmpty()) {
+            requirement.setSourceUrls(new ArrayList<>(draft.getSourceUrls()));
+        }
+        if (StringUtils.hasText(draft.getOutputGoal())) {
+            requirement.setOutputGoal(draft.getOutputGoal());
+        }
+    }
 
-                行业: %s
-                竞品: %s
-                维度: %s
-                信息源偏好: %s
+    private String clarificationBriefMarkdown(AnalysisRequirement requirement, ClarificationDraft draft) {
+        return """
+                ## 任务范围
+
+                - 行业/场景：%s
+                - 竞品：%s
+                - 分析维度：%s
+                - 资料偏好：%s
+                - 报告用途：%s
+
+                ## 待确认问题
+
+                %s
+
+                ## 执行说明
+
+                Clarifier 已将确认后的范围同步为结构化任务输入；下游 Agent 只能围绕该范围采集证据、抽取 Schema、生成分析和报告。
                 """.formatted(
-                requirement.getIndustry(),
-                String.join(", ", requirement.getCompetitors()),
-                String.join(", ", requirement.getDimensions()),
-                String.join(", ", requirement.getSourcePreferences())
+                textOrFallback(draft.getIndustry(), requirement == null ? null : requirement.getIndustry(), "待澄清"),
+                listText(draft.getCompetitors()),
+                listText(draft.getDimensions()),
+                listText(draft.getSourcePreferences()),
+                textOrFallback(draft.getOutputGoal(), requirement == null ? null : requirement.getOutputGoal(), "待确认"),
+                draft.getClarificationQuestions().isEmpty()
+                        ? "- 暂无新增确认问题。"
+                        : draft.getClarificationQuestions().stream()
+                        .map(question -> "- " + question)
+                        .collect(Collectors.joining("\n"))
         );
+    }
+
+    private String listText(List<String> values) {
+        if (values == null || values.isEmpty()) {
+            return "待确认";
+        }
+        return String.join("、", values);
+    }
+
+    private String textOrFallback(String preferred, String fallback, String defaultValue) {
+        if (StringUtils.hasText(preferred)) {
+            return preferred;
+        }
+        if (StringUtils.hasText(fallback)) {
+            return fallback;
+        }
+        return defaultValue;
     }
 }

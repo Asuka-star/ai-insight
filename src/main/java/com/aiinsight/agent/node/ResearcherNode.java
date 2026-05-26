@@ -30,6 +30,7 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+import java.util.concurrent.CompletableFuture;
 import java.util.stream.Collectors;
 
 @Component
@@ -171,9 +172,41 @@ public class ResearcherNode implements AgentNode {
     }
 
     private ResearchPlan generateResearchPlanWithLlm(AnalysisRun run, ResearchPlan fallback) {
+        CompletableFuture<LlmSubtaskResult<ResearchPlan>> strategyTask = CompletableFuture.supplyAsync(
+                () -> runResearchPlanSubtask("research-strategy", () -> generateResearchStrategyWithLlm(run))
+        );
+        CompletableFuture<LlmSubtaskResult<Questionnaire>> questionnaireTask = CompletableFuture.supplyAsync(
+                () -> runResearchPlanSubtask("questionnaire", () -> generateQuestionnaireWithLlm(run))
+        );
+        CompletableFuture<LlmSubtaskResult<InterviewGuide>> interviewTask = CompletableFuture.supplyAsync(
+                () -> runResearchPlanSubtask("interview-guide", () -> generateInterviewGuideWithLlm(run))
+        );
+        CompletableFuture.allOf(strategyTask, questionnaireTask, interviewTask).join();
+
+        LlmSubtaskResult<ResearchPlan> strategyResult = strategyTask.join();
+        LlmSubtaskResult<Questionnaire> questionnaireResult = questionnaireTask.join();
+        LlmSubtaskResult<InterviewGuide> interviewResult = interviewTask.join();
+
+        ResearchPlan plan = strategyResult.value() == null ? new ResearchPlan() : strategyResult.value();
+        plan.setQuestionnaire(questionnaireResult.value());
+        plan.setInterviewGuide(interviewResult.value());
+
+        List<LlmSubtaskResult<?>> results = List.of(strategyResult, questionnaireResult, interviewResult);
+        recordParallelResearchTrace(results);
+        results.stream()
+                .filter(result -> !result.succeeded())
+                .forEach(result -> run.getRecommendedActions().add(
+                        "LLM 调研子任务失败，已对该字段使用规则兜底：" + result.name() + " - " + result.errorMessage()));
+        if (results.stream().noneMatch(LlmSubtaskResult::succeeded)) {
+            throw new IllegalStateException("调研计划 LLM 子任务全部失败");
+        }
+        return plan;
+    }
+
+    private ResearchPlan generateResearchStrategyWithLlm(AnalysisRun run) {
         String prompt = """
                 你是竞品分析工作流中的信息采集 Agent。请只生成“采集策略增量”，不要输出完整问卷或访谈提纲。
-                后端已有规则模板会补全问卷和访谈细节；你只需要让采集方向更贴近本次课题。
+                问卷和访谈会由另外两个并行 LLM 子任务生成；你只负责公开资料和采集策略。
 
                 输出必须是一个 JSON 对象，不要 Markdown，不要解释。字段如下：
                 {
@@ -216,6 +249,116 @@ public class ResearcherNode implements AgentNode {
                 ChatOptions.researcher()
         ));
         return parseResearchPlanJson(response);
+    }
+
+    private Questionnaire generateQuestionnaireWithLlm(AnalysisRun run) throws Exception {
+        String prompt = """
+                你是竞品分析工作流中的用户调研 Agent。请为本次竞品分析单独生成问卷草案。
+                输出必须是 JSON 对象，不要 Markdown，不要解释。
+
+                JSON 结构：
+                {
+                  "title": "问卷标题",
+                  "targetRespondents": "目标答题人",
+                  "recommendedSampleSize": "建议样本量",
+                  "questions": [
+                    {"dimension": "维度", "question": "题目", "options": ["选项1", "选项2"]}
+                  ]
+                }
+
+                约束：
+                1. questions 生成 5-7 题，每题必须服务竞品比较。
+                2. 至少覆盖使用场景、核心维度、满意度、购买顾虑、替换意愿。
+                3. options 每题 3-6 个，避免开放题过多。
+                4. 不要编造调研结果，只设计问题。
+
+                用户课题：%s
+                行业：%s
+                竞品：%s
+                分析维度：%s
+                证据缺口：%s
+                """.formatted(
+                run.getRequirement().getOriginalPrompt(),
+                researchDomain(run),
+                String.join("、", run.getRequirement().getCompetitors()),
+                String.join("、", run.getRequirement().getDimensions()),
+                String.join("、", run.getResearchPackage().getMissingEvidenceTypes())
+        );
+        String response = llmClient.complete(new ChatRequest(
+                List.of(
+                        ChatMessage.system("你是严谨的用户调研问卷设计 Agent。只输出可解析 JSON。"),
+                        ChatMessage.user(prompt)
+                ),
+                ChatOptions.researcher()
+        ));
+        return readNestedOrRoot(response, "questionnaire", Questionnaire.class);
+    }
+
+    private InterviewGuide generateInterviewGuideWithLlm(AnalysisRun run) throws Exception {
+        String prompt = """
+                你是竞品分析工作流中的访谈研究 Agent。请为本次竞品分析单独生成访谈提纲。
+                输出必须是 JSON 对象，不要 Markdown，不要解释。
+
+                JSON 结构：
+                {
+                  "title": "访谈提纲标题",
+                  "targetRoles": ["目标角色"],
+                  "questions": ["主问题"],
+                  "probingQuestions": ["追问问题"]
+                }
+
+                约束：
+                1. questions 生成 6-8 个，围绕真实使用、决策、痛点、竞品差异和替换阻力。
+                2. probingQuestions 生成 3-5 个，用于追问证据、频率、影响和付费意愿。
+                3. 不要编造访谈结论，只设计访谈问题。
+
+                用户课题：%s
+                行业：%s
+                竞品：%s
+                分析维度：%s
+                证据缺口：%s
+                """.formatted(
+                run.getRequirement().getOriginalPrompt(),
+                researchDomain(run),
+                String.join("、", run.getRequirement().getCompetitors()),
+                String.join("、", run.getRequirement().getDimensions()),
+                String.join("、", run.getResearchPackage().getMissingEvidenceTypes())
+        );
+        String response = llmClient.complete(new ChatRequest(
+                List.of(
+                        ChatMessage.system("你是严谨的用户访谈研究 Agent。只输出可解析 JSON。"),
+                        ChatMessage.user(prompt)
+                ),
+                ChatOptions.researcher()
+        ));
+        return readNestedOrRoot(response, "interviewGuide", InterviewGuide.class);
+    }
+
+    private <T> T readNestedOrRoot(String response, String fieldName, Class<T> type) throws Exception {
+        var root = objectMapper.readTree(extractJsonObject(response));
+        var target = root.has(fieldName) ? root.get(fieldName) : root;
+        return objectMapper.treeToValue(target, type);
+    }
+
+    private <T> LlmSubtaskResult<T> runResearchPlanSubtask(String name, LlmSubtask<T> subtask) {
+        try {
+            return new LlmSubtaskResult<>(name, subtask.run(), null);
+        } catch (Exception ex) {
+            log.warn("Researcher LLM subtask failed: name={}, exceptionType={}, message={}",
+                    name, ex.getClass().getName(), ex.getMessage());
+            return new LlmSubtaskResult<>(name, null, ex.getMessage());
+        }
+    }
+
+    private void recordParallelResearchTrace(List<LlmSubtaskResult<?>> results) {
+        String summary = results.stream()
+                .map(result -> "%s=%s%s".formatted(
+                        result.name(),
+                        result.succeeded() ? "succeeded" : "failed",
+                        result.succeeded() ? "" : " (" + result.errorMessage() + ")"
+                ))
+                .collect(Collectors.joining("\n"));
+        AgentTraceContext.recordModelResponse("Parallel Researcher LLM subtasks:\n" + summary, null, null);
     }
 
     private String compactEvidenceSources(AnalysisRun run, int limit) {
@@ -401,5 +544,15 @@ public class ResearcherNode implements AgentNode {
                 interviewQuestions,
                 interviewInsights.isEmpty() ? "暂无已结构化访谈洞察。" : insights
         );
+    }
+
+    private interface LlmSubtask<T> {
+        T run() throws Exception;
+    }
+
+    private record LlmSubtaskResult<T>(String name, T value, String errorMessage) {
+        boolean succeeded() {
+            return value != null && errorMessage == null;
+        }
     }
 }

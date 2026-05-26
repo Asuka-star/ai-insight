@@ -14,7 +14,6 @@ import com.aiinsight.model.run.AgentTrace;
 import com.aiinsight.model.run.AnalysisContextMessage;
 import com.aiinsight.model.run.AnalysisRequirement;
 import com.aiinsight.model.run.AnalysisRun;
-import com.aiinsight.model.run.ClarificationDraft;
 import com.aiinsight.model.run.EvidenceChunk;
 import com.aiinsight.model.run.EvidenceSource;
 import com.aiinsight.model.run.UserProvidedEvidence;
@@ -41,6 +40,7 @@ public class AnalysisWorkflowService {
     private final EvidenceRetrievalService evidenceRetrievalService;
     private final SourceCollectionService sourceCollectionService;
     private final EvidenceChunkService evidenceChunkService;
+    private final ClarificationDraftService clarificationDraftService;
 
     public AnalysisWorkflowService(AnalysisRunRepository repository,
                                    AnalysisRequestNormalizer normalizer,
@@ -49,7 +49,8 @@ public class AnalysisWorkflowService {
                                    AnalysisLangGraphWorkflow graphWorkflow,
                                    EvidenceRetrievalService evidenceRetrievalService,
                                    SourceCollectionService sourceCollectionService,
-                                   EvidenceChunkService evidenceChunkService) {
+                                   EvidenceChunkService evidenceChunkService,
+                                   ClarificationDraftService clarificationDraftService) {
         this.repository = repository;
         this.normalizer = normalizer;
         this.eventBroker = eventBroker;
@@ -58,21 +59,24 @@ public class AnalysisWorkflowService {
         this.evidenceRetrievalService = evidenceRetrievalService;
         this.sourceCollectionService = sourceCollectionService;
         this.evidenceChunkService = evidenceChunkService;
+        this.clarificationDraftService = clarificationDraftService;
     }
 
     public AnalysisRun createDraft(CreateAnalysisRunRequest request) {
         AnalysisRun run = new AnalysisRun(normalizer.normalize(request));
-        // 创建阶段只生成可编辑草稿，不立即跑 Agent；前端会先让用户确认范围，避免“一句话任务”直接进入长流程。
+        // 创建阶段只生成可编辑的范围确认内容，不立即跑 Agent；前端会先让用户确认范围，避免“一句话任务”直接进入长流程。
         run.setStatus(AnalysisStatus.AWAITING_CONFIRMATION);
-        run.setClarificationDraft(buildClarificationDraft(run.getRequirement()));
+        refreshClarificationDraft(run);
         repository.save(run);
-        eventBroker.publish(run, "run_created", "分析任务已创建");
-        eventBroker.publish(run, "clarification_ready", "澄清草稿已生成");
+        eventBroker.publish(run, "run_created", "范围确认内容已生成");
+        eventBroker.publish(run, "clarification_ready", "待确认范围已准备好");
         return run;
     }
 
     public AnalysisRun start(CreateAnalysisRunRequest request) {
         AnalysisRun run = createDraft(request);
+        confirmDraft(run);
+        repository.save(run);
         return startExecution(run.getId());
     }
 
@@ -106,10 +110,8 @@ public class AnalysisWorkflowService {
         }
         applyRequirementUpdate(requirement, request);
 
-        ClarificationDraft draft = buildClarificationDraft(requirement);
-        draft.setConfirmed(true);
-        draft.setConfirmedAt(Instant.now());
-        run.setClarificationDraft(draft);
+        refreshClarificationDraft(run);
+        confirmDraft(run);
         run.setStatus(AnalysisStatus.PENDING);
 
         repository.save(run);
@@ -120,12 +122,7 @@ public class AnalysisWorkflowService {
     public AnalysisRun startExecution(UUID runId) {
         AnalysisRun run = get(runId);
         ensureStartable(run);
-        // 启动时允许把未显式确认的澄清草稿补记为已确认，兼容“一键开始”与“先确认再开始”两种入口。
-        if (run.getClarificationDraft() != null && !run.getClarificationDraft().isConfirmed()) {
-            run.getClarificationDraft().setConfirmed(true);
-            run.getClarificationDraft().setConfirmedAt(Instant.now());
-        }
-        run.setStatus(AnalysisStatus.PENDING);
+        run.setStatus(AnalysisStatus.RUNNING);
         repository.save(run);
         eventBroker.publish(run, "run_start_requested", "分析工作流已请求启动");
         // LangGraph 执行可能包含外部采集和 LLM 调用，放到异步线程后接口可以立即返回当前 run 状态。
@@ -236,6 +233,18 @@ public class AnalysisWorkflowService {
         if (run.getStatus() == AnalysisStatus.SUCCEEDED || run.getStatus() == AnalysisStatus.CANCELLED) {
             throw new InvalidRunStateException(run.getId(), "workflow cannot be started from " + run.getStatus());
         }
+        if (run.getClarificationDraft() != null && !run.getClarificationDraft().isConfirmed()) {
+            throw new InvalidRunStateException(run.getId(), "analysis scope must be confirmed before workflow starts");
+        }
+    }
+
+    private void confirmDraft(AnalysisRun run) {
+        if (run.getClarificationDraft() == null) {
+            return;
+        }
+        run.getClarificationDraft().setConfirmed(true);
+        run.getClarificationDraft().setConfirmedAt(Instant.now());
+        run.setStatus(AnalysisStatus.PENDING);
     }
 
     private void ensureContextAcceptable(AnalysisRun run) {
@@ -257,24 +266,12 @@ public class AnalysisWorkflowService {
                 || status == AnalysisStatus.CANCELLED;
     }
 
-    private ClarificationDraft buildClarificationDraft(AnalysisRequirement requirement) {
-        ClarificationDraft draft = new ClarificationDraft(requirement);
-        draft.getClarificationQuestions().addAll(clarificationQuestions(requirement));
-        return draft;
-    }
-
-    private List<String> clarificationQuestions(AnalysisRequirement requirement) {
-        List<String> questions = new ArrayList<>();
-        if (requirement.getCompetitors().size() < 3) {
-            questions.add("是否需要加入 Confluence、Airtable 等标杆产品作为对照？");
+    private void refreshClarificationDraft(AnalysisRun run) {
+        var result = clarificationDraftService.createDraft(run.getRequirement());
+        run.setClarificationDraft(result.draft());
+        if (StringUtils.hasText(result.fallbackReason())) {
+            run.getRecommendedActions().add(result.fallbackReason());
         }
-        if (requirement.getSourceUrls().isEmpty()) {
-            questions.add("是否有官网、价格页、产品文档、公开评价或访谈记录可以作为资料来源？");
-        }
-        if (!StringUtils.hasText(requirement.getOutputGoal())) {
-            questions.add("这份报告主要用于支持什么决策：产品评审、规划立项，还是向上汇报？");
-        }
-        return questions;
     }
 
     private void applyRequirementUpdate(AnalysisRequirement requirement, UpdateAnalysisRequirementRequest request) {
@@ -302,7 +299,7 @@ public class AnalysisWorkflowService {
         if (message.getIntent() == ContextIntent.ADJUST_SCOPE) {
             // 范围调整会退回确认态，防止旧范围下的产物继续被当成最终结论使用。
             applyScopeHints(run.getRequirement(), message.getContent());
-            run.setClarificationDraft(buildClarificationDraft(run.getRequirement()));
+            refreshClarificationDraft(run);
             run.getRecommendedActions().add("请先复核更新后的分析范围，再重新启动工作流。");
             run.setStatus(AnalysisStatus.AWAITING_CONFIRMATION);
         } else if (message.getIntent() == ContextIntent.ADD_EVIDENCE) {

@@ -33,7 +33,7 @@ AI Insight 是一个面向内部产品、业务、战略和运营分析团队的
 纯表单虽然清晰，但不够体现 AI Agent 的能力：
 
 - 用户补充上下文不自然。
-- Clarifier Agent 的价值不明显。
+- 范围确认如果做成主流程 Agent，价值不明显。
 - 质检打回和人工介入体验弱。
 - 更像自动报表系统，而不是 Agent 协作系统。
 
@@ -42,8 +42,8 @@ AI Insight 是一个面向内部产品、业务、战略和运营分析团队的
 用户围绕一个 `AnalysisRun` 持续操作：
 
 ```text
-创建分析任务草稿
-→ Clarifier 解析并生成结构化分析范围
+填写范围确认
+→ 范围确认阶段解析并生成结构化分析范围
 → 用户确认或修改范围
 → 开始多 Agent 分析
 → 采集 / 抽取 / 分析 / 撰写 / 质检
@@ -73,7 +73,7 @@ AI Insight 是一个面向内部产品、业务、战略和运营分析团队的
 
 ### 3.2 澄清范围
 
-Clarifier Agent 不应该直接让全流程跑到底，而是先生成一个结构化任务草稿。
+范围确认不应该直接让全流程跑到底，而是先生成一个结构化范围工单。
 
 示例：
 
@@ -99,7 +99,7 @@ Clarifier Agent 不应该直接让全流程跑到底，而是先生成一个结�
 
 推荐 Agent：
 
-- `CLARIFIER`：澄清需求，生成结构化任务范围。
+- 范围确认：生成结构化任务范围。
 - `RESEARCHER`：采集公开资料、价格页、文档、更新日志、用户评价、问卷/访谈摘要。
 - `EXTRACTOR`：抽取竞品知识 Schema，包括功能树、定价模型、用户画像。
 - `ANALYST`：生成横向对比、SWOT、机会点、风险和结构化 Claim。
@@ -139,7 +139,7 @@ Clarifier Agent 不应该直接让全流程跑到底，而是先生成一个结�
 
 ## 4. 后端开发目标
 
-后端会话的目标是把当前“一次性 start 并跑完整 pipeline”的模式，升级为“任务草稿 + 用户确认 + 多 Agent 执行 + 上下文补充 + 反馈闭环”。
+后端会话的目标是把当前“一次性 start 并跑完整 pipeline”的模式，升级为“范围确认 + 用户确认 + 多 Agent 执行 + 上下文补充 + 反馈闭环”。
 
 ### 4.1 后端职责
 
@@ -160,7 +160,6 @@ Clarifier Agent 不应该直接让全流程跑到底，而是先生成一个结�
 
 ```text
 DRAFT
-CLARIFYING
 AWAITING_CONFIRMATION
 RUNNING
 REVIEWING
@@ -198,7 +197,7 @@ public class AnalysisContextMessage {
 
 #### ClarificationDraft
 
-记录 Clarifier 解析出的任务草稿。
+记录范围确认阶段解析出的任务范围。
 
 ```java
 public class ClarificationDraft {
@@ -245,7 +244,7 @@ public class WorkflowTransition {
 
 ### 4.4 API 契约建议
 
-#### 创建任务草稿
+#### 填写范围确认
 
 ```http
 POST /api/analysis-runs
@@ -266,7 +265,7 @@ POST /api/analysis-runs
 建议行为：
 
 - 创建 `AnalysisRun`。
-- 执行或调用 Clarifier，生成 `ClarificationDraft`。
+- 生成 `ClarificationDraft`。
 - 状态进入 `AWAITING_CONFIRMATION`。
 - 不立即执行完整 Agent 流程。
 
@@ -411,7 +410,7 @@ run_failed
 #### P0：任务确认流
 
 - 创建 run 后先进入 `AWAITING_CONFIRMATION`。
-- Clarifier 生成结构化范围。
+- 范围确认阶段生成结构化范围。
 - 新增更新 requirement API。
 - 新增 start API。
 
@@ -434,14 +433,14 @@ run_failed
 
 ## 5. 前端开发目标
 
-前端会话的目标是把当前工作台升级为支持“任务草稿确认 + 上下文补充 + 多 Agent 过程查看”的产品体验。
+前端会话的目标是把当前工作台升级为支持“范围确认 + 上下文补充 + 多 Agent 过程查看”的产品体验。
 
 ### 5.1 前端职责
 
 前端负责：
 
 - 创建分析任务。
-- 展示 Clarifier 解析出的结构化范围。
+- 展示范围确认阶段解析出的结构化范围。
 - 允许用户修改并确认分析范围。
 - 启动多 Agent 分析。
 - 展示 DAG、时间线、报告、证据、质检和 Trace。
@@ -614,7 +613,6 @@ workflowTransitions
 前后端统一使用：
 
 ```text
-CLARIFIER
 RESEARCHER
 EXTRACTOR
 ANALYST
@@ -668,7 +666,7 @@ ASK_USER
 前端会话启动提示：
 
 ```text
-请阅读 docs/parallel-development-plan.md，负责前端部分开发。目标是适配任务草稿确认、开始分析和上下文补充 UI。不要改后端。
+请阅读 docs/parallel-development-plan.md，负责前端部分开发。目标是适配范围确认、开始分析和上下文补充 UI。不要改后端。
 ```
 
 ## 8. 验收标准
@@ -715,14 +713,14 @@ ASK_USER
 后端：
 
 1. 增加 `ClarificationDraft`。
-2. `POST /api/analysis-runs` 改为创建草稿并澄清范围。
+2. `POST /api/analysis-runs` 改为生成范围确认内容。
 3. 增加 `PUT /api/analysis-runs/{runId}/requirement`。
 4. 增加 `POST /api/analysis-runs/{runId}/start`。
 
 前端：
 
 1. 增加“范围确认”区域。
-2. 创建任务后展示 Clarifier 结果，而不是默认等待最终报告。
+2. 创建任务后展示范围确认结果，而不是默认等待最终报告。
 3. 用户确认后再调用 start。
 4. 增加 ContextPanel 的静态 UI，等待后端 API 对接。
 

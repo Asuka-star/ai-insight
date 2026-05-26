@@ -68,7 +68,7 @@ Spring Boot API
 `AnalysisRun` 是核心聚合，包含：
 
 - `AnalysisRequirement`：原始需求和结构化范围。
-- `ClarificationDraft`：待确认任务草稿。
+- `ClarificationDraft`：待确认的结构化范围。
 - `AgentStep`：Agent 执行时间线。
 - `AgentTrace`：Prompt、输入、输出、模型、token、耗时和异常。
 - `EvidenceSource`：可引用来源。
@@ -101,23 +101,27 @@ Agent 直接读取并更新 `AnalysisRun`：
 - 关键中间结果写入结构化字段。
 - 用户可在前端查看每个产物和 Trace。
 
-### 5.1 CLARIFIER
+### 5.1 前置范围确认
 
 职责：
 
-- 澄清分析范围。
-- 生成范围确认 artifact。
+- 填写范围确认时生成 `ClarificationDraft`。
 - 推荐用户确认竞品、维度和来源。
+- 在主分析 DAG 启动前完成人机范围确认。
 
 输入：
 
 - `AnalysisRequirement`
-- `ClarificationDraft`
 
 输出：
 
-- `CLARIFICATION_BRIEF` artifact。
-- `recommendedActions`。
+- `ClarificationDraft`
+- `recommendedActions`
+
+说明：
+
+- 这不是主分析 DAG 节点。
+- 主流程启动后第一个 Agent 是 `RESEARCHER`。
 
 ### 5.2 RESEARCHER
 
@@ -219,7 +223,6 @@ Agent 直接读取并更新 `AnalysisRun`：
 
 ```text
 START
--> CLARIFIER
 -> RESEARCHER
 -> EXTRACTOR
 -> ANALYST

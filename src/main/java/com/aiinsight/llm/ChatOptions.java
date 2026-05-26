@@ -19,7 +19,7 @@ public class ChatOptions {
     }
 
     public static ChatOptions clarifier() {
-        return new ChatOptions(0.2, 1200);
+        return new ChatOptions(0.2, 700);
     }
 
     public static ChatOptions researcher() {

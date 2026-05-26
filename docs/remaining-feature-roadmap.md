@@ -4,7 +4,7 @@
 
 本文记录 AI Insight 在当前代码基础上，为满足课题要求、MVP 演示和高分验收仍需要补齐的功能。
 
-当前项目已经具备任务草稿、范围确认、LangGraph4j DAG、Reviewer 条件打回、结构化 Schema、SSE 进度、Trace 数据、前端工作台和单 Agent 重跑等核心能力。后续重点不再是“从零搭链路”，而是把演示可信度、可观测细节、真实资料采集、结构化展示和答辩材料做扎实。
+当前项目已经具备范围确认、LangGraph4j DAG、Reviewer 条件打回、结构化 Schema、SSE 进度、Trace 数据、前端工作台和单 Agent 重跑等核心能力。后续重点不再是“从零搭链路”，而是把演示可信度、可观测细节、真实资料采集、结构化展示和答辩材料做扎实。
 
 信息采集 Agent 的专项差距和后续优化计划见 `docs/research-agent-roadmap.md`。
 
@@ -12,7 +12,7 @@
 
 ### 2.1 后端链路
 
-- `POST /api/analysis-runs` 创建分析任务草稿。
+- `POST /api/analysis-runs` 生成范围确认内容。
 - `PUT /api/analysis-runs/{runId}/requirement` 确认或修改分析范围。
 - `POST /api/analysis-runs/{runId}/start` 启动 Agent DAG。
 - `POST /api/analysis-runs/{runId}/context` 记录上下文补充。
@@ -25,7 +25,7 @@
 
 ### 2.2 多 Agent 与结构化产物
 
-- `CLARIFIER`：澄清分析范围，生成确认说明和 `ClarificationDraft`。
+- 范围确认：生成 `ClarificationDraft`，用户确认后再进入主 Agent DAG。
 - `RESEARCHER`：采集资料，生成 `ResearchPackage`、`EvidenceSource` 和 `EvidenceChunk`。
 - `EXTRACTOR`：抽取 `CompetitorProfile`、`FeatureTree`、`PricingModel`、`UserPersona`。
 - `ANALYST`：生成竞品矩阵和结构化 `AnalysisClaim`。

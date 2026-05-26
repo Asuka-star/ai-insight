@@ -87,10 +87,57 @@ class AnalysisWorkflowServiceTest {
         assertThat(withContext.getRequirement().getDimensions()).contains("权限协作", "AI 搜索", "价格策略", "用户评价");
         assertThat(withContext.getRequirement().getSourcePreferences()).contains("pricing_page", "public_reviews");
 
+        assertThatThrownBy(() -> service.startExecution(draft.getId()))
+                .isInstanceOf(InvalidRunStateException.class)
+                .hasMessageContaining("scope must be confirmed");
+
+        UpdateAnalysisRequirementRequest reconfirm = new UpdateAnalysisRequirementRequest();
+        reconfirm.setCompetitors(withContext.getRequirement().getCompetitors());
+        reconfirm.setDimensions(withContext.getRequirement().getDimensions());
+        reconfirm.setSourcePreferences(withContext.getRequirement().getSourcePreferences());
+        reconfirm.setOutputGoal(withContext.getRequirement().getOutputGoal());
+        service.updateRequirement(draft.getId(), reconfirm);
         var finished = service.startExecution(draft.getId());
 
         assertThat(finished.getStatus()).isEqualTo(AnalysisStatus.SUCCEEDED);
         assertThat(finished.getSteps()).isNotEmpty();
+    }
+
+    @Test
+    void blocksStartBeforeScopeConfirmation() {
+        AnalysisWorkflowService service = newService();
+        CreateAnalysisRunRequest request = new CreateAnalysisRunRequest();
+        request.setPrompt("Analyze Notion and Confluence for AI document collaboration.");
+        var run = service.createDraft(request);
+
+        assertThat(run.getStatus()).isEqualTo(AnalysisStatus.AWAITING_CONFIRMATION);
+        assertThat(run.getClarificationDraft().isConfirmed()).isFalse();
+        assertThatThrownBy(() -> service.startExecution(run.getId()))
+                .isInstanceOf(InvalidRunStateException.class)
+                .hasMessageContaining("scope must be confirmed");
+        assertThat(service.get(run.getId()).getSteps()).isEmpty();
+    }
+
+    @Test
+    void blocksDuplicateStartWhileAsyncPipelineHasNotRunYet() {
+        AnalysisWorkflowService service = newService(new TaskExecutorAdapter(command -> {
+        }));
+        CreateAnalysisRunRequest request = new CreateAnalysisRunRequest();
+        request.setPrompt("Analyze Notion and Confluence for AI document collaboration.");
+        var run = service.createDraft(request);
+
+        UpdateAnalysisRequirementRequest update = new UpdateAnalysisRequirementRequest();
+        update.setCompetitors(List.of("Notion", "Confluence"));
+        update.setDimensions(List.of("AI 搜索", "权限协作"));
+        service.updateRequirement(run.getId(), update);
+
+        var started = service.startExecution(run.getId());
+
+        assertThat(started.getStatus()).isEqualTo(AnalysisStatus.RUNNING);
+        assertThatThrownBy(() -> service.startExecution(run.getId()))
+                .isInstanceOf(InvalidRunStateException.class)
+                .hasMessageContaining("workflow is already running");
+        assertThat(service.get(run.getId()).getSteps()).isEmpty();
     }
 
     @Test
@@ -180,7 +227,11 @@ class AnalysisWorkflowServiceTest {
         var finished = service.get(run.getId());
 
         assertThat(finished.getStatus()).isEqualTo(AnalysisStatus.SUCCEEDED);
-        assertThat(finished.getSteps()).hasSizeGreaterThanOrEqualTo(7);
+        assertThat(finished.getSteps()).hasSizeGreaterThanOrEqualTo(6);
+        assertThat(finished.getSteps().get(0).getAgentName()).isEqualTo(AgentName.CLARIFIER);
+        assertThat(finished.getArtifacts())
+                .filteredOn(artifact -> artifact.getType() == ArtifactType.CLARIFICATION_BRIEF)
+                .isNotEmpty();
         assertThat(finished.getTraces()).hasSize(finished.getSteps().size());
         assertThat(finished.getTraces()).allSatisfy(trace -> {
             assertThat(trace.getStepId()).isNotNull();
@@ -827,6 +878,10 @@ class AnalysisWorkflowServiceTest {
         evidenceRequest.setContent("受访者是销售运营管理员。最近在 Salesforce 做线索管理和客户跟进，觉得权限配置复杂，学习成本高，也担心价格和 HubSpot 集成成本。她认可销售预测提效，但不满意审批流程慢。");
 
         service.addEvidence(run.getId(), evidenceRequest);
+        UpdateAnalysisRequirementRequest update = new UpdateAnalysisRequirementRequest();
+        update.setCompetitors(request.getCompetitors());
+        update.setDimensions(request.getDimensions());
+        service.updateRequirement(run.getId(), update);
         var finished = service.startExecution(run.getId());
 
         assertThat(finished.getResearchPackage().getInterviewInsights()).hasSize(1);
@@ -1033,6 +1088,111 @@ class AnalysisWorkflowServiceTest {
     }
 
     @Test
+    void reviewerRunsParallelSemanticChecksAndRoutesHighRiskClaimIssues() {
+        StringBuffer promptCapture = new StringBuffer();
+        LlmClient reviewerLlm = new LlmClient() {
+            @Override
+            public boolean isAvailable() {
+                return true;
+            }
+
+            @Override
+            public String complete(com.aiinsight.llm.ChatRequest request) {
+                String prompt = request.getMessages().get(1).getContent();
+                promptCapture.append(prompt).append("\n---\n");
+                if (prompt.contains("claim-evidence Reviewer")) {
+                    return """
+                            {
+                              "summary": "发现 claim 与证据语义不一致。",
+                              "findings": [
+                                {
+                                  "severity": "HIGH",
+                                  "category": "claim_evidence_mismatch",
+                                  "message": "claim 讨论权限优势，但证据只覆盖价格信息。",
+                                  "recommendation": "重新绑定权限证据，或将该结论降级为待验证。",
+                                  "claimId": "C-SEM-1",
+                                  "citationKey": "S1",
+                                  "excerpt": "Notion 在权限治理上形成明显优势"
+                                }
+                              ]
+                            }
+                            """;
+                }
+                if (prompt.contains("source-quality Reviewer")) {
+                    return """
+                            {
+                              "summary": "发现一个抓取失败来源需要人工复核。",
+                              "findings": [
+                                {
+                                  "severity": "MEDIUM",
+                                  "category": "fetch_failed_source",
+                                  "message": "S2 抓取失败，不能直接支撑最终结论。",
+                                  "recommendation": "补充可访问原文或替代公开来源。",
+                                  "citationKey": "S2"
+                                }
+                              ]
+                            }
+                            """;
+                }
+                return "{\"summary\":\"未发现额外问题\",\"findings\":[]}";
+            }
+        };
+        AnalysisRun run = new AnalysisRun();
+        run.getEvidenceSources().add(new EvidenceSource(
+                "S1",
+                "Pricing page",
+                "https://example.test/pricing",
+                "pricing_page",
+                "FETCHED",
+                "LIVE_FETCHED",
+                "价格策略和套餐比较信息。",
+                "价格策略和套餐比较信息。",
+                "test evidence"
+        ));
+        run.getEvidenceSources().add(new EvidenceSource(
+                "S2",
+                "Security whitepaper",
+                "https://example.test/security",
+                "security",
+                "FETCH_FAILED",
+                "FETCH_FAILED",
+                "无法抓取安全白皮书正文。",
+                "",
+                "fetch failed"
+        ));
+        AnalysisClaim claim = new AnalysisClaim();
+        claim.setId("C-SEM-1");
+        claim.setType(ClaimType.COMPARISON);
+        claim.setContent("Notion 在权限治理上形成明显优势。");
+        claim.setEvidenceIds(List.of("S1"));
+        run.getClaims().add(claim);
+        run.addArtifact(new AnalysisArtifact(
+                ArtifactType.REPORT_DRAFT,
+                "draft",
+                "Notion 在权限治理上形成明显优势 [S1]。",
+                List.of("S1")
+        ));
+
+        new ReviewerNode(new CitationCoverageEvaluator(), reviewerLlm, new FallbackReviewReportFactory()).execute(run);
+
+        assertThat(promptCapture.toString())
+                .contains("claim-evidence Reviewer", "report-overclaim Reviewer", "schema-consistency Reviewer", "source-quality Reviewer");
+        assertThat(run.getReviewFindings())
+                .anySatisfy(finding -> {
+                    assertThat(finding.getCategory()).isEqualTo("claim_evidence_mismatch");
+                    assertThat(finding.getClaimId()).isEqualTo("C-SEM-1");
+                    assertThat(finding.getCitationKey()).isEqualTo("S1");
+                })
+                .anySatisfy(finding -> assertThat(finding.getCategory()).isEqualTo("fetch_failed_source"));
+        assertThat(run.getReviewDecision().getAction()).isEqualTo(ReviewAction.REWORK_ANALYSIS);
+        assertThat(run.getReviewDecision().getTargetAgent()).isEqualTo(AgentName.ANALYST);
+        assertThat(run.getArtifacts())
+                .filteredOn(artifact -> artifact.getType() == ArtifactType.REVIEW_FINDINGS)
+                .last()
+                .satisfies(artifact -> assertThat(artifact.getContent()).contains("LLM 并发语义质检", "结构化新增问题：2"));
+    }
+
+    @Test
     void revisionSummarizesReviewerDecisionAndFindingsInFinalReport() {
         AnalysisRun run = new AnalysisRun();
         run.addArtifact(new AnalysisArtifact(
@@ -1084,6 +1244,10 @@ class AnalysisWorkflowServiceTest {
     }
 
     private AnalysisWorkflowService newService() {
+        return newService(new TaskExecutorAdapter(Runnable::run));
+    }
+
+    private AnalysisWorkflowService newService(TaskExecutorAdapter taskExecutor) {
         LlmClient noopLlmClient = new LlmClient() {
             @Override
             public boolean isAvailable() {
@@ -1099,30 +1263,33 @@ class AnalysisWorkflowServiceTest {
         AnalysisEventBroker eventBroker = new AnalysisEventBroker();
         WorkflowNodeExecutor nodeExecutor = new WorkflowNodeExecutor(repository, eventBroker);
         SourceCollectionService sourceCollectionService = new SourceCollectionService(fetchAlwaysFails(), fakeSearchProvider());
+        ClarificationDraftService clarificationDraftService = new ClarificationDraftService(noopLlmClient, new ObjectMapper());
         AnalysisLangGraphWorkflow graphWorkflow = new AnalysisLangGraphWorkflow(
                 List.of(
+                        new ClarifierNode(clarificationDraftService),
                         new RevisionNode(),
                         new WriterNode(noopLlmClient, new FallbackReportDraftFactory()),
                         new ReviewerNode(new CitationCoverageEvaluator(), noopLlmClient, new FallbackReviewReportFactory()),
                         new AnalystNode(noopLlmClient, new ObjectMapper(), new FallbackAnalysisDraftFactory()),
                         new ExtractorNode(noopLlmClient, new FallbackExtractionFactory()),
-                        researcherNode(sourceCollectionService, noopLlmClient),
-                        new ClarifierNode(noopLlmClient)
+                        researcherNode(sourceCollectionService, noopLlmClient)
                 ),
                 nodeExecutor,
                 repository,
                 eventBroker
         );
-        assertThat(graphWorkflow.mermaid()).contains("REVIEW_GATE");
+        assertThat(graphWorkflow.mermaid())
+                .contains("REVIEW_GATE", AgentName.CLARIFIER.name(), AgentName.RESEARCHER.name());
         return new AnalysisWorkflowService(
                 repository,
                 new AnalysisRequestNormalizer(),
                 eventBroker,
-                new TaskExecutorAdapter(Runnable::run),
+                taskExecutor,
                 graphWorkflow,
                 new EvidenceRetrievalService(),
                 sourceCollectionService,
-                new EvidenceChunkService()
+                new EvidenceChunkService(),
+                clarificationDraftService
         );
     }
 
