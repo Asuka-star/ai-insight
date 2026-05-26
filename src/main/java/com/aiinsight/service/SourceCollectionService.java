@@ -133,6 +133,7 @@ public class SourceCollectionService {
 
     private void appendSearchEvidence(AnalysisRun run, List<EvidenceSource> sources, int index, boolean recollecting) {
         // 搜索 query 由任务范围、竞品、维度和返工状态共同决定；
+        // 默认优先官方/权威来源，来源偏好只决定重点覆盖类型，不降低来源质量要求。
         // recollecting=true 时会更主动补价格页和用户评价，响应 Reviewer 的证据缺口。
         List<String> queries = searchQueryPlanner.plan(run, recollecting);
         if (queries.isEmpty()) {

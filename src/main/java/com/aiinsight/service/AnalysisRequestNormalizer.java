@@ -20,7 +20,7 @@ public class AnalysisRequestNormalizer {
     );
 
     private static final List<String> DEFAULT_SOURCES = List.of(
-            "official_site", "pricing_page", "product_docs", "release_notes", "public_reviews"
+            "official_site", "pricing_page", "product_docs", "release_notes", "technical_blog", "authoritative_media", "public_reviews"
     );
     private static final Pattern URL_PATTERN = Pattern.compile("https?://[^\\s，。；,;]+");
 

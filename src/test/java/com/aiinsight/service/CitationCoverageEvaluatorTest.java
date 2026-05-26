@@ -127,6 +127,39 @@ class CitationCoverageEvaluatorTest {
                 });
     }
 
+    @Test
+    void flagsMarketingOnlySourceAsWeakSupport() {
+        AnalysisRun run = new AnalysisRun();
+        run.getEvidenceSources().add(new EvidenceSource(
+                "S3",
+                "Sponsored partner content",
+                "https://example.test/sponsored/cursor",
+                "public_web",
+                "FETCHED",
+                "LIVE_FETCHED",
+                "价格策略和套餐比较信息。",
+                "价格策略和套餐比较信息。",
+                "promoted content"
+        ));
+        run.getEvidenceChunks().add(new EvidenceChunk(
+                "S3-C1",
+                "S3",
+                1,
+                "Sponsored partner content",
+                "https://example.test/sponsored/cursor",
+                "价格策略 套餐 比较"
+        ));
+
+        var findings = evaluator.evaluate("机会点是优化价格策略和套餐比较 [S3]。", run);
+
+        assertThat(findings)
+                .anySatisfy(finding -> {
+                    assertThat(finding.getSeverity()).isEqualTo(ReviewSeverity.LOW);
+                    assertThat(finding.getCategory()).isEqualTo("citation_marketing_only_source");
+                    assertThat(finding.getCitationKey()).isEqualTo("S3");
+                });
+    }
+
     private AnalysisRun runWithEvidence() {
         AnalysisRun run = new AnalysisRun();
         run.getEvidenceSources().add(new EvidenceSource(

@@ -48,5 +48,7 @@ export const SOURCE_OPTIONS = [
   { label: "价格页", value: "pricing_page" },
   { label: "产品文档", value: "product_docs" },
   { label: "更新日志", value: "release_notes" },
+  { label: "技术博客", value: "technical_blog" },
+  { label: "权威报道", value: "authoritative_media" },
   { label: "公开评价", value: "public_reviews" }
 ];

@@ -221,9 +221,11 @@ public class ResearcherNode implements AgentNode {
                 约束：
                 1. 不要输出 questionnaire、interviewGuide 或任何长题目列表。
                 2. searchQueries 必须贴合竞品、行业和分析维度。
-                3. publicSourceTasks 最多 6 项，优先补价格页、官方文档、用户评价、一手调研。
-                4. 不要编造已经发生的调研结果，只设计采集动作。
-                5. 输出要短，确保 JSON 完整闭合。
+                3. 默认优先官网、官方文档、更新日志、定价页、官方技术博客、权威媒体或行业报告。
+                4. 来源偏好只表示本次重点覆盖的来源类型，不代表可以降低来源权威性。
+                5. publicSourceTasks 最多 6 项，关键结论不要只依赖营销软文、SEO 聚合页或二手摘要。
+                6. 不要编造已经发生的调研结果，只设计采集动作。
+                7. 输出要短，确保 JSON 完整闭合。
 
                 用户课题：%s
                 行业：%s

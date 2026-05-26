@@ -292,8 +292,7 @@ export function App() {
       setRun(nextRun);
       setEventMessage("分析范围已确认");
     } catch (error) {
-      setLocalScopeConfirmed(true);
-      setEventMessage(error instanceof Error ? `后端暂未支持范围确认：${error.message}` : "后端暂未支持范围确认");
+      setEventMessage(error instanceof Error ? `范围确认失败：${error.message}` : "范围确认失败");
     } finally {
       setIsScopeBusy(false);
     }
@@ -309,11 +308,7 @@ export function App() {
       setMainView("dag");
     } catch (error) {
       const phase = resolveRunPhase(run);
-      if (run.status === "RUNNING" || run.status === "SUCCEEDED") {
-        setEventMessage(`当前后端仍使用创建即执行模式，任务已处于 ${run.status}`);
-      } else {
-        setEventMessage(error instanceof Error ? `后端暂未支持 start 接口：${error.message}` : "后端暂未支持 start 接口");
-      }
+      setEventMessage(error instanceof Error ? `启动 Agent 分析失败：${error.message}` : "启动 Agent 分析失败");
       if (phase === "AWAITING_CONFIRMATION") {
         refreshRun(run.id).catch(() => undefined);
       }
@@ -346,7 +341,7 @@ export function App() {
       setLocalContextMessages([]);
       setEventMessage("上下文已写入任务");
     } catch (error) {
-      setEventMessage(error instanceof Error ? `后端暂未支持上下文接口，已在前端暂存：${error.message}` : "上下文已在前端暂存");
+      setEventMessage(error instanceof Error ? `上下文提交失败，已在前端暂存：${error.message}` : "上下文提交失败，已在前端暂存");
     }
   }
 

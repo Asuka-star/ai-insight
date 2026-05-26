@@ -292,6 +292,14 @@ public class CitationCoverageEvaluator {
                     "请补采原始页面正文，或在报告中标注该结论需要人工复核。"
             );
         }
+        if (likelyMarketingOnlySource(source)) {
+            return new SourceQualityRisk(
+                    ReviewSeverity.LOW,
+                    "citation_marketing_only_source",
+                    "来源带有明显营销、推广或赞助内容特征，不能单独支撑关键结论。",
+                    "请优先补充官网文档、定价页、更新日志、技术博客、权威媒体或行业报告作为支撑。"
+            );
+        }
         if (!StringUtils.hasText(source.getRawText()) && StringUtils.hasText(source.getSnippet())) {
             return new SourceQualityRisk(
                     ReviewSeverity.LOW,
@@ -303,8 +311,39 @@ public class CitationCoverageEvaluator {
         return null;
     }
 
+    private boolean likelyMarketingOnlySource(EvidenceSource source) {
+        String searchable = String.join(" ",
+                nullToEmpty(source.getTitle()),
+                nullToEmpty(source.getUrl()),
+                nullToEmpty(source.getSourceType()),
+                nullToEmpty(source.getSnippet()),
+                nullToEmpty(source.getComplianceNote())
+        ).toLowerCase(Locale.ROOT);
+        return containsAny(searchable,
+                "sponsored",
+                "advertorial",
+                "paid post",
+                "promoted content",
+                "partner content",
+                "软文",
+                "推广",
+                "赞助",
+                "商业推广",
+                "内容合作"
+        );
+    }
+
     private String normalize(String text) {
         return text == null ? "" : text.trim();
+    }
+
+    private boolean containsAny(String text, String... patterns) {
+        for (String pattern : patterns) {
+            if (text.contains(pattern.toLowerCase(Locale.ROOT))) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private String nullToEmpty(String text) {

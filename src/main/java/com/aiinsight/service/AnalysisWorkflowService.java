@@ -14,6 +14,7 @@ import com.aiinsight.model.run.AgentTrace;
 import com.aiinsight.model.run.AnalysisContextMessage;
 import com.aiinsight.model.run.AnalysisRequirement;
 import com.aiinsight.model.run.AnalysisRun;
+import com.aiinsight.model.run.ClarificationDraft;
 import com.aiinsight.model.run.EvidenceChunk;
 import com.aiinsight.model.run.EvidenceSource;
 import com.aiinsight.model.run.UserProvidedEvidence;
@@ -40,17 +41,15 @@ public class AnalysisWorkflowService {
     private final EvidenceRetrievalService evidenceRetrievalService;
     private final SourceCollectionService sourceCollectionService;
     private final EvidenceChunkService evidenceChunkService;
-    private final ClarificationDraftService clarificationDraftService;
 
     public AnalysisWorkflowService(AnalysisRunRepository repository,
-                                   AnalysisRequestNormalizer normalizer,
-                                   AnalysisEventBroker eventBroker,
-                                   AsyncTaskExecutor analysisTaskExecutor,
-                                   AnalysisLangGraphWorkflow graphWorkflow,
-                                   EvidenceRetrievalService evidenceRetrievalService,
-                                   SourceCollectionService sourceCollectionService,
-                                   EvidenceChunkService evidenceChunkService,
-                                   ClarificationDraftService clarificationDraftService) {
+            AnalysisRequestNormalizer normalizer,
+            AnalysisEventBroker eventBroker,
+            AsyncTaskExecutor analysisTaskExecutor,
+            AnalysisLangGraphWorkflow graphWorkflow,
+            EvidenceRetrievalService evidenceRetrievalService,
+            SourceCollectionService sourceCollectionService,
+            EvidenceChunkService evidenceChunkService) {
         this.repository = repository;
         this.normalizer = normalizer;
         this.eventBroker = eventBroker;
@@ -59,24 +58,21 @@ public class AnalysisWorkflowService {
         this.evidenceRetrievalService = evidenceRetrievalService;
         this.sourceCollectionService = sourceCollectionService;
         this.evidenceChunkService = evidenceChunkService;
-        this.clarificationDraftService = clarificationDraftService;
     }
 
     public AnalysisRun createDraft(CreateAnalysisRunRequest request) {
         AnalysisRun run = new AnalysisRun(normalizer.normalize(request));
-        // 创建阶段只生成可编辑的范围确认内容，不立即跑 Agent；前端会先让用户确认范围，避免“一句话任务”直接进入长流程。
+        // 创建阶段只生成可编辑草稿，不立即跑 Agent；前端会先让用户确认范围，避免“一句话任务”直接进入长流程。
         run.setStatus(AnalysisStatus.AWAITING_CONFIRMATION);
-        refreshClarificationDraft(run);
+        run.setClarificationDraft(buildClarificationDraft(run.getRequirement()));
         repository.save(run);
-        eventBroker.publish(run, "run_created", "范围确认内容已生成");
-        eventBroker.publish(run, "clarification_ready", "待确认范围已准备好");
+        eventBroker.publish(run, "run_created", "分析任务已创建");
+        eventBroker.publish(run, "clarification_ready", "澄清草稿已生成");
         return run;
     }
 
     public AnalysisRun start(CreateAnalysisRunRequest request) {
         AnalysisRun run = createDraft(request);
-        confirmDraft(run);
-        repository.save(run);
         return startExecution(run.getId());
     }
 
@@ -110,8 +106,10 @@ public class AnalysisWorkflowService {
         }
         applyRequirementUpdate(requirement, request);
 
-        refreshClarificationDraft(run);
-        confirmDraft(run);
+        ClarificationDraft draft = buildClarificationDraft(requirement);
+        draft.setConfirmed(true);
+        draft.setConfirmedAt(Instant.now());
+        run.setClarificationDraft(draft);
         run.setStatus(AnalysisStatus.PENDING);
 
         repository.save(run);
@@ -122,7 +120,12 @@ public class AnalysisWorkflowService {
     public AnalysisRun startExecution(UUID runId) {
         AnalysisRun run = get(runId);
         ensureStartable(run);
-        run.setStatus(AnalysisStatus.RUNNING);
+        // 启动时允许把未显式确认的澄清草稿补记为已确认，兼容“一键开始”与“先确认再开始”两种入口。
+        if (run.getClarificationDraft() != null && !run.getClarificationDraft().isConfirmed()) {
+            run.getClarificationDraft().setConfirmed(true);
+            run.getClarificationDraft().setConfirmedAt(Instant.now());
+        }
+        run.setStatus(AnalysisStatus.PENDING);
         repository.save(run);
         eventBroker.publish(run, "run_start_requested", "分析工作流已请求启动");
         // LangGraph 执行可能包含外部采集和 LLM 调用，放到异步线程后接口可以立即返回当前 run 状态。
@@ -138,8 +141,7 @@ public class AnalysisWorkflowService {
                 ContextRole.USER,
                 intent,
                 request.getContent(),
-                request.getTargetAgent()
-        );
+                request.getTargetAgent());
         run.getContextMessages().add(message);
         // ContextIntent 是前端到后端的结构化协作协议：不同意图会改变范围、补证据或生成重跑建议。
         applyContextIntent(run, message);
@@ -159,8 +161,7 @@ public class AnalysisWorkflowService {
                 request.getSourceType(),
                 request.getContent(),
                 request.getUrl(),
-                request.isSensitive()
-        );
+                request.isSensitive());
         String citationKey = attachUserEvidence(run, evidence);
         repository.save(run);
         eventBroker.publish(run, "evidence_added", "用户补充资料已加入证据链：" + citationKey);
@@ -233,18 +234,6 @@ public class AnalysisWorkflowService {
         if (run.getStatus() == AnalysisStatus.SUCCEEDED || run.getStatus() == AnalysisStatus.CANCELLED) {
             throw new InvalidRunStateException(run.getId(), "workflow cannot be started from " + run.getStatus());
         }
-        if (run.getClarificationDraft() != null && !run.getClarificationDraft().isConfirmed()) {
-            throw new InvalidRunStateException(run.getId(), "analysis scope must be confirmed before workflow starts");
-        }
-    }
-
-    private void confirmDraft(AnalysisRun run) {
-        if (run.getClarificationDraft() == null) {
-            return;
-        }
-        run.getClarificationDraft().setConfirmed(true);
-        run.getClarificationDraft().setConfirmedAt(Instant.now());
-        run.setStatus(AnalysisStatus.PENDING);
     }
 
     private void ensureContextAcceptable(AnalysisRun run) {
@@ -266,12 +255,25 @@ public class AnalysisWorkflowService {
                 || status == AnalysisStatus.CANCELLED;
     }
 
-    private void refreshClarificationDraft(AnalysisRun run) {
-        var result = clarificationDraftService.createDraft(run.getRequirement());
-        run.setClarificationDraft(result.draft());
-        if (StringUtils.hasText(result.fallbackReason())) {
-            run.getRecommendedActions().add(result.fallbackReason());
+    private ClarificationDraft buildClarificationDraft(AnalysisRequirement requirement) {
+        ClarificationDraft draft = new ClarificationDraft(requirement);
+        draft.getClarificationQuestions().addAll(clarificationQuestions(requirement));
+        return draft;
+    }
+
+    // 这些问题是前端范围确认表单的确定性提示，不是 LLM 生成结果。
+    private List<String> clarificationQuestions(AnalysisRequirement requirement) {
+        List<String> questions = new ArrayList<>();
+        if (requirement.getCompetitors().size() < 3) {
+            questions.add("是否需要加入 Confluence、Airtable 等标杆产品作为对照？");
         }
+        if (requirement.getSourceUrls().isEmpty()) {
+            questions.add("是否有官网、价格页、产品文档、公开评价或访谈记录可以作为资料来源？");
+        }
+        if (!StringUtils.hasText(requirement.getOutputGoal())) {
+            questions.add("这份报告主要用于支持什么决策：产品评审、规划立项，还是向上汇报？");
+        }
+        return questions;
     }
 
     private void applyRequirementUpdate(AnalysisRequirement requirement, UpdateAnalysisRequirementRequest request) {
@@ -299,7 +301,7 @@ public class AnalysisWorkflowService {
         if (message.getIntent() == ContextIntent.ADJUST_SCOPE) {
             // 范围调整会退回确认态，防止旧范围下的产物继续被当成最终结论使用。
             applyScopeHints(run.getRequirement(), message.getContent());
-            refreshClarificationDraft(run);
+            run.setClarificationDraft(buildClarificationDraft(run.getRequirement()));
             run.getRecommendedActions().add("请先复核更新后的分析范围，再重新启动工作流。");
             run.setStatus(AnalysisStatus.AWAITING_CONFIRMATION);
         } else if (message.getIntent() == ContextIntent.ADD_EVIDENCE) {
@@ -309,8 +311,7 @@ public class AnalysisWorkflowService {
                     "note",
                     message.getContent(),
                     "",
-                    false
-            ));
+                    false));
             run.getRecommendedActions().add("上下文证据 " + citationKey + " 已准备好，可用于后续重跑。");
         } else if (message.getIntent() == ContextIntent.REQUEST_RERUN && message.getTargetAgent() != null) {
             run.getRecommendedActions().add("请在复核新增上下文后重跑 " + message.getTargetAgent().name() + "。");
@@ -336,7 +337,8 @@ public class AnalysisWorkflowService {
             return;
         }
         appendIfMentionedAny(requirement.getCompetitors(), content, "Notion", "notion");
-        appendIfMentionedAny(requirement.getCompetitors(), content, "飞书文档", "飞书文档", "飞书 docs", "feishu docs", "lark docs");
+        appendIfMentionedAny(requirement.getCompetitors(), content, "飞书文档", "飞书文档", "飞书 docs", "feishu docs",
+                "lark docs");
         appendIfMentionedAny(requirement.getCompetitors(), content, "钉钉文档", "钉钉文档", "dingdocs");
         appendIfMentionedAny(requirement.getCompetitors(), content, "语雀", "语雀", "yuque");
         appendIfMentionedAny(requirement.getCompetitors(), content, "Confluence", "confluence");
@@ -344,7 +346,8 @@ public class AnalysisWorkflowService {
         appendIfMentionedAny(requirement.getCompetitors(), content, "腾讯文档", "腾讯文档", "tencent docs");
 
         appendIfMentionedAny(requirement.getDimensions(), content, "AI 搜索", "AI 搜索", "ai search", "智能搜索");
-        appendIfMentionedAny(requirement.getDimensions(), content, "权限协作", "权限协作", "权限", "permission collaboration", "access control");
+        appendIfMentionedAny(requirement.getDimensions(), content, "权限协作", "权限协作", "权限", "permission collaboration",
+                "access control");
         appendIfMentionedAny(requirement.getDimensions(), content, "价格策略", "价格策略", "定价", "价格", "pricing");
         appendIfMentionedAny(requirement.getDimensions(), content, "用户评价", "用户评价", "公开评价", "评论", "口碑", "review");
         appendIfMentionedAny(requirement.getDimensions(), content, "产品定位", "产品定位", "定位");
@@ -352,11 +355,16 @@ public class AnalysisWorkflowService {
         appendIfMentionedAny(requirement.getDimensions(), content, "商业模式", "商业模式", "付费模式", "business model");
         appendIfMentionedAny(requirement.getDimensions(), content, "风险提示", "风险", "风险提示", "threat");
 
-        appendIfMentionedAny(requirement.getSourcePreferences(), content, "official_site", "官网", "官方网站", "official site");
-        appendIfMentionedAny(requirement.getSourcePreferences(), content, "pricing_page", "价格页", "定价页", "pricing page", "pricing_page");
-        appendIfMentionedAny(requirement.getSourcePreferences(), content, "product_docs", "产品文档", "帮助文档", "docs", "product docs");
-        appendIfMentionedAny(requirement.getSourcePreferences(), content, "release_notes", "更新日志", "release notes", "changelog");
-        appendIfMentionedAny(requirement.getSourcePreferences(), content, "public_reviews", "公开评价", "用户评价", "public reviews", "public_reviews");
+        appendIfMentionedAny(requirement.getSourcePreferences(), content, "official_site", "官网", "官方网站",
+                "official site");
+        appendIfMentionedAny(requirement.getSourcePreferences(), content, "pricing_page", "价格页", "定价页", "pricing page",
+                "pricing_page");
+        appendIfMentionedAny(requirement.getSourcePreferences(), content, "product_docs", "产品文档", "帮助文档", "docs",
+                "product docs");
+        appendIfMentionedAny(requirement.getSourcePreferences(), content, "release_notes", "更新日志", "release notes",
+                "changelog");
+        appendIfMentionedAny(requirement.getSourcePreferences(), content, "public_reviews", "公开评价", "用户评价",
+                "public reviews", "public_reviews");
     }
 
     private void appendIfMentionedAny(List<String> values, String content, String value, String... patterns) {

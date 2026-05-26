@@ -31,6 +31,7 @@ import com.aiinsight.model.schema.AnalysisClaim;
 import com.aiinsight.model.schema.CompetitorProfile;
 import com.aiinsight.repository.AnalysisRunRepository;
 import com.aiinsight.service.fallback.FallbackAnalysisDraftFactory;
+import com.aiinsight.service.fallback.FallbackClarificationDraftFactory;
 import com.aiinsight.service.fallback.FallbackExtractionFactory;
 import com.aiinsight.service.fallback.FallbackReportDraftFactory;
 import com.aiinsight.service.fallback.FallbackReviewReportFactory;
@@ -465,7 +466,7 @@ class AnalysisWorkflowServiceTest {
 
     @Test
     void analystUsesStructuredLlmClaimsWhenAvailable() {
-        StringBuilder promptCapture = new StringBuilder();
+        StringBuffer promptCapture = new StringBuffer();
         LlmClient structuredLlm = new LlmClient() {
             @Override
             public boolean isAvailable() {
@@ -1263,10 +1264,10 @@ class AnalysisWorkflowServiceTest {
         AnalysisEventBroker eventBroker = new AnalysisEventBroker();
         WorkflowNodeExecutor nodeExecutor = new WorkflowNodeExecutor(repository, eventBroker);
         SourceCollectionService sourceCollectionService = new SourceCollectionService(fetchAlwaysFails(), fakeSearchProvider());
-        ClarificationDraftService clarificationDraftService = new ClarificationDraftService(noopLlmClient, new ObjectMapper());
+        FallbackClarificationDraftFactory fallbackClarificationDraftFactory = new FallbackClarificationDraftFactory();
         AnalysisLangGraphWorkflow graphWorkflow = new AnalysisLangGraphWorkflow(
                 List.of(
-                        new ClarifierNode(clarificationDraftService),
+                        new ClarifierNode(noopLlmClient, new ObjectMapper(), fallbackClarificationDraftFactory),
                         new RevisionNode(),
                         new WriterNode(noopLlmClient, new FallbackReportDraftFactory()),
                         new ReviewerNode(new CitationCoverageEvaluator(), noopLlmClient, new FallbackReviewReportFactory()),
@@ -1289,7 +1290,7 @@ class AnalysisWorkflowServiceTest {
                 new EvidenceRetrievalService(),
                 sourceCollectionService,
                 new EvidenceChunkService(),
-                clarificationDraftService
+                fallbackClarificationDraftFactory
         );
     }
 

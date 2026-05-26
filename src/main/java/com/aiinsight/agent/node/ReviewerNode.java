@@ -116,8 +116,7 @@ public class ReviewerNode implements AgentNode {
             return decision;
         }
         applyBlockingDecision(run, decision, blockingFindings);
-        // Decision metadata should follow the same claim bindings that the UI uses for "locate finding".
-        // If no finding can be bound, fall back to claims that still have no evidence.
+        // 决策元数据沿用前端“定位问题”使用的 claim 绑定；没有可绑定 finding 时再退回无证据 claim。
         List<String> affectedClaimIds = run.getReviewFindings().stream()
                 .map(finding -> finding.getClaimId())
                 .filter(id -> id != null && !id.isBlank())
@@ -335,9 +334,11 @@ public class ReviewerNode implements AgentNode {
                 1. 只输出可解析 JSON，不要 Markdown。
                 2. JSON 格式为 {"summary":"一句话总结","findings":[...]}。
                 3. findings 最多 5 项，每项包含 severity、category、message、recommendation。
-                4. category 优先使用 low_quality_source、snippet_only_source、blocked_source、fetch_failed_source。
+                4. category 优先使用 low_quality_source、marketing_only_source、snippet_only_source、blocked_source、fetch_failed_source。
                 5. 必须填写 citationKey；抓取失败或 snippet-only 影响关键结论时用 MEDIUM/HIGH。
-                6. 不要要求补充已经存在且质量足够的来源。
+                6. 默认优先官网、官方文档、更新日志、定价页、官方技术博客、权威媒体或行业报告。
+                7. 如果关键结论只依赖营销软文、SEO 聚合页、二手摘要或明显推广内容，请提出 MEDIUM/HIGH 风险。
+                8. 不要要求补充已经存在且质量足够的来源。
 
                 来源质量摘要:
                 %s
@@ -609,9 +610,10 @@ public class ReviewerNode implements AgentNode {
         }
         return run.getEvidenceSources().stream()
                 .limit(16)
-                .map(source -> "[%s] title=%s | type=%s | status=%s | freshness=%s | note=%s | snippet=%s".formatted(
+                .map(source -> "[%s] title=%s | url=%s | type=%s | status=%s | freshness=%s | note=%s | snippet=%s".formatted(
                         source.getCitationKey(),
                         abbreviate(source.getTitle(), 70),
+                        abbreviate(source.getUrl(), 90),
                         source.getSourceType(),
                         source.getCollectionStatus(),
                         source.getFreshness(),
@@ -698,8 +700,7 @@ public class ReviewerNode implements AgentNode {
     }
 
     private String matchClaimId(AnalysisRun run, String excerpt) {
-        // The deterministic reviewer only sees report excerpts, so this is a conservative bridge
-        // from rule findings back to structured claims for demo-time navigation.
+        // 确定性 Reviewer 只能看到报告片段；这里保守桥接回结构化 claim，方便演示时定位问题。
         if (excerpt != null && excerpt.contains("风险")) {
             return run.getClaims().stream()
                     .filter(claim -> claim.getType() == ClaimType.RISK)

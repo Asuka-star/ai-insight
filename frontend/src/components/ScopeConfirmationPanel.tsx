@@ -85,23 +85,29 @@ export function ScopeConfirmationPanel({
         </label>
       </div>
 
-      <div className="source-options">
-        {SOURCE_OPTIONS.map((source) => (
-          <label key={source.value} className="check-row">
-            <input
-              type="checkbox"
-              checked={sources.includes(source.value)}
-              onChange={(event) => {
-                onSourcesChange(
-                  event.target.checked
-                    ? [...sources, source.value]
-                    : sources.filter((value) => value !== source.value)
-                );
-              }}
-            />
-            {source.label}
-          </label>
-        ))}
+      <div className="source-preference-block">
+        <div className="source-preference-header">
+          <span>重点覆盖来源</span>
+          <small>默认优先官方和权威资料</small>
+        </div>
+        <div className="source-options">
+          {SOURCE_OPTIONS.map((source) => (
+            <label key={source.value} className="check-row">
+              <input
+                type="checkbox"
+                checked={sources.includes(source.value)}
+                onChange={(event) => {
+                  onSourcesChange(
+                    event.target.checked
+                      ? [...sources, source.value]
+                      : sources.filter((value) => value !== source.value)
+                  );
+                }}
+              />
+              {source.label}
+            </label>
+          ))}
+        </div>
       </div>
 
       <label>

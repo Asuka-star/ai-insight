@@ -59,8 +59,7 @@ public class AnalysisRun {
         if (artifact == null) {
             return null;
         }
-        // Append-only artifacts keep reruns auditable. Version is scoped by artifact type,
-        // so v2 FINAL_REPORT and v2 REVIEW_FINDINGS can advance independently.
+        // Artifact 采用追加语义，保证重跑可审计；版本按类型递增，报告和质检结果可独立演进。
         artifact.setVersion(nextArtifactVersion(artifact.getType()));
         artifacts.add(artifact);
         touch();

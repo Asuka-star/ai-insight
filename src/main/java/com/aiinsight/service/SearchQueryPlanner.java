@@ -14,6 +14,13 @@ import java.util.Set;
 public class SearchQueryPlanner {
 
     private static final int MAX_SEARCH_QUERIES = 8;
+    // 权威来源是默认底线；复选框只决定重点覆盖类型，不降低来源质量要求。
+    private static final List<String> DEFAULT_AUTHORITY_TOPICS = List.of(
+            "official site product documentation",
+            "official pricing plans",
+            "official release notes changelog",
+            "official technical blog"
+    );
 
     public List<String> plan(AnalysisRun run, boolean recollecting) {
         AnalysisRequirement requirement = run.getRequirement();
@@ -23,12 +30,12 @@ public class SearchQueryPlanner {
             if (!StringUtils.hasText(competitor)) {
                 continue;
             }
-            addQuery(queries, competitor, "official product documentation", domain);
+            addDefaultAuthorityQueries(queries, competitor, domain);
             if (shouldCollectPricing(requirement, recollecting)) {
-                addQuery(queries, competitor, "pricing plans enterprise", domain);
+                addQuery(queries, competitor, "official pricing plans enterprise", domain);
             }
             if (shouldCollectFeedback(requirement, recollecting)) {
-                addQuery(queries, competitor, "user reviews customer feedback", domain);
+                addQuery(queries, competitor, "independent user reviews customer feedback", domain);
             }
             for (String sourcePreference : requirement.getSourcePreferences()) {
                 addSourcePreferenceQuery(queries, competitor, sourcePreference, domain);
@@ -55,25 +62,43 @@ public class SearchQueryPlanner {
         if (!StringUtils.hasText(sourcePreference)) {
             return;
         }
+        // 把前端枚举和自然语言提示归一到少量可控搜索主题，避免营销软文挤占采集名额。
         String normalized = sourcePreference.toLowerCase(Locale.ROOT);
         if (containsAny(normalized, "pricing", "价格", "定价")) {
-            addQuery(queries, competitor, "pricing", domain);
+            addQuery(queries, competitor, "official pricing plans", domain);
             return;
         }
         if (containsAny(normalized, "review", "评价", "反馈")) {
-            addQuery(queries, competitor, "reviews", domain);
+            addQuery(queries, competitor, "independent user reviews customer feedback", domain);
             return;
         }
         if (containsAny(normalized, "doc", "documentation", "文档", "official", "官网")) {
-            addQuery(queries, competitor, "official documentation", domain);
+            addQuery(queries, competitor, "official site product documentation", domain);
             return;
         }
         if (containsAny(normalized, "release", "changelog", "更新")) {
-            addQuery(queries, competitor, "release notes changelog", domain);
+            addQuery(queries, competitor, "official release notes changelog", domain);
+            return;
+        }
+        if (containsAny(normalized, "blog", "technical", "技术博客", "工程博客")) {
+            addQuery(queries, competitor, "official technical blog", domain);
+            return;
+        }
+        if (containsAny(normalized, "media", "report", "authority", "权威", "报道", "行业报告")) {
+            addQuery(queries, competitor, "authoritative media industry report", domain);
             return;
         }
         if (containsAny(normalized, "security", "安全", "权限", "合规")) {
             addQuery(queries, competitor, "security permissions compliance", domain);
+        }
+    }
+
+    private void addDefaultAuthorityQueries(Set<String> queries, String competitor, String domain) {
+        for (String topic : DEFAULT_AUTHORITY_TOPICS) {
+            addQuery(queries, competitor, topic, domain);
+            if (queries.size() >= MAX_SEARCH_QUERIES) {
+                return;
+            }
         }
     }
 
