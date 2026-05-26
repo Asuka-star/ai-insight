@@ -6,6 +6,8 @@
 
 当前项目已经具备任务草稿、范围确认、LangGraph4j DAG、Reviewer 条件打回、结构化 Schema、SSE 进度、Trace 数据、前端工作台和单 Agent 重跑等核心能力。后续重点不再是“从零搭链路”，而是把演示可信度、可观测细节、真实资料采集、结构化展示和答辩材料做扎实。
 
+信息采集 Agent 的专项差距和后续优化计划见 `docs/research-agent-roadmap.md`。
+
 ## 2. 当前已具备能力
 
 ### 2.1 后端链路
@@ -53,13 +55,13 @@
 | G1 | Trace 展示 | 前端没有完整展示 Prompt、输入、输出、原始模型输出 | P0 | 已实现 |
 | G2 | Schema 展示 | 功能树、定价模型、用户画像只显示摘要，缺少详情展开 | P0 | 已实现 |
 | G3 | 证据输入 | 前端没有公开 URL 和用户资料录入入口 | P0 | 已实现 |
-| G4 | 真实采集 | 无 URL 时已替换 `example.com` seed evidence，改用内置公开来源 catalog 或 `seed-evidence://` 降级标识 | P1 | 已实现 |
+| G4 | 真实采集 | 已移除内置来源表和 seed evidence，改为用户 URL 抓取 + 可配置搜索 provider；未配置搜索时只记录证据缺口 | P1 | 已实现 |
 | G5 | 上下文理解 | `ADJUST_SCOPE` 只做少量关键词匹配，中文表达覆盖不足 | P1 | 已实现 |
 | G6 | 版本链路 | artifact 版本号和重跑前后对比不够明确 | P1 | 已实现 |
 | G7 | SWOT | Analyst 没有显式输出 SWOT artifact 或结构化 SWOT | P1 | 已实现 |
 | G8 | Review 定位 | ReviewFinding 不能点击定位到 claim 或报告片段 | P2 | 已实现 |
 | G9 | citation 体验 | citation 只选中证据，没有 hover 摘要或跳转行为 | P2 | 已实现 |
-| G10 | 持久化拆分 | 当前 PostgreSQL 主要保存 run 聚合 JSON，明细表还未拆 | P2 | 待实现 |
+| G10 | 持久化拆分 | 当前 PostgreSQL 保存 run 聚合 JSON，并同步 artifact、step、trace、evidence、chunk、review finding 明细表 | P2 | 已实现 |
 | G11 | 评测指标 | 缺少引用覆盖率、字段完整率、补采改善分等指标面板 | P2 | 已实现 |
 | G12 | 答辩材料 | 缺少架构图、演示脚本、评分点映射和合规说明文档 | P0 | 已实现 |
 
@@ -229,24 +231,20 @@
 当前情况：
 
 - 如果用户提供 URL，后端会抓取网页并检查 robots。
-- 如果没有 URL，后端会按竞品和来源偏好生成公开来源候选，先尝试 live fetch，失败后降级为内置公开来源 catalog；未知竞品才降级为 `seed-evidence://`。
-- 补采时也使用 catalog_reference 类型的价格页和用户反馈参考，并在 complianceNote 中说明不是实时抓取。
-- EvidenceSource 已记录 `collectionStatus` 和 `freshness`，前端证据面板会展示实时抓取、catalog 降级、用户资料或 seed fallback 状态。
+- 如果没有 URL，后端会按竞品和来源偏好生成搜索 query；配置 `TAVILY_API_KEY` 后会调用真实搜索服务。
+- 搜索结果 URL 会继续走网页抓取和 robots 检查；抓取失败时可保留 `SEARCH_RESULT_SNIPPET`，并在 complianceNote 中说明不是完整网页正文。
+- EvidenceSource 已记录 `collectionStatus` 和 `freshness`，前端证据面板会展示实时抓取、搜索摘要、用户资料等状态。
 
 需要实现：
 
-- 增加内置公开来源模板。
-  - Notion：官网、产品页、价格页、AI 页面。
-  - 飞书文档：官网、产品页、价格页或帮助文档。
-  - Confluence：官网、价格页、产品文档。
-- 根据竞品名称和 `sourcePreferences` 生成候选 URL。
-- 用户没有填 URL 时，优先使用候选公开入口 URL，而不是 `example.com`。
-- 抓取失败时再降级为 seed evidence，并在 complianceNote 中明确说明。
+- 根据竞品名称、维度和 `sourcePreferences` 生成搜索 query。
+- 接入 Tavily Search provider，并保留 `SearchProvider` 抽象以便后续替换其他搜索服务。
+- 用户没有填 URL 且搜索未配置时，不生成伪证据，只提示补充 URL、问卷或访谈材料。
 - EvidenceSource 记录来源状态：
-  - fetched。
-  - blocked_by_robots。
-  - fetch_failed。
-  - seed_fallback。
+  - `FETCHED`。
+  - `BLOCKED_BY_ROBOTS`。
+  - `FETCH_FAILED`。
+  - `SEARCH_RESULT_SNIPPET`。
 
 涉及文件：
 
@@ -257,7 +255,7 @@
 
 验收标准：
 
-- 演示常见竞品时，EvidencePanel 中优先出现真实官网或价格页 URL。
+- 演示常见竞品时，EvidencePanel 中优先出现用户 URL 或搜索结果 URL。
 - robots 禁止或抓取失败时，不中断流程，并能看到合规说明。
 - 后端 `mvn test` 通过。
 
@@ -432,9 +430,10 @@
 
 当前情况：
 
-- `analysis_run` 表通过 `jsonb` 保存完整聚合。
+- `analysis_run` 表通过 `jsonb` 保存完整聚合，作为运行态恢复的单一快照。
+- `PostgresAnalysisRunRepository.save` 会同步刷新明细表，便于后续做筛选、审计和看板查询。
 
-后续可拆分：
+已同步的明细表：
 
 - `analysis_artifact`
 - `agent_step`
@@ -443,10 +442,10 @@
 - `evidence_chunk`
 - `review_finding`
 
-验收标准：
+后续可继续增强：
 
-- 查询 trace、artifact、evidence 时不必反序列化整个 run。
-- 保留 run 聚合 JSON 作为兼容字段或快照。
+- 将前端的 trace、artifact、evidence 查询逐步切到明细接口。
+- 增加分页、过滤和审计报表查询。
 
 ### 6.5 RAG 与向量召回
 
@@ -481,7 +480,7 @@
 
 ### 第二轮：提升真实可信度
 
-1. 增强公开来源采集，替换 `example.com` seed evidence。
+1. 增强公开来源采集，接入并调优真实搜索 provider。
 2. 增强中文上下文解析。
 3. 明确 artifact 版本链路。
 4. 增加 SWOT 分析。
@@ -621,4 +620,4 @@
 - 公开网页抓取必须保留 robots 和失败降级说明。
 - 用户补充的敏感资料需要标记 internal-only，报告中避免对外扩散。
 - 如果 LLM 不可用，fallback 链路仍要稳定可演示。
-- 真实来源抓取可能受网络、robots、反爬、页面动态渲染影响，需要准备备用 URL 和 seed fallback。
+- 真实来源抓取可能受网络、robots、反爬、页面动态渲染影响，需要准备备用 URL、问卷结果和访谈摘要。

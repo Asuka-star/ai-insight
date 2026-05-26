@@ -10,6 +10,7 @@ import com.aiinsight.observability.AgentTraceContext;
 import com.aiinsight.repository.AnalysisRunRepository;
 import com.aiinsight.service.AnalysisEventBroker;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
 import java.time.Instant;
@@ -17,6 +18,7 @@ import java.util.UUID;
 
 @Component
 @RequiredArgsConstructor
+@Slf4j
 public class WorkflowNodeExecutor {
 
     private final AnalysisRunRepository repository;
@@ -25,6 +27,8 @@ public class WorkflowNodeExecutor {
     public AnalysisRun executeNode(UUID runId, AgentNode node, String inputSummary) {
         AnalysisRun run = repository.findById(runId).orElseThrow(() -> new RunNotFoundException(runId));
         long startedAt = System.currentTimeMillis();
+        // step 面向时间线展示，trace 面向可观测调试；两者共享 stepId，
+        // 这样前端可以从 Agent 节点一路定位到 Prompt、输出和 token 消耗。
         AgentStep step = new AgentStep(node.name(), node.title());
         step.start(inputSummary);
         AgentTrace trace = traceStarted(node, step, inputSummary);
@@ -32,6 +36,11 @@ public class WorkflowNodeExecutor {
         run.getSteps().add(step);
         repository.save(run);
         eventBroker.publish(run, "agent_started", node.name() + " started");
+        log.info("Agent node started: runId={}, agent={}, stepId={}, inputSummary={}",
+                runId,
+                node.name(),
+                step.getId(),
+                inputSummary);
         try {
             // Agent 直接修改 run 聚合，执行器统一负责生命周期、Trace 和事件。
             AnalysisRun updatedRun = node.execute(run);
@@ -43,6 +52,18 @@ public class WorkflowNodeExecutor {
             run.getTraces().add(trace);
             repository.save(run);
             eventBroker.publish(run, "agent_succeeded", node.name() + " succeeded");
+            log.info("Agent node completed: runId={}, agent={}, stepId={}, status={}, fallbackUsed={}, modelName={}, latencyMs={}, evidenceSources={}, claims={}, artifacts={}, findings={}",
+                    run.getId(),
+                    node.name(),
+                    step.getId(),
+                    step.getStatus(),
+                    trace.getFallbackUsed(),
+                    trace.getModelName(),
+                    trace.getLatencyMs(),
+                    run.getEvidenceSources().size(),
+                    run.getClaims().size(),
+                    run.getArtifacts().size(),
+                    run.getReviewFindings().size());
             pauseForReadableEvents();
             return run;
         } catch (RuntimeException ex) {
@@ -53,6 +74,16 @@ public class WorkflowNodeExecutor {
             run.getTraces().add(trace);
             repository.save(run);
             eventBroker.publish(run, "agent_failed", node.name() + " failed: " + ex.getMessage());
+            log.error("Agent node failed: runId={}, agent={}, stepId={}, fallbackUsed={}, modelName={}, latencyMs={}, exceptionType={}, message={}",
+                    run.getId(),
+                    node.name(),
+                    step.getId(),
+                    trace.getFallbackUsed(),
+                    trace.getModelName(),
+                    trace.getLatencyMs(),
+                    ex.getClass().getName(),
+                    ex.getMessage(),
+                    ex);
             throw ex;
         } finally {
             AgentTraceContext.clear();
@@ -74,6 +105,8 @@ public class WorkflowNodeExecutor {
                                AnalysisRun run,
                                String decisionSummary,
                                long startedAt) {
+        // 如果 LLM 客户端已经写入 rawModelOutput，保留模型输出摘要；
+        // 否则用 run 聚合状态生成一个 deterministic 快照，保证 fallback 也有 Trace。
         trace.setStatus(step.getStatus());
         trace.setDecisionSummary(decisionSummary);
         if (trace.getOutputSnapshot() == null || trace.getOutputSnapshot().isBlank()) {

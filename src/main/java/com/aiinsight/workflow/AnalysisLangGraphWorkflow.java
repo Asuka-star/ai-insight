@@ -77,6 +77,8 @@ public class AnalysisLangGraphWorkflow {
         try {
             StateGraph<AnalysisGraphState> stateGraph = new StateGraph<>(AnalysisGraphState::new);
             for (AgentNode node : nodesByName.values()) {
+                // 每个 Agent 节点只关心 AnalysisRun 的业务变更；执行生命周期、Trace、SSE 事件
+                // 统一交给 WorkflowNodeExecutor，避免节点内混入流程控制细节。
                 stateGraph.addNode(node.name().name(), AsyncNodeAction.node_async(state -> {
                     nodeExecutor.executeNode(state.runId(), node, inputSummary(state));
                     return Map.of();
@@ -112,6 +114,8 @@ public class AnalysisLangGraphWorkflow {
     private Map<String, Object> routeFromReview(AnalysisGraphState state) {
         AnalysisRun run = repository.findById(state.runId()).orElseThrow(() -> new RunNotFoundException(state.runId()));
         int attempts = state.reworkAttempts();
+        // REVIEW_GATE 是整个可信闭环的唯一分岔点：Reviewer 写入 ReviewDecision，
+        // 这里把结构化 action 映射成 LangGraph 路由，并把选择持久化给前端回放。
         String route = nextRoute(run, attempts);
         // 每一次条件边选择都落库，前端才能解释“Reviewer 为什么打回到某个 Agent”。
         recordTransition(run, route, attempts);
@@ -145,6 +149,8 @@ public class AnalysisLangGraphWorkflow {
         if (reworkAttempts >= MAX_REVIEW_REWORK_ATTEMPTS) {
             return ROUTE_FINISH;
         }
+        // ReviewAction 是后端和前端共同理解的返工协议：
+        // 采集缺口回 Researcher，结构化分析问题回 Analyst，报告表达问题回 Writer。
         ReviewAction action = run.getReviewDecision().getAction();
         if (action == ReviewAction.RECOLLECT_EVIDENCE) {
             return ROUTE_RECOLLECT;

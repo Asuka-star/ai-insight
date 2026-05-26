@@ -6,6 +6,7 @@ import com.aiinsight.model.run.EvidenceSource;
 import com.aiinsight.model.run.UserProvidedEvidence;
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayList;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -134,6 +135,37 @@ class SourceCollectionServiceTest {
     }
 
     @Test
+    void recollectionPreservesExistingCitationKeysAndAppendsNewSources() {
+        SourceCollectionService service = new SourceCollectionService(fetchAlwaysFails(), fakeSearchProvider());
+        AnalysisRequirement requirement = new AnalysisRequirement(
+                "Analyze Notion",
+                "AI documents",
+                List.of("Notion"),
+                List.of("core features"),
+                List.of("official_site"),
+                List.of()
+        );
+        AnalysisRun run = new AnalysisRun(requirement);
+        var firstPass = service.collect(run, false);
+        run.getEvidenceSources().addAll(firstPass);
+
+        var recollected = service.collect(run, true);
+
+        assertThat(recollected).hasSizeGreaterThan(firstPass.size());
+        assertThat(recollected.subList(0, firstPass.size()))
+                .extracting(EvidenceSource::getCitationKey)
+                .containsExactlyElementsOf(firstPass.stream().map(EvidenceSource::getCitationKey).toList());
+        assertThat(recollected.subList(0, firstPass.size()))
+                .extracting(EvidenceSource::getUrl)
+                .containsExactlyElementsOf(firstPass.stream().map(EvidenceSource::getUrl).toList());
+        assertThat(recollected.stream().map(EvidenceSource::getCitationKey).distinct().toList())
+                .hasSize(recollected.size());
+        assertThat(recollected)
+                .extracting(EvidenceSource::getCitationKey)
+                .contains("S1", "S2");
+    }
+
+    @Test
     void unavailableSearchProviderCreatesEvidenceGapActionWithoutFakeEvidence() {
         SourceCollectionService service = new SourceCollectionService(fetchAlwaysFails(), new NoopSearchProvider());
         AnalysisRequirement requirement = new AnalysisRequirement(
@@ -174,6 +206,30 @@ class SourceCollectionServiceTest {
                 .anyMatch(note -> note.contains("reviews"));
     }
 
+    @Test
+    void plansSearchQueriesFromDomainAndDimensionsWithoutFixedAiCollaborationForNonAiTopics() {
+        List<String> queries = new ArrayList<>();
+        SourceCollectionService service = new SourceCollectionService(fetchAlwaysFails(), recordingSearchProvider(queries));
+        AnalysisRequirement requirement = new AnalysisRequirement(
+                "分析 Salesforce 和 HubSpot 的销售自动化、价格策略和客户支持体验。",
+                "企业服务 CRM",
+                List.of("Salesforce", "HubSpot"),
+                List.of("销售自动化", "价格策略", "客户支持体验"),
+                List.of("official_site", "pricing_page", "public_reviews"),
+                List.of()
+        );
+        AnalysisRun run = new AnalysisRun(requirement);
+
+        service.collect(run, false);
+
+        assertThat(queries).isNotEmpty();
+        assertThat(queries).allMatch(query -> !query.contains("AI collaboration"));
+        assertThat(queries).anyMatch(query -> query.contains("企业服务 CRM"));
+        assertThat(queries).anyMatch(query -> query.contains("销售自动化"));
+        assertThat(queries).anyMatch(query -> query.contains("pricing"));
+        assertThat(queries).anyMatch(query -> query.contains("reviews"));
+    }
+
     private WebPageFetchService fetchAlwaysFails() {
         return new WebPageFetchService() {
             @Override
@@ -196,6 +252,27 @@ class SourceCollectionServiceTest {
                         "Search result for " + query,
                         "https://search.example.test/" + query.toLowerCase().replaceAll("[^a-z0-9]+", "-"),
                         "Snippet for " + query + " with pricing, reviews, AI collaboration and permission details.",
+                        query,
+                        1
+                ));
+            }
+        };
+    }
+
+    private SearchProvider recordingSearchProvider(List<String> queries) {
+        return new SearchProvider() {
+            @Override
+            public boolean isAvailable() {
+                return true;
+            }
+
+            @Override
+            public List<SearchResult> search(String query, int count) {
+                queries.add(query);
+                return List.of(new SearchResult(
+                        "Search result for " + query,
+                        "https://search.example.test/" + query.toLowerCase().replaceAll("[^a-z0-9]+", "-"),
+                        "Snippet for " + query + " with CRM pricing and user feedback details.",
                         query,
                         1
                 ));

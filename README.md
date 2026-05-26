@@ -113,7 +113,21 @@ mvn spring-boot:run
 
 也可以在本地 `.env` 中维护配置，`.env` 已加入 `.gitignore`。
 
+`.env` 示例：
+
+```env
+XIAOMI_LLM_API_KEY=your-xiaomi-key
+TAVILY_API_KEY=your-tavily-key
+POSTGRES_URL=jdbc:postgresql://localhost:5432/ai_insight
+POSTGRES_USER=ai_insight
+POSTGRES_PASSWORD=ai_insight
+```
+
+启动时 Spring Boot 会自动读取项目根目录 `.env`。如果同时设置了系统环境变量，系统环境变量优先。
+
 未配置 `XIAOMI_LLM_API_KEY` 时，Writer 和 Reviewer 会使用 deterministic fallback，保证本地测试和演示不依赖外部模型。
+
+未配置 `TAVILY_API_KEY` 时，Researcher 不会生成伪造搜索证据，只会抓取用户提供的 URL，并在调研计划中提示需要补充公开来源、问卷或访谈资料。
 
 ## API 示例
 
@@ -194,7 +208,7 @@ $env:POSTGRES_PASSWORD="ai_insight"
 mvn spring-boot:run
 ```
 
-当前 PostgreSQL 仓储会自动创建 `analysis_run` 表，并以 `jsonb` 保存完整运行态聚合，同时保留 `status`、`original_prompt`、`created_at`、`updated_at` 等查询字段。后续可以在此基础上拆分 `agent_trace`、`analysis_artifact`、`evidence_source` 等明细表。
+当前 PostgreSQL 仓储会自动创建 `analysis_run` 表，并以 `jsonb` 保存完整运行态聚合，同时保留 `status`、`original_prompt`、`created_at`、`updated_at` 等查询字段。保存运行态时还会同步刷新 `analysis_artifact`、`agent_step`、`agent_trace`、`evidence_source`、`evidence_chunk`、`review_finding` 明细表，便于后续做分页查询、审计和指标看板。
 
 可选后续增强：
 
@@ -205,7 +219,7 @@ mvn spring-boot:run
 
 - 扩展采集来源，继续补充搜索结果、问卷、访谈、更新日志和公开评价数据。
 - 使用 Spring AI 构建文档切分、Embedding、向量召回和引用绑定链路。
-- 将当前 `analysis_run` 聚合持久化继续拆分为 trace、artifact、evidence 等明细表。
+- 将前端的 trace、artifact、evidence 查询逐步切到 PostgreSQL 明细表，并补充分页与过滤。
 - 继续优化前端 Workbench 的报告对比、历史任务筛选和大包体代码拆分。
 - 扩展评测指标：补采前后评分变化、更多质量规则和跨样例 benchmark。
 

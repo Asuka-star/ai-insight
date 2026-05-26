@@ -1,6 +1,7 @@
 package com.aiinsight.service;
 
 import lombok.Getter;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.client.JdkClientHttpRequestFactory;
 import org.springframework.stereotype.Service;
@@ -16,6 +17,7 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 @Service
+@Slf4j
 public class WebPageFetchService {
 
     private static final String USER_AGENT = "AI-Insight-ResearchBot/0.1";
@@ -41,6 +43,7 @@ public class WebPageFetchService {
         // A blocked or failed page returns an unusable FetchedPage so the workflow can degrade gracefully.
         RobotsDecision robotsDecision = robotsDecision(uri);
         if (!robotsDecision.allowed()) {
+            log.warn("Web page fetch blocked by robots: url={}, note={}", url, robotsDecision.note());
             return FetchedPage.blocked(url, robotsDecision.note());
         }
         try {
@@ -50,8 +53,18 @@ public class WebPageFetchService {
                     .body(String.class);
             String title = extractTitle(html, uri);
             String text = extractText(html);
+            log.info("Web page fetch completed: url={}, title={}, rawTextChars={}, note={}",
+                    url,
+                    title,
+                    text.length(),
+                    robotsDecision.note());
             return FetchedPage.success(url, title, truncate(text), robotsDecision.note());
         } catch (RuntimeException ex) {
+            log.warn("Web page fetch failed: url={}, exceptionType={}, message={}, note={}",
+                    url,
+                    ex.getClass().getName(),
+                    ex.getMessage(),
+                    robotsDecision.note());
             return FetchedPage.failed(url, "页面抓取失败：" + ex.getMessage() + "；" + robotsDecision.note());
         }
     }

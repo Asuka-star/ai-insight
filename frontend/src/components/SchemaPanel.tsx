@@ -71,6 +71,115 @@ export function SchemaPanel({
               ))}
             </div>
           ) : null}
+          {researchPackage?.interviewInsights?.length ? (
+            <div className="schema-detail-grid research-plan-grid">
+              <section className="schema-detail wide">
+                <strong>访谈洞察</strong>
+                <div className="schema-list">
+                  {researchPackage.interviewInsights.map((insight, index) => (
+                    <div className="schema-list-item" key={insight.id ?? `${insight.evidenceId}-${index}`}>
+                      <strong>{insight.intervieweeRole || "受访用户"} / {insight.confidence || "LOW"}</strong>
+                      <p>{insight.scenario || "场景待补充"}</p>
+                      <dl className="schema-kv compact">
+                        <div>
+                          <dt>痛点</dt>
+                          <dd>{joinOrEmpty(insight.painPoints)}</dd>
+                        </div>
+                        <div>
+                          <dt>顾虑</dt>
+                          <dd>{joinOrEmpty(insight.buyingConcerns)}</dd>
+                        </div>
+                        <div>
+                          <dt>竞品</dt>
+                          <dd>{joinOrEmpty(insight.competitorMentions)}</dd>
+                        </div>
+                        <div>
+                          <dt>维度</dt>
+                          <dd>{joinOrEmpty(insight.relatedDimensions)}</dd>
+                        </div>
+                        <div>
+                          <dt>引用</dt>
+                          <dd><EvidenceChips values={insight.evidenceId ? [insight.evidenceId] : []} onSelectCitation={onSelectCitation} /></dd>
+                        </div>
+                      </dl>
+                      {insight.directQuotes?.length ? (
+                        <small>{insight.directQuotes.join(" / ")}</small>
+                      ) : null}
+                    </div>
+                  ))}
+                </div>
+              </section>
+            </div>
+          ) : null}
+          {researchPackage?.researchPlan ? (
+            <div className="schema-detail-grid research-plan-grid">
+              <section className="schema-detail wide">
+                <strong>调研目标</strong>
+                <p>{researchPackage.researchPlan.objective || "暂无调研目标。"}</p>
+                {researchPackage.researchPlan.evidenceGaps?.length ? (
+                  <div className="schema-chip-list">
+                    {researchPackage.researchPlan.evidenceGaps.map((gap) => (
+                      <span className="schema-chip" key={gap}>{gap}</span>
+                    ))}
+                  </div>
+                ) : null}
+                {researchPackage.researchPlan.searchQueries?.length ? (
+                  <div className="schema-list">
+                    {researchPackage.researchPlan.searchQueries.map((query) => (
+                      <div className="schema-list-item" key={query}>
+                        <small>Search Query</small>
+                        <p>{query}</p>
+                      </div>
+                    ))}
+                  </div>
+                ) : null}
+              </section>
+
+              <section className="schema-detail">
+                <strong>公开资料任务</strong>
+                {researchPackage.researchPlan.publicSourceTasks?.length ? (
+                  <div className="schema-list">
+                    {researchPackage.researchPlan.publicSourceTasks.slice(0, 6).map((task, index) => (
+                      <div className="schema-list-item" key={`${task.type}-${task.target}-${index}`}>
+                        <strong>{task.target || "待确认对象"}</strong>
+                        <p>{task.rationale || "暂无说明"}</p>
+                        <small>{task.type || "research"} / {task.status || "prepared"}</small>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="muted-text">暂无公开资料任务。</p>
+                )}
+              </section>
+
+              <section className="schema-detail">
+                <strong>{researchPackage.researchPlan.questionnaire?.title || "问卷草案"}</strong>
+                <p>{researchPackage.researchPlan.questionnaire?.targetRespondents || "目标样本待确认。"}</p>
+                <small>{researchPackage.researchPlan.questionnaire?.recommendedSampleSize}</small>
+                <div className="schema-list">
+                  {(researchPackage.researchPlan.questionnaire?.questions ?? []).map((question, index) => (
+                    <div className="schema-list-item" key={`${question.dimension}-${index}`}>
+                      <strong>{question.dimension || "调研维度"}</strong>
+                      <p>{question.question}</p>
+                      <small>{question.options?.join(" / ")}</small>
+                    </div>
+                  ))}
+                </div>
+              </section>
+
+              <section className="schema-detail wide">
+                <strong>{researchPackage.researchPlan.interviewGuide?.title || "访谈提纲"}</strong>
+                <p>目标角色：{joinOrEmpty(researchPackage.researchPlan.interviewGuide?.targetRoles)}</p>
+                <div className="schema-list">
+                  {(researchPackage.researchPlan.interviewGuide?.questions ?? []).map((question, index) => (
+                    <div className="schema-list-item" key={`${question}-${index}`}>
+                      <p>{question}</p>
+                    </div>
+                  ))}
+                </div>
+              </section>
+            </div>
+          ) : null}
         </div>
       </div>
 

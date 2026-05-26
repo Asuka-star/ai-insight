@@ -8,6 +8,7 @@ AI Insight 的合规目标是让竞品分析过程在使用公开资料、用户
 
 - 不提交真实 API Key。
 - 公开网页抓取前检查 URL 和 robots。
+- 搜索 API Key 通过环境变量配置，未配置时不生成伪造网页证据。
 - 用户敏感资料显式标记 internal-only。
 - 证据来源保留 URL、摘要和 complianceNote。
 - 证据不足时在报告中标记“待验证”。
@@ -48,8 +49,8 @@ AI Insight 的合规目标是让竞品分析过程在使用公开资料、用户
 3. robots disallow 时返回 blocked，不进入证据链。
 4. robots 不可用时，MVP 阶段视为可公开抓取，但在 complianceNote 中记录。
 5. 页面抓取失败时不中断流程。
-6. 用户未提供 URL 时，系统使用内置公开来源 catalog。
-7. 未知竞品使用 `seed-evidence://`，明确标记为演示种子证据。
+6. 用户未提供足够 URL 时，系统在搜索服务已配置的情况下生成 query 并调用搜索 API。
+7. 搜索结果 URL 会继续走网页抓取和 robots 检查；抓取失败时只保留搜索摘要并明确标记。
 
 EvidenceSource 会记录：
 
@@ -59,28 +60,25 @@ EvidenceSource 会记录：
 - `rawText`
 - `complianceNote`
 
-## 4. 内置公开来源 Catalog
+## 4. 公开搜索策略
 
-当前覆盖：
+当前搜索接入：
 
-- Notion。
-- 飞书文档。
-- Confluence。
-- Airtable。
-- 语雀。
-- 腾讯文档。
+- `SearchProvider` 是搜索抽象。
+- `TavilySearchProvider` 在配置 `TAVILY_API_KEY` 后启用。
+- 未配置 key 时使用 `NoopSearchProvider`，不会把内置文本伪装成搜索结果。
 
 用途：
 
-- 避免无 URL 时使用虚假的 `example.com`。
-- 给演示常见竞品提供真实公开入口。
-- 保持流程可跑，不因网络或用户未填资料而中断。
+- 根据竞品、分析维度和来源偏好生成公开搜索 query。
+- 搜索得到 URL、标题和摘要后，继续抓取网页正文并生成可引用证据。
+- 搜索和抓取失败时，在 recommendedActions 与 ResearchPlan 中保留证据缺口。
 
 限制：
 
-- catalog entry 不等于实时抓取结果。
-- 答辩前应核查关键公开页面是否仍然可访问。
-- 最终报告中如使用 catalog snippet，应保留“需以页面原文为准”的谨慎表述。
+- 搜索 API 结果不等于事实本身，仍需网页抓取、引用绑定和 Reviewer 复核。
+- `SEARCH_RESULT_SNIPPET` 只代表搜索摘要，不能当作已完整抓取页面正文。
+- 生产环境还需要更强的去重、来源质量评分和站点 allowlist / denylist。
 
 ## 5. 用户补充资料
 
@@ -189,7 +187,7 @@ Reviewer 检查：
 答辩时不要承诺：
 
 - 系统已经覆盖所有互联网公开信息。
-- 内置 catalog 是实时搜索结果。
+- 搜索结果已经覆盖所有互联网公开信息。
 - LLM 输出完全不会出错。
 - robots 检查已经达到生产级爬虫合规能力。
 

@@ -276,12 +276,12 @@ https://www.atlassian.com/software/confluence/pricing
 
 ## 4. 备用演示路径
 
-如果网络无法抓取公开 URL：
+如果网络无法抓取公开 URL 或搜索服务未配置：
 
-1. 删除公开 URL。
-2. 使用内置公开来源 catalog。
-3. 系统会使用 Notion、飞书文档、Confluence 等公开入口 URL 作为 catalog evidence。
-4. 未知竞品会使用 `seed-evidence://`，明确标记为演示种子证据。
+1. 保留用户提供 URL，让系统展示抓取失败和 robots / fetch complianceNote。
+2. 在“补充资料”中加入脱敏访谈摘要或问卷结果。
+3. 展示 ResearchPlan 中的搜索 query、证据缺口、问卷草案和访谈提纲。
+4. 说明系统不会把内置文本伪装成真实搜索证据，缺证据时会进入 Reviewer 打回或人工补充链路。
 
 如果 LLM 不可用：
 

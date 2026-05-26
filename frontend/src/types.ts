@@ -22,6 +22,7 @@ export type AgentName =
 export type ArtifactType =
   | "CLARIFICATION_BRIEF"
   | "SOURCE_LIST"
+  | "RESEARCH_PLAN"
   | "COMPETITOR_PROFILE"
   | "COMPETITIVE_MATRIX"
   | "SWOT_ANALYSIS"
@@ -178,7 +179,61 @@ export interface ReviewDecision {
 export interface ResearchPackage {
   sources: EvidenceSource[];
   missingEvidenceTypes: string[];
+  researchPlan?: ResearchPlan;
+  interviewInsights?: InterviewInsight[];
   collectedAt?: string;
+}
+
+export interface ResearchPlan {
+  objective?: string;
+  evidenceGaps: string[];
+  searchQueries?: string[];
+  publicSourceTasks: ResearchTask[];
+  questionnaire?: Questionnaire;
+  interviewGuide?: InterviewGuide;
+}
+
+export interface ResearchTask {
+  type?: string;
+  target?: string;
+  rationale?: string;
+  status?: string;
+}
+
+export interface Questionnaire {
+  title?: string;
+  targetRespondents?: string;
+  recommendedSampleSize?: string;
+  questions: SurveyQuestion[];
+}
+
+export interface SurveyQuestion {
+  dimension?: string;
+  question?: string;
+  options: string[];
+}
+
+export interface InterviewGuide {
+  title?: string;
+  targetRoles: string[];
+  questions: string[];
+  probingQuestions: string[];
+}
+
+export interface InterviewInsight {
+  id?: string;
+  evidenceId?: string;
+  sourceTitle?: string;
+  intervieweeRole?: string;
+  scenario?: string;
+  painPoints: string[];
+  positiveSignals: string[];
+  negativeSignals: string[];
+  buyingConcerns: string[];
+  competitorMentions: string[];
+  relatedDimensions: string[];
+  directQuotes: string[];
+  confidence?: string;
 }
 
 export interface FeatureNode {

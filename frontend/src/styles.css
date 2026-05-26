@@ -983,7 +983,25 @@ h3 {
   margin-bottom: 10px;
 }
 
-.decision-box span {
+.decision-box.blocked {
+  border-color: rgba(169, 102, 20, 0.32);
+  background: #fff8ee;
+}
+
+.decision-box.pass {
+  border-color: rgba(24, 114, 77, 0.25);
+  background: #edf7f1;
+}
+
+.decision-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.decision-header span,
+.decision-meta span {
   width: fit-content;
   border-radius: 4px;
   padding: 2px 7px;
@@ -992,8 +1010,47 @@ h3 {
   font-weight: 850;
 }
 
+.decision-box.blocked .decision-header span {
+  background: #fff1ef;
+  color: var(--red);
+}
+
+.decision-header strong {
+  min-width: 0;
+  color: var(--text);
+  font-size: 12px;
+  text-align: right;
+}
+
+.decision-meta-grid {
+  display: grid;
+  gap: 6px;
+}
+
+.decision-meta {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  border: 1px solid rgba(214, 221, 218, 0.78);
+  border-radius: 7px;
+  background: #ffffff;
+  padding: 7px;
+}
+
+.decision-meta span {
+  background: #eef4f1;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.decision-meta p {
+  overflow-wrap: anywhere;
+  font-size: 12px;
+}
+
 .decision-box button {
   justify-content: center;
+  gap: 6px;
 }
 
 .finding-item {
@@ -1005,7 +1062,61 @@ h3 {
   padding: 10px;
 }
 
-.finding-item span {
+.finding-group {
+  display: grid;
+  gap: 7px;
+}
+
+.finding-group-title,
+.finding-heading,
+.finding-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.finding-group-title {
+  justify-content: space-between;
+  min-height: 24px;
+}
+
+.finding-group-title strong {
+  flex: 1;
+  color: var(--text);
+  font-size: 12px;
+}
+
+.finding-group-title small {
+  border-radius: 999px;
+  background: #eef4f1;
+  color: var(--muted);
+  padding: 1px 7px;
+  font-size: 11px;
+  font-weight: 850;
+}
+
+.severity-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--amber);
+}
+
+.severity-dot.high {
+  background: var(--red);
+}
+
+.severity-dot.medium {
+  background: var(--amber);
+}
+
+.severity-dot.low {
+  background: var(--blue);
+}
+
+.finding-heading span,
+.finding-meta span {
   width: fit-content;
   border-radius: 4px;
   padding: 2px 7px;
@@ -1015,13 +1126,60 @@ h3 {
   font-weight: 850;
 }
 
+.finding-heading strong {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .finding-item.high {
   border-color: rgba(178, 58, 52, 0.4);
 }
 
-.finding-item.high span {
+.finding-item.medium {
+  border-color: rgba(169, 102, 20, 0.34);
+}
+
+.finding-item.low {
+  border-color: rgba(40, 95, 154, 0.28);
+}
+
+.finding-item.high .finding-heading span {
   background: #fff1ef;
   color: var(--red);
+}
+
+.finding-item.medium .finding-heading span {
+  background: #fff8ee;
+  color: var(--amber);
+}
+
+.finding-item.low .finding-heading span {
+  background: #eef5fc;
+  color: var(--blue);
+}
+
+.finding-category {
+  color: var(--faint);
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-size: 11px;
+}
+
+.finding-meta {
+  flex-wrap: wrap;
+}
+
+.finding-meta span {
+  background: #eef4f1;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.finding-excerpt {
+  display: block;
+  overflow-wrap: anywhere;
 }
 
 .finding-locate {

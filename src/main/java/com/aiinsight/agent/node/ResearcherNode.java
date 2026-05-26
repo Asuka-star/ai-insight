@@ -17,12 +17,13 @@ import com.aiinsight.model.schema.Questionnaire;
 import com.aiinsight.model.schema.ResearchPlan;
 import com.aiinsight.model.schema.SurveyQuestion;
 import com.aiinsight.service.EvidenceChunkService;
-import com.aiinsight.service.FallbackResearchPlanFactory;
 import com.aiinsight.service.InterviewInsightExtractor;
 import com.aiinsight.service.SourceCollectionService;
+import com.aiinsight.service.fallback.FallbackResearchPlanFactory;
 import com.aiinsight.observability.AgentTraceContext;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
 import java.time.Instant;
@@ -33,6 +34,7 @@ import java.util.stream.Collectors;
 
 @Component
 @RequiredArgsConstructor
+@Slf4j
 // Researcher 只负责产出“可引用证据”，不直接写分析结论。
 // 优先采集用户提供的公开 URL 和一手调研材料；搜索服务可用时再主动补充公开网页。
 public class ResearcherNode implements AgentNode {
@@ -58,15 +60,17 @@ public class ResearcherNode implements AgentNode {
     public AnalysisRun execute(AnalysisRun run) {
         boolean recollecting = run.getReviewDecision().getAction() == ReviewAction.RECOLLECT_EVIDENCE
                 && run.getReviewDecision().getTargetAgent() == name();
-        // 采集重跑时先清空旧证据，避免同一 citationKey 指向多个来源。
+        // SourceCollectionService 会保留既有 citation 并追加新来源；这里再整体替换列表，
+        // 避免旧 artifact 中的 [S1] 在重跑后指向不同来源。
+        List<EvidenceSource> collectedSources = sourceCollectionService.collect(run, recollecting);
         run.getEvidenceSources().clear();
         run.getEvidenceChunks().clear();
-        run.getEvidenceSources().addAll(sourceCollectionService.collect(run, recollecting));
+        run.getEvidenceSources().addAll(collectedSources);
         run.getEvidenceChunks().addAll(evidenceChunkService.chunk(run.getEvidenceSources()));
         run.getResearchPackage().setSources(new ArrayList<>(run.getEvidenceSources()));
-        run.getResearchPackage().setMissingEvidenceTypes(recollecting
-                ? List.of()
-                : missingEvidenceTypes(run));
+        // missingEvidenceTypes 是 Reviewer 是否打回采集的主要依据。
+        // 每次采集后都重新计算，避免补采成功后仍保留旧缺口。
+        run.getResearchPackage().setMissingEvidenceTypes(missingEvidenceTypes(run));
         run.getResearchPackage().setResearchPlan(buildResearchPlan(run));
         run.getResearchPackage().setInterviewInsights(interviewInsightExtractor.extract(run));
         run.getResearchPackage().setCollectedAt(Instant.now());
@@ -142,12 +146,24 @@ public class ResearcherNode implements AgentNode {
     private ResearchPlan buildResearchPlan(AnalysisRun run) {
         ResearchPlan fallback = fallbackResearchPlanFactory.build(run);
         if (!llmClient.isAvailable()) {
+            log.warn("Research plan fallback activated: runId={}, reason=llm_unavailable, competitors={}, missingEvidenceTypes={}, evidenceSources={}",
+                    run.getId(),
+                    run.getRequirement().getCompetitors(),
+                    run.getResearchPackage().getMissingEvidenceTypes(),
+                    run.getEvidenceSources().size());
             AgentTraceContext.recordFallback("deterministic-research-plan-fallback", researchPlanMarkdown(fallback, List.of()));
             return fallback;
         }
         try {
             return mergeResearchPlan(generateResearchPlanWithLlm(run, fallback), fallback);
         } catch (RuntimeException ex) {
+            log.warn("Research plan fallback activated: runId={}, reason=llm_exception, exceptionType={}, message={}, competitors={}, missingEvidenceTypes={}, evidenceSources={}",
+                    run.getId(),
+                    ex.getClass().getName(),
+                    ex.getMessage(),
+                    run.getRequirement().getCompetitors(),
+                    run.getResearchPackage().getMissingEvidenceTypes(),
+                    run.getEvidenceSources().size());
             run.getRecommendedActions().add("LLM 调研计划生成失败，已使用规则模板兜底：" + ex.getMessage());
             AgentTraceContext.recordFallback("deterministic-research-plan-fallback", researchPlanMarkdown(fallback, List.of()));
             return fallback;
@@ -156,39 +172,25 @@ public class ResearcherNode implements AgentNode {
 
     private ResearchPlan generateResearchPlanWithLlm(AnalysisRun run, ResearchPlan fallback) {
         String prompt = """
-                你是竞品分析工作流中的信息采集 Agent，负责设计调研计划、问卷和用户访谈提纲。
-                请基于用户课题、行业、竞品、分析维度和已有证据缺口，生成一份能真实服务竞品分析的信息采集方案。
+                你是竞品分析工作流中的信息采集 Agent。请只生成“采集策略增量”，不要输出完整问卷或访谈提纲。
+                后端已有规则模板会补全问卷和访谈细节；你只需要让采集方向更贴近本次课题。
 
                 输出必须是一个 JSON 对象，不要 Markdown，不要解释。字段如下：
                 {
-                  "objective": "调研目标",
-                  "evidenceGaps": ["缺口"],
-                  "searchQueries": ["搜索 query"],
+                  "objective": "不超过80字的调研目标",
+                  "evidenceGaps": ["最多4个缺口"],
+                  "searchQueries": ["最多6个搜索 query"],
                   "publicSourceTasks": [
-                    {"type": "public_web|pricing_page|public_review|survey|interview", "target": "采集对象", "rationale": "为什么采集", "status": "prepared|covered|needs_collection"}
-                  ],
-                  "questionnaire": {
-                    "title": "问卷标题",
-                    "targetRespondents": "目标样本",
-                    "recommendedSampleSize": "建议样本量",
-                    "questions": [
-                      {"dimension": "调研维度", "question": "题目", "options": ["选项1", "选项2", "选项3"]}
-                    ]
-                  },
-                  "interviewGuide": {
-                    "title": "访谈提纲标题",
-                    "targetRoles": ["目标角色"],
-                    "questions": ["主问题"],
-                    "probingQuestions": ["追问"]
-                  }
+                    {"type": "public_web|pricing_page|public_review|survey|interview", "target": "采集对象", "rationale": "不超过40字", "status": "prepared|covered|needs_collection"}
+                  ]
                 }
 
                 约束：
-                1. 问卷必须围绕用户给出的竞品和分析维度生成，不要套用固定行业模板。
-                2. 每个分析维度至少对应 1 道问卷题；题目要能形成可比较的数据。
-                3. 访谈问题要追问真实使用场景、切换阻力、采购顾虑、满意/不满意原因和竞品差异。
-                4. 搜索 query 要贴合行业和竞品，不要默认写 AI collaboration，除非用户课题确实需要。
-                5. 不要编造已经发生的调研结果，只设计采集方案。
+                1. 不要输出 questionnaire、interviewGuide 或任何长题目列表。
+                2. searchQueries 必须贴合竞品、行业和分析维度。
+                3. publicSourceTasks 最多 6 项，优先补价格页、官方文档、用户评价、一手调研。
+                4. 不要编造已经发生的调研结果，只设计采集动作。
+                5. 输出要短，确保 JSON 完整闭合。
 
                 用户课题：%s
                 行业：%s
@@ -197,9 +199,6 @@ public class ResearcherNode implements AgentNode {
                 偏好来源：%s
                 证据缺口：%s
                 已有来源：%s
-
-                规则兜底草稿，仅供参考，不要机械照抄：
-                %s
                 """.formatted(
                 run.getRequirement().getOriginalPrompt(),
                 researchDomain(run),
@@ -207,19 +206,40 @@ public class ResearcherNode implements AgentNode {
                 String.join("、", run.getRequirement().getDimensions()),
                 String.join("、", run.getRequirement().getSourcePreferences()),
                 String.join("、", run.getResearchPackage().getMissingEvidenceTypes()),
-                run.getEvidenceSources().stream()
-                        .map(source -> "[%s] %s: %s".formatted(source.getCitationKey(), source.getTitle(), source.getSnippet()))
-                        .collect(Collectors.joining("\n")),
-                researchPlanMarkdown(fallback, List.of())
+                compactEvidenceSources(run, 6)
         );
         String response = llmClient.complete(new ChatRequest(
                 List.of(
                         ChatMessage.system("你是严谨的信息采集 Agent。只输出可解析 JSON，所有问题都要服务竞品分析。"),
                         ChatMessage.user(prompt)
                 ),
-                ChatOptions.deterministic()
+                ChatOptions.researcher()
         ));
         return parseResearchPlanJson(response);
+    }
+
+    private String compactEvidenceSources(AnalysisRun run, int limit) {
+        return run.getEvidenceSources().stream()
+                .limit(limit)
+                .map(source -> "[%s] %s | type=%s | status=%s | %s".formatted(
+                        source.getCitationKey(),
+                        abbreviate(source.getTitle(), 80),
+                        source.getSourceType(),
+                        source.getCollectionStatus(),
+                        abbreviate(source.getSnippet(), 160)
+                ))
+                .collect(Collectors.joining("\n"));
+    }
+
+    private String abbreviate(String value, int maxLength) {
+        if (value == null) {
+            return "";
+        }
+        String normalized = value.replaceAll("\\s+", " ").trim();
+        if (normalized.length() <= maxLength) {
+            return normalized;
+        }
+        return normalized.substring(0, maxLength) + "...";
     }
 
     private ResearchPlan parseResearchPlanJson(String response) {
@@ -247,6 +267,8 @@ public class ResearcherNode implements AgentNode {
     }
 
     private ResearchPlan mergeResearchPlan(ResearchPlan generated, ResearchPlan fallback) {
+        // LLM 负责让调研计划更贴近题目；fallback 负责保证问卷、访谈、搜索任务这些
+        // 演示必需字段永远可用。这里逐字段合并，防止模型漏字段导致前端空面板。
         ResearchPlan plan = generated == null ? new ResearchPlan() : generated;
         if (!hasText(plan.getObjective())) {
             plan.setObjective(fallback.getObjective());

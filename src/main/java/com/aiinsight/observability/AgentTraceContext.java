@@ -3,11 +3,13 @@ package com.aiinsight.observability;
 import com.aiinsight.llm.ChatMessage;
 import com.aiinsight.llm.ChatRequest;
 import com.aiinsight.model.run.AgentTrace;
+import lombok.extern.slf4j.Slf4j;
 
 import java.util.List;
 import java.util.Optional;
 import java.util.stream.Collectors;
 
+@Slf4j
 public final class AgentTraceContext {
 
     private static final ThreadLocal<AgentTrace> CURRENT = new ThreadLocal<>();
@@ -32,6 +34,7 @@ public final class AgentTraceContext {
         current().ifPresent(trace -> {
             trace.setModelName(modelName);
             trace.setFallbackUsed(false);
+            trace.setFallbackReason(null);
             trace.setPrompt(formatMessages(request.getMessages()));
             trace.setPromptTokens(estimateTokens(trace.getPrompt()));
         });
@@ -57,12 +60,24 @@ public final class AgentTraceContext {
 
     public static void recordFallback(String modelName, String output) {
         current().ifPresent(trace -> {
+            boolean llmAttempted = trace.getPrompt() != null && !trace.getPrompt().isBlank()
+                    && trace.getPromptTokens() != null && trace.getPromptTokens() > 0;
             trace.setModelName(modelName);
             trace.setFallbackUsed(true);
             if (trace.getPrompt() == null || trace.getPrompt().isBlank()) {
                 trace.setPrompt("LLM unavailable; used deterministic fallback.");
                 trace.setPromptTokens(0);
             }
+            trace.setFallbackReason(llmAttempted
+                    ? "LLM 已调用，但响应为空、异常或不可解析；当前节点改用规则兜底产物。"
+                    : "LLM 未调用或不可用；当前节点直接使用规则兜底产物。");
+            log.warn("Agent fallback recorded: agent={}, stepId={}, fallbackModel={}, llmAttempted={}, promptTokens={}, outputChars={}",
+                    trace.getAgentName(),
+                    trace.getStepId(),
+                    modelName,
+                    llmAttempted,
+                    trace.getPromptTokens(),
+                    output == null ? 0 : output.length());
             trace.setRawModelOutput(output);
             trace.setOutputSnapshot(summarize(output));
             trace.setCompletionTokens(estimateTokens(output));

@@ -1,4 +1,4 @@
-package com.aiinsight.service;
+package com.aiinsight.service.fallback;
 
 import com.aiinsight.model.run.AnalysisRun;
 import com.aiinsight.model.schema.InterviewGuide;
@@ -6,6 +6,7 @@ import com.aiinsight.model.schema.Questionnaire;
 import com.aiinsight.model.schema.ResearchPlan;
 import com.aiinsight.model.schema.ResearchTask;
 import com.aiinsight.model.schema.SurveyQuestion;
+import com.aiinsight.service.SearchQueryPlanner;
 import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
@@ -14,6 +15,8 @@ import java.util.Locale;
 
 @Component
 public class FallbackResearchPlanFactory {
+
+    private final SearchQueryPlanner searchQueryPlanner = new SearchQueryPlanner();
 
     public ResearchPlan build(AnalysisRun run) {
         ResearchPlan plan = new ResearchPlan();
@@ -28,21 +31,7 @@ public class FallbackResearchPlanFactory {
     }
 
     private List<String> buildPlannedSearchQueries(AnalysisRun run) {
-        List<String> queries = new ArrayList<>();
-        for (String competitor : run.getRequirement().getCompetitors()) {
-            queries.add(competitor + " official product documentation AI collaboration");
-            if (mentionsAny(run.getRequirement().getDimensions(), "价格", "定价", "pricing", "商业模式")
-                    || mentionsAny(run.getRequirement().getSourcePreferences(), "pricing", "价格", "定价")) {
-                queries.add(competitor + " pricing plans enterprise");
-            }
-            if (needsFieldResearch(run)) {
-                queries.add(competitor + " user reviews AI collaboration");
-            }
-            if (queries.size() >= 8) {
-                break;
-            }
-        }
-        return queries.stream().limit(8).toList();
+        return searchQueryPlanner.plan(run, false);
     }
 
     private List<ResearchTask> buildPublicSourceTasks(AnalysisRun run) {

@@ -33,6 +33,7 @@ export const AGENT_STAGE: Record<AgentName, string> = {
 export const ARTIFACT_LABELS: Record<ArtifactType, string> = {
   CLARIFICATION_BRIEF: "范围确认",
   SOURCE_LIST: "资料清单",
+  RESEARCH_PLAN: "调研计划",
   COMPETITOR_PROFILE: "竞品 Schema",
   COMPETITIVE_MATRIX: "横向矩阵",
   SWOT_ANALYSIS: "SWOT 分析",

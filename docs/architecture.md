@@ -30,6 +30,7 @@ Spring Boot API
   |     |           +-- AgentNode implementations
   |     |
   |     +-- SourceCollectionService
+  |     +-- SearchProvider / TavilySearchProvider
   |     +-- EvidenceChunkService
   |     +-- EvidenceRetrievalService
   |     +-- CitationCoverageEvaluator
@@ -122,9 +123,10 @@ Agent 直接读取并更新 `AnalysisRun`：
 
 职责：
 
-- 收集用户资料、公开 URL、内置公开来源 catalog。
+- 收集用户资料、用户提供的公开 URL，并在搜索服务已配置时主动搜索公开网页。
 - 生成可引用证据。
 - 生成 evidence chunks。
+- 生成调研计划、问卷草案和访谈提纲。
 
 输入：
 
@@ -137,7 +139,9 @@ Agent 直接读取并更新 `AnalysisRun`：
 - `EvidenceSource`
 - `EvidenceChunk`
 - `ResearchPackage`
+- `ResearchPlan`
 - `SOURCE_LIST` artifact。
+- `RESEARCH_PLAN` artifact。
 
 ### 5.3 EXTRACTOR
 
@@ -295,9 +299,11 @@ EvidenceSource
 采集状态约定：
 
 - `FETCHED` + `LIVE_FETCHED`：已按 robots 策略抓取到公开页面正文。
-- `BLOCKED_BY_ROBOTS` / `FETCH_FAILED` + `CATALOG_REFERENCE`：尝试抓取失败或受限，降级为内置公开来源入口，报告前需要人工确认 freshness。
+- `FETCHED` + `LIVE_FETCHED` + `search_result_web_page`：搜索结果网页已抓取到正文。
+- `FETCH_FAILED` + `SEARCH_RESULT_SNIPPET`：搜索命中了 URL，但页面正文抓取失败，仅保留搜索结果摘要，报告前需要人工确认。
 - `USER_PROVIDED`：用户补充资料，敏感资料会标记 `INTERNAL_ONLY`。
-- `SEED_FALLBACK` + `SYNTHETIC_SEED`：未知竞品没有公开 catalog 时的演示兜底，不应作为最终提交事实来源。
+
+未配置搜索 API key 时，Researcher 不生成伪造网页证据，只记录证据缺口和补充 URL/问卷/访谈资料的建议。
 
 引用约定：
 
@@ -313,8 +319,9 @@ EvidenceSource
 - `analysis_run` 表。
 - `run_payload jsonb` 保存完整聚合。
 - `status`、`original_prompt`、`created_at`、`updated_at` 作为查询字段。
+- 保存聚合时同步刷新明细表，保留完整快照的同时支持后续直接查询 trace、artifact、evidence 和 review finding。
 
-后续可拆：
+当前明细表：
 
 - `analysis_artifact`
 - `agent_step`

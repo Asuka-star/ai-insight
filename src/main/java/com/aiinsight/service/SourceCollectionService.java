@@ -3,7 +3,8 @@ package com.aiinsight.service;
 import com.aiinsight.model.run.AnalysisRun;
 import com.aiinsight.model.run.EvidenceSource;
 import com.aiinsight.model.run.UserProvidedEvidence;
-import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 
@@ -14,26 +15,54 @@ import java.util.Locale;
 import java.util.Set;
 
 @Service
-@RequiredArgsConstructor
+@Slf4j
 public class SourceCollectionService {
 
     private static final int SNIPPET_LENGTH = 220;
-    private static final int MAX_SEARCH_QUERIES = 8;
     private static final int MAX_RESULTS_PER_QUERY = 3;
     private static final int MAX_SEARCH_SOURCES = 8;
 
     private final WebPageFetchService webPageFetchService;
     private final SearchProvider searchProvider;
+    private final SearchQueryPlanner searchQueryPlanner;
+
+    @Autowired
+    public SourceCollectionService(WebPageFetchService webPageFetchService,
+                                   SearchProvider searchProvider,
+                                   SearchQueryPlanner searchQueryPlanner) {
+        this.webPageFetchService = webPageFetchService;
+        this.searchProvider = searchProvider;
+        this.searchQueryPlanner = searchQueryPlanner;
+    }
+
+    public SourceCollectionService(WebPageFetchService webPageFetchService, SearchProvider searchProvider) {
+        this(webPageFetchService, searchProvider, new SearchQueryPlanner());
+    }
 
     public List<EvidenceSource> collect(AnalysisRun run, boolean recollecting) {
-        List<EvidenceSource> sources = new ArrayList<>();
-        int index = 1;
-        // 用户明确提供的调研材料优先进入证据链，保留最低 citation 编号。
+        // 采集是 append-only 语义：重跑 Researcher 时保留旧 EvidenceSource，
+        // 新来源从当前最大 S 编号继续追加，避免历史 artifact 中的 [S1] 指向变化。
+        List<EvidenceSource> sources = new ArrayList<>(run.getEvidenceSources());
+        Set<String> seenUrls = new LinkedHashSet<>();
+        sources.stream()
+                .map(EvidenceSource::getUrl)
+                .filter(StringUtils::hasText)
+                .map(this::normalizeUrl)
+                .forEach(seenUrls::add);
+        int index = maxCitationNumber(sources) + 1;
+        // 用户明确提供的调研材料优先进入证据链；重跑时保留旧 citation，只追加新增资料。
         for (UserProvidedEvidence evidence : run.getUserProvidedEvidence()) {
-            sources.add(fromUserProvidedEvidence("S" + index, evidence));
-            index++;
+            EvidenceSource source = fromUserProvidedEvidence("S" + index, evidence);
+            // 用户资料会生成 user-evidence://{id}，因此同一份资料多次重跑不会重复入链。
+            if (seenUrls.add(normalizeUrl(source.getUrl()))) {
+                sources.add(source);
+                index++;
+            }
         }
         for (String url : run.getRequirement().getSourceUrls()) {
+            if (!seenUrls.add(normalizeUrl(url))) {
+                continue;
+            }
             EvidenceSource source = fromUrl("S" + index, url, "user_source_url", "");
             if (source != null) {
                 sources.add(source);
@@ -44,6 +73,26 @@ public class SourceCollectionService {
         }
         appendSearchEvidence(run, sources, index, recollecting);
         return sources;
+    }
+
+    private int maxCitationNumber(List<EvidenceSource> sources) {
+        return sources.stream()
+                .map(EvidenceSource::getCitationKey)
+                .filter(StringUtils::hasText)
+                .mapToInt(this::citationNumber)
+                .max()
+                .orElse(0);
+    }
+
+    private int citationNumber(String citationKey) {
+        if (!citationKey.startsWith("S")) {
+            return 0;
+        }
+        try {
+            return Integer.parseInt(citationKey.substring(1));
+        } catch (NumberFormatException ex) {
+            return 0;
+        }
     }
 
     public EvidenceSource fromUserProvidedEvidence(String citationKey, UserProvidedEvidence evidence) {
@@ -83,11 +132,16 @@ public class SourceCollectionService {
     }
 
     private void appendSearchEvidence(AnalysisRun run, List<EvidenceSource> sources, int index, boolean recollecting) {
-        List<String> queries = buildSearchQueries(run, recollecting);
+        // 搜索 query 由任务范围、竞品、维度和返工状态共同决定；
+        // recollecting=true 时会更主动补价格页和用户评价，响应 Reviewer 的证据缺口。
+        List<String> queries = searchQueryPlanner.plan(run, recollecting);
         if (queries.isEmpty()) {
             return;
         }
         if (!searchProvider.isAvailable()) {
+            log.warn("Source collection search fallback required: runId={}, reason=search_provider_unavailable, queries={}",
+                    run.getId(),
+                    queries);
             run.getRecommendedActions().add("搜索服务未配置：请设置 TAVILY_API_KEY，或在公开来源 URL 中手动补充可抓取页面。");
             return;
         }
@@ -104,6 +158,11 @@ public class SourceCollectionService {
             try {
                 results = searchProvider.search(query, MAX_RESULTS_PER_QUERY);
             } catch (RuntimeException ex) {
+                log.warn("Source collection search query failed: runId={}, query={}, exceptionType={}, message={}",
+                        run.getId(),
+                        query,
+                        ex.getClass().getName(),
+                        ex.getMessage());
                 run.getRecommendedActions().add("搜索查询失败：" + query + "；" + ex.getMessage());
                 continue;
             }
@@ -127,11 +186,17 @@ public class SourceCollectionService {
             }
         }
         if (added == 0) {
+            log.warn("Source collection produced no search evidence: runId={}, queries={}, existingSources={}",
+                    run.getId(),
+                    queries,
+                    sources.size());
             run.getRecommendedActions().add("搜索服务已调用，但没有形成可用网页证据；请补充 URL、问卷结果或访谈记录。");
         }
     }
 
     private EvidenceSource fromSearchResult(String citationKey, SearchResult result) {
+        // 搜索命中的 URL 仍优先尝试真实抓取；只有抓取失败且搜索摘要可用时，
+        // 才降级为 SEARCH_RESULT_SNIPPET，并在 complianceNote 中明确标注。
         EvidenceSource fetched = fromUrl(
                 citationKey,
                 result.getUrl(),
@@ -139,11 +204,27 @@ public class SourceCollectionService {
                 "Search query=\"" + result.getQuery() + "\", rank=" + result.getRank() + ". "
         );
         if (fetched != null) {
+            log.info("Search result promoted to fetched evidence: citationKey={}, url={}, query={}, rank={}",
+                    citationKey,
+                    result.getUrl(),
+                    result.getQuery(),
+                    result.getRank());
             return fetched;
         }
         if (!StringUtils.hasText(result.getSnippet())) {
+            log.warn("Search result dropped: citationKey={}, url={}, reason=no_snippet_after_fetch_failure, query={}, rank={}",
+                    citationKey,
+                    result.getUrl(),
+                    result.getQuery(),
+                    result.getRank());
             return null;
         }
+        log.warn("Search result snippet fallback activated: citationKey={}, url={}, reason=page_fetch_failed, query={}, rank={}, snippetChars={}",
+                citationKey,
+                result.getUrl(),
+                result.getQuery(),
+                result.getRank(),
+                result.getSnippet().length());
         return new EvidenceSource(
                 citationKey,
                 result.getTitle(),
@@ -179,53 +260,6 @@ public class SourceCollectionService {
                 page.getRawText(),
                 compliancePrefix + page.getComplianceNote()
         );
-    }
-
-    private List<String> buildSearchQueries(AnalysisRun run, boolean recollecting) {
-        Set<String> queries = new LinkedHashSet<>();
-        for (String competitor : run.getRequirement().getCompetitors()) {
-            if (!StringUtils.hasText(competitor)) {
-                continue;
-            }
-            queries.add(competitor + " official product documentation AI collaboration");
-            if (shouldCollectPricing(run, recollecting)) {
-                queries.add(competitor + " pricing plans enterprise");
-            }
-            if (shouldCollectFeedback(run, recollecting)) {
-                queries.add(competitor + " user reviews AI collaboration");
-            }
-            run.getRequirement().getDimensions().stream()
-                    .filter(StringUtils::hasText)
-                    .limit(2)
-                    .forEach(dimension -> queries.add(competitor + " " + dimension + " AI collaboration"));
-            if (queries.size() >= MAX_SEARCH_QUERIES) {
-                break;
-            }
-        }
-        return queries.stream().limit(MAX_SEARCH_QUERIES).toList();
-    }
-
-    private boolean shouldCollectPricing(AnalysisRun run, boolean recollecting) {
-        return recollecting
-                || mentionsAny(run.getRequirement().getSourcePreferences(), "pricing", "价格", "定价")
-                || mentionsAny(run.getRequirement().getDimensions(), "pricing", "价格", "定价", "商业模式");
-    }
-
-    private boolean shouldCollectFeedback(AnalysisRun run, boolean recollecting) {
-        return recollecting
-                || mentionsAny(run.getRequirement().getSourcePreferences(), "review", "评价", "反馈", "访谈", "问卷")
-                || mentionsAny(run.getRequirement().getDimensions(), "review", "评价", "反馈", "用户");
-    }
-
-    private boolean mentionsAny(List<String> values, String... patterns) {
-        return values.stream().anyMatch(value -> {
-            for (String pattern : patterns) {
-                if (containsIgnoreCase(value, pattern)) {
-                    return true;
-                }
-            }
-            return false;
-        });
     }
 
     private boolean containsIgnoreCase(String text, String pattern) {

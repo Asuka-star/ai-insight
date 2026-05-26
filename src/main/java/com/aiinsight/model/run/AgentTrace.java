@@ -26,6 +26,7 @@ public class AgentTrace {
     private String decisionSummary;
     private String modelName;
     private Boolean fallbackUsed = false;
+    private String fallbackReason;
     private Integer promptTokens;
     private Integer completionTokens;
     private Integer totalTokens;

@@ -17,4 +17,28 @@ public class ChatOptions {
     public static ChatOptions deterministic() {
         return new ChatOptions(0.2, 1800);
     }
+
+    public static ChatOptions clarifier() {
+        return new ChatOptions(0.2, 1200);
+    }
+
+    public static ChatOptions researcher() {
+        return new ChatOptions(0.2, 1600);
+    }
+
+    public static ChatOptions extractor() {
+        return new ChatOptions(0.2, 2500);
+    }
+
+    public static ChatOptions analyst() {
+        return new ChatOptions(0.2, 2200);
+    }
+
+    public static ChatOptions writer() {
+        return new ChatOptions(0.2, 4500);
+    }
+
+    public static ChatOptions reviewer() {
+        return new ChatOptions(0.2, 1800);
+    }
 }

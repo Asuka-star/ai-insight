@@ -11,12 +11,14 @@ import com.aiinsight.model.run.AnalysisArtifact;
 import com.aiinsight.model.run.AnalysisRun;
 import com.aiinsight.observability.AgentTraceContext;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
 import java.util.List;
 
 @Component
 @RequiredArgsConstructor
+@Slf4j
 public class ClarifierNode implements AgentNode {
 
     private final LlmClient llmClient;
@@ -35,8 +37,23 @@ public class ClarifierNode implements AgentNode {
     public AnalysisRun execute(AnalysisRun run) {
         String content;
         if (llmClient.isAvailable()) {
-            content = clarifyWithLlm(run);
+            try {
+                content = clarifyWithLlm(run);
+            } catch (RuntimeException ex) {
+                log.warn("Clarifier fallback activated: runId={}, reason=llm_exception, exceptionType={}, message={}, competitors={}, dimensions={}",
+                        run.getId(),
+                        ex.getClass().getName(),
+                        ex.getMessage(),
+                        run.getRequirement().getCompetitors(),
+                        run.getRequirement().getDimensions());
+                content = fallbackClarification(run);
+                AgentTraceContext.recordFallback("deterministic-clarifier-fallback", content);
+            }
         } else {
+            log.warn("Clarifier fallback activated: runId={}, reason=llm_unavailable, competitors={}, dimensions={}",
+                    run.getId(),
+                    run.getRequirement().getCompetitors(),
+                    run.getRequirement().getDimensions());
             content = fallbackClarification(run);
             AgentTraceContext.recordFallback("deterministic-clarifier-fallback", content);
         }
@@ -76,7 +93,7 @@ public class ClarifierNode implements AgentNode {
                         ChatMessage.system("你负责澄清竞品分析任务范围，必须保留结构化范围约束，并使用中文输出。"),
                         ChatMessage.user(prompt)
                 ),
-                ChatOptions.deterministic()
+                ChatOptions.clarifier()
         ));
     }
 
