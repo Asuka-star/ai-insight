@@ -961,6 +961,37 @@ h3 {
   font-size: 11px;
 }
 
+.evidence-badges small.quality-high {
+  background: #edf7f1;
+  color: var(--green);
+}
+
+.evidence-badges small.quality-medium {
+  background: #eef5fc;
+  color: var(--blue);
+}
+
+.evidence-badges small.quality-low {
+  background: #fff8ee;
+  color: var(--amber);
+}
+
+.evidence-badges small.quality-unusable {
+  background: #fff1ef;
+  color: var(--red);
+}
+
+.evidence-badges small.quality-internal_only {
+  background: #eef4f1;
+  color: var(--muted);
+}
+
+.evidence-badges small.cache-hit {
+  gap: 4px;
+  background: #edf7f6;
+  color: var(--teal);
+}
+
 .evidence-source-type {
   width: fit-content;
   border-radius: 4px;
@@ -972,6 +1003,25 @@ h3 {
 .evidence-note {
   display: block;
   overflow-wrap: anywhere;
+}
+
+.evidence-warning {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  width: fit-content;
+  border-radius: 4px;
+  background: #fff1ef;
+  color: var(--red) !important;
+  padding: 2px 6px;
+  font-size: 11px;
+  font-weight: 850;
+}
+
+.evidence-hash {
+  display: inline-flex;
+  width: fit-content;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
 }
 
 .evidence-link {

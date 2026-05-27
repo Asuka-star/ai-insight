@@ -26,14 +26,23 @@ public class SourceCollectionService {
     private final WebPageFetchService webPageFetchService;
     private final SearchProvider searchProvider;
     private final SearchQueryPlanner searchQueryPlanner;
+    private final SourceTypeClassifier sourceTypeClassifier;
 
     @Autowired
     public SourceCollectionService(WebPageFetchService webPageFetchService,
                                    SearchProvider searchProvider,
                                    SearchQueryPlanner searchQueryPlanner) {
+        this(webPageFetchService, searchProvider, searchQueryPlanner, new SourceTypeClassifier());
+    }
+
+    SourceCollectionService(WebPageFetchService webPageFetchService,
+                            SearchProvider searchProvider,
+                            SearchQueryPlanner searchQueryPlanner,
+                            SourceTypeClassifier sourceTypeClassifier) {
         this.webPageFetchService = webPageFetchService;
         this.searchProvider = searchProvider;
         this.searchQueryPlanner = searchQueryPlanner;
+        this.sourceTypeClassifier = sourceTypeClassifier;
     }
 
     public SourceCollectionService(WebPageFetchService webPageFetchService, SearchProvider searchProvider) {
@@ -114,6 +123,8 @@ public class SourceCollectionService {
                 "user_" + normalizedSourceType,
                 "USER_PROVIDED",
                 evidence.isSensitive() ? "INTERNAL_ONLY" : "USER_PROVIDED",
+                sourceTypeClassifier.qualityFor("user_" + normalizedSourceType, "USER_PROVIDED", evidence.isSensitive() ? "INTERNAL_ONLY" : "USER_PROVIDED"),
+                "NONE",
                 snippet(evidence.getContent()),
                 evidence.getContent(),
                 complianceNote
@@ -228,17 +239,22 @@ public class SourceCollectionService {
         if (!page.isUsable() || !StringUtils.hasText(page.getRawText())) {
             return failedUserUrl(citationKey, url, page.getStatus(), page.getComplianceNote());
         }
-        return new EvidenceSource(
+        EvidenceSource source = new EvidenceSource(
                 citationKey,
                 page.getTitle(),
                 page.getUrl(),
                 "user_source_url",
                 page.getStatus(),
                 "LIVE_FETCHED",
+                page.getSourceQuality(),
+                page.getFailureReason(),
                 snippet(page.getRawText()),
                 page.getRawText(),
                 page.getComplianceNote()
         );
+        source.setContentHash(page.getContentHash());
+        source.setCacheHit(page.isCacheHit());
+        return source;
     }
 
     private EvidenceSource failedUserUrl(String citationKey, String url, String status, String complianceNote) {
@@ -251,6 +267,8 @@ public class SourceCollectionService {
                 "user_source_url",
                 normalizedStatus,
                 "FETCH_FAILED",
+                "UNUSABLE",
+                normalizedStatus,
                 message,
                 "",
                 complianceNote
@@ -281,17 +299,22 @@ public class SourceCollectionService {
                     page.getRawText().length());
             return null;
         }
-        return new EvidenceSource(
+        EvidenceSource source = new EvidenceSource(
                 citationKey,
                 page.getTitle(),
                 page.getUrl(),
-                sourceType,
+                page.getSourceType(),
                 page.getStatus(),
                 "LIVE_FETCHED",
+                page.getSourceQuality(),
+                page.getFailureReason(),
                 snippet(page.getRawText()),
                 page.getRawText(),
-                compliancePrefix + page.getComplianceNote()
+                compliancePrefix + page.getComplianceNote() + " requestedSourceType=" + sourceType + "."
         );
+        source.setContentHash(page.getContentHash());
+        source.setCacheHit(page.isCacheHit());
+        return source;
     }
 
     private String searchFetchedContentIssue(WebPageFetchService.FetchedPage page) {

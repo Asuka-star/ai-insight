@@ -77,7 +77,10 @@ class SourceCollectionServiceTest {
         assertThat(sources.get(0).getComplianceNote()).contains("internal-only");
         assertThat(sources)
                 .extracting(EvidenceSource::getSourceType)
-                .contains("search_result_web_page");
+                .contains("docs");
+        assertThat(sources)
+                .extracting(EvidenceSource::getSourceQuality)
+                .contains("HIGH");
         assertThat(sources)
                 .extracting(EvidenceSource::getUrl)
                 .filteredOn(url -> url.startsWith("https://"))
@@ -119,7 +122,19 @@ class SourceCollectionServiceTest {
         assertThat(sources).allSatisfy(source -> assertThat(source.getUrl()).doesNotContain("example.com"));
         assertThat(sources)
                 .extracting(source -> source.getSourceType())
-                .containsOnly("search_result_web_page");
+                .containsOnly("docs");
+        assertThat(sources)
+                .extracting(source -> source.getSourceQuality())
+                .containsOnly("HIGH");
+        assertThat(sources)
+                .extracting(source -> source.getFailureReason())
+                .containsOnly("NONE");
+        assertThat(sources)
+                .extracting(source -> source.getContentHash())
+                .allMatch(hash -> hash != null && !hash.isBlank());
+        assertThat(sources)
+                .extracting(source -> source.isCacheHit())
+                .containsOnly(false);
         assertThat(sources)
                 .extracting(source -> source.getCollectionStatus())
                 .allMatch(status -> status.equals("FETCHED"));
@@ -382,7 +397,11 @@ class SourceCollectionServiceTest {
                                 customer feedback, integration details, and product positioning for competitive analysis.
                                 The content is intentionally long enough to be treated as a useful fetched search result.
                                 """,
-                        "robots.txt checked: allowed for public fetch."
+                        "robots.txt checked: allowed for public fetch.",
+                        "docs",
+                        "HIGH",
+                        200,
+                        "text/html"
                 );
             }
         };

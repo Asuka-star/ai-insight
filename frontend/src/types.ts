@@ -116,6 +116,10 @@ export interface EvidenceSource {
   sourceType?: string;
   collectionStatus?: string;
   freshness?: string;
+  sourceQuality?: string;
+  failureReason?: string;
+  contentHash?: string;
+  cacheHit?: boolean;
   snippet: string;
   complianceNote?: string;
   retrievedAt?: string;
