@@ -1,5 +1,6 @@
 package com.aiinsight.service;
 
+import com.aiinsight.agent.AgentNode;
 import com.aiinsight.agent.node.AnalystNode;
 import com.aiinsight.agent.node.ClarifierNode;
 import com.aiinsight.agent.node.ExtractorNode;
@@ -46,6 +47,7 @@ import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.concurrent.CancellationException;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 
@@ -116,6 +118,30 @@ class AnalysisWorkflowServiceTest {
         assertThat(finished.getClarificationDraft().isConfirmed()).isTrue();
         assertThat(finished.getClarificationDraft().getConfirmedAt()).isNotNull();
         assertThat(finished.getSteps()).isNotEmpty();
+    }
+
+    @Test
+    void stepSummariesDescribeAgentWorkInsteadOfLifecyclePlaceholders() {
+        AnalysisWorkflowService service = newService();
+        CreateAnalysisRunRequest request = new CreateAnalysisRunRequest();
+        request.setPrompt("Analyze Notion and Confluence for AI document collaboration.");
+
+        var finished = service.start(request);
+
+        assertThat(finished.getSteps())
+                .allSatisfy(step -> {
+                    assertThat(step.getInputSummary()).doesNotContain("来自上一 Agent 状态的输入");
+                    assertThat(step.getOutputSummary()).doesNotContain("produced updated run state");
+                });
+        assertThat(finished.getSteps().get(0).getInputSummary()).contains("澄清原始需求");
+        assertThat(finished.getSteps().get(0).getOutputSummary()).contains("范围已确认");
+        assertThat(finished.getSteps())
+                .filteredOn(step -> step.getAgentName() == AgentName.RESEARCHER)
+                .first()
+                .satisfies(step -> {
+                    assertThat(step.getInputSummary()).contains("采集公开资料");
+                    assertThat(step.getOutputSummary()).contains("资料采集完成");
+                });
     }
 
     @Test
@@ -199,6 +225,52 @@ class AnalysisWorkflowServiceTest {
         assertThatThrownBy(() -> service.startExecution(run.getId()))
                 .isInstanceOf(InvalidRunStateException.class)
                 .hasMessageContaining("CANCELLED");
+    }
+
+    @Test
+    void nodeExecutorDoesNotOverwriteCancelledRunAfterNodeReturns() {
+        CopyingTestAnalysisRunRepository repository = new CopyingTestAnalysisRunRepository();
+        AnalysisEventBroker eventBroker = new AnalysisEventBroker();
+        WorkflowNodeExecutor nodeExecutor = new WorkflowNodeExecutor(repository, eventBroker);
+        AnalysisRun run = new AnalysisRun(new AnalysisRequirement(
+                "Analyze Notion",
+                "AI documents",
+                List.of("Notion"),
+                List.of("pricing"),
+                List.of("official_site"),
+                List.of()
+        ));
+        run.setStatus(AnalysisStatus.RUNNING);
+        repository.save(run);
+
+        AgentNode cancellingNode = new AgentNode() {
+            @Override
+            public AgentName name() {
+                return AgentName.CLARIFIER;
+            }
+
+            @Override
+            public String title() {
+                return "Cancelling node";
+            }
+
+            @Override
+            public AnalysisRun execute(AnalysisRun staleRun) {
+                AnalysisRun latest = repository.findById(staleRun.getId()).orElseThrow();
+                latest.setStatus(AnalysisStatus.CANCELLED);
+                repository.save(latest);
+                staleRun.setStatus(AnalysisStatus.RUNNING);
+                staleRun.getRecommendedActions().add("stale node result should not be saved");
+                return staleRun;
+            }
+        };
+
+        assertThatThrownBy(() -> nodeExecutor.executeNode(run.getId(), cancellingNode, "simulate external cancellation"))
+                .isInstanceOf(CancellationException.class);
+
+        AnalysisRun saved = repository.findById(run.getId()).orElseThrow();
+        assertThat(saved.getStatus()).isEqualTo(AnalysisStatus.CANCELLED);
+        assertThat(saved.getRecommendedActions()).doesNotContain("stale node result should not be saved");
     }
 
     @Test
@@ -1088,6 +1160,71 @@ class AnalysisWorkflowServiceTest {
     }
 
     @Test
+    void reviewerSanitizesLlmFindingLocationFields() {
+        String longCategory = "llm_semantic_review_" + "x".repeat(140);
+        String longCitation = "The affected source is [S1], see https://example.test/very/long/location/value";
+        LlmClient reviewerLlm = new LlmClient() {
+            @Override
+            public boolean isAvailable() {
+                return true;
+            }
+
+            @Override
+            public String complete(com.aiinsight.llm.ChatRequest request) {
+                return """
+                        {
+                          "summary": "found one issue",
+                          "findings": [
+                            {
+                              "severity": "MEDIUM",
+                              "category": "%s",
+                              "message": "claim needs a narrower wording",
+                              "recommendation": "rewrite the claim as an assumption",
+                              "claimId": "C-SAFE-1",
+                              "citationKey": "%s",
+                              "excerpt": "pricing conclusion"
+                            }
+                          ]
+                        }
+                        """.formatted(longCategory, longCitation);
+            }
+        };
+        AnalysisRun run = new AnalysisRun();
+        AnalysisClaim claim = new AnalysisClaim();
+        claim.setId("C-SAFE-1");
+        claim.setType(ClaimType.OPPORTUNITY);
+        claim.setContent("pricing conclusion");
+        claim.setEvidenceIds(List.of("S1"));
+        run.getClaims().add(claim);
+        run.getEvidenceSources().add(new EvidenceSource(
+                "S1",
+                "Pricing page",
+                "https://example.test/pricing",
+                "pricing_page",
+                "FETCHED",
+                "LIVE_FETCHED",
+                "pricing conclusion",
+                "pricing conclusion",
+                "test evidence"
+        ));
+        run.addArtifact(new AnalysisArtifact(
+                ArtifactType.REPORT_DRAFT,
+                "draft",
+                "pricing conclusion [S1]",
+                List.of("S1")
+        ));
+
+        new ReviewerNode(new CitationCoverageEvaluator(), reviewerLlm, new FallbackReviewReportFactory()).execute(run);
+
+        assertThat(run.getReviewFindings())
+                .anySatisfy(finding -> {
+                    assertThat(finding.getCategory()).startsWith("llm_semantic_review_");
+                    assertThat(finding.getCategory()).hasSizeLessThanOrEqualTo(128);
+                    assertThat(finding.getCitationKey()).isEqualTo("S1");
+                });
+    }
+
+    @Test
     void reviewerRunsParallelSemanticChecksAndRoutesHighRiskClaimIssues() {
         StringBuffer promptCapture = new StringBuffer();
         LlmClient reviewerLlm = new LlmClient() {
@@ -1411,6 +1548,49 @@ class AnalysisWorkflowServiceTest {
         @Override
         public Collection<AnalysisRun> findAll() {
             return runs.values();
+        }
+    }
+
+    private static class CopyingTestAnalysisRunRepository implements AnalysisRunRepository {
+
+        private final ObjectMapper objectMapper = new ObjectMapper().findAndRegisterModules();
+        private final ConcurrentMap<UUID, String> runs = new ConcurrentHashMap<>();
+
+        @Override
+        public AnalysisRun save(AnalysisRun run) {
+            run.touch();
+            runs.put(run.getId(), serialize(run));
+            return copy(run);
+        }
+
+        @Override
+        public Optional<AnalysisRun> findById(UUID id) {
+            return Optional.ofNullable(runs.get(id)).map(this::deserialize);
+        }
+
+        @Override
+        public Collection<AnalysisRun> findAll() {
+            return runs.values().stream().map(this::deserialize).toList();
+        }
+
+        private AnalysisRun copy(AnalysisRun run) {
+            return deserialize(serialize(run));
+        }
+
+        private String serialize(AnalysisRun run) {
+            try {
+                return objectMapper.writeValueAsString(run);
+            } catch (Exception ex) {
+                throw new IllegalStateException(ex);
+            }
+        }
+
+        private AnalysisRun deserialize(String payload) {
+            try {
+                return objectMapper.readValue(payload, AnalysisRun.class);
+            } catch (Exception ex) {
+                throw new IllegalStateException(ex);
+            }
         }
     }
 }

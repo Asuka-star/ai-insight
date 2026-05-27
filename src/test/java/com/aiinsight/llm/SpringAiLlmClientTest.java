@@ -20,7 +20,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 class SpringAiLlmClientTest {
 
     @Test
-    void retriesBlankLengthResponseWithCompactPromptAndMoreTokens() {
+    void retriesBlankLengthResponseWithCompactPromptAndServerDefaultTokens() {
         RecordingChatModel chatModel = new RecordingChatModel(List.of(
                 response("", "LENGTH", 120, 700),
                 response("{\"ok\":true}", "STOP", 130, 20)
@@ -35,7 +35,8 @@ class SpringAiLlmClientTest {
         assertThat(result).isEqualTo("{\"ok\":true}");
         assertThat(chatModel.prompts).hasSize(2);
         assertThat(chatModel.prompts.get(1).getInstructions().get(0).getText()).contains("Return only the final answer");
-        assertThat(maxTokens(chatModel.prompts.get(1))).isGreaterThan(maxTokens(chatModel.prompts.get(0)));
+        assertThat(maxTokens(chatModel.prompts.get(0))).isNull();
+        assertThat(maxTokens(chatModel.prompts.get(1))).isNull();
     }
 
     @Test

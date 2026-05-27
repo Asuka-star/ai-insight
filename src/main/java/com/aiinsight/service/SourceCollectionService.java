@@ -9,10 +9,15 @@ import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 @Service
 @Slf4j
@@ -21,7 +26,11 @@ public class SourceCollectionService {
     private static final int SNIPPET_LENGTH = 220;
     private static final int MIN_SEARCH_FETCH_TEXT_LENGTH = 180;
     private static final int MAX_RESULTS_PER_QUERY = 3;
-    private static final int MAX_SEARCH_SOURCES = 8;
+    private static final int MIN_SEARCH_SOURCES = 12;
+    private static final int SMALL_BATCH_SEARCH_SOURCES_PER_COMPETITOR = 3;
+    private static final int LARGE_BATCH_SEARCH_SOURCES_PER_COMPETITOR = 2;
+    private static final int LARGE_BATCH_COMPETITOR_THRESHOLD = 12;
+    private static final int HARD_MAX_SEARCH_SOURCES = 60;
 
     private final WebPageFetchService webPageFetchService;
     private final SearchProvider searchProvider;
@@ -142,10 +151,13 @@ public class SourceCollectionService {
     }
 
     private void appendSearchEvidence(AnalysisRun run, List<EvidenceSource> sources, int index, boolean recollecting) {
-        List<String> queries = searchQueryPlanner.plan(run, recollecting);
-        if (queries.isEmpty()) {
+        List<SearchQueryPlanner.SearchQueryBatch> batches = searchQueryPlanner.planByCompetitor(run, recollecting);
+        if (batches.isEmpty()) {
             return;
         }
+        List<String> queries = batches.stream()
+                .flatMap(batch -> batch.queries().stream())
+                .toList();
         if (!searchProvider.isAvailable()) {
             log.warn("Source collection search fallback required: runId={}, reason=search_provider_unavailable, queries={}",
                     run.getId(),
@@ -161,37 +173,39 @@ public class SourceCollectionService {
                 .map(this::normalizeUrl)
                 .forEach(seenUrls::add);
 
+        int sourcesPerCompetitor = searchSourcesPerCompetitor(batches.size());
+        int maxSearchSources = maxSearchSources(batches.size(), sourcesPerCompetitor);
+        List<SearchBatchResult> batchResults = collectSearchBatches(run, batches, seenUrls, sourcesPerCompetitor);
+        batchResults.stream()
+                .flatMap(result -> result.failures().stream())
+                .forEach(run.getRecommendedActions()::add);
+
         int added = 0;
         int nextIndex = index;
-        for (String query : queries) {
-            List<SearchResult> results;
-            try {
-                results = searchProvider.search(query, MAX_RESULTS_PER_QUERY);
-            } catch (RuntimeException ex) {
-                log.warn("Source collection search query failed: runId={}, query={}, exceptionType={}, message={}",
-                        run.getId(),
-                        query,
-                        ex.getClass().getName(),
-                        ex.getMessage());
-                run.getRecommendedActions().add("搜索查询失败：" + query + "；" + ex.getMessage());
-                continue;
-            }
-            for (SearchResult result : results) {
-                if (!StringUtils.hasText(result.getUrl())) {
+        int maxCandidates = batchResults.stream()
+                .mapToInt(result -> result.sources().size())
+                .max()
+                .orElse(0);
+        for (int candidateIndex = 0; candidateIndex < maxCandidates && added < maxSearchSources; candidateIndex++) {
+            for (SearchBatchResult batchResult : batchResults) {
+                if (candidateIndex >= batchResult.sources().size()) {
                     continue;
                 }
-                String normalizedUrl = normalizeUrl(result.getUrl());
-                if (!seenUrls.add(normalizedUrl)) {
+                EvidenceSource source = batchResult.sources().get(candidateIndex);
+                if (!seenUrls.add(normalizeUrl(source.getUrl()))) {
                     continue;
                 }
-                EvidenceSource source = fromSearchResult("S" + nextIndex, result);
-                if (source != null) {
-                    sources.add(source);
-                    nextIndex++;
-                    added++;
-                }
-                if (added >= MAX_SEARCH_SOURCES) {
-                    return;
+                String citationKey = "S" + nextIndex;
+                source.setCitationKey(citationKey);
+                sources.add(source);
+                nextIndex++;
+                added++;
+                log.info("Search result promoted to fetched evidence: citationKey={}, url={}, competitor={}",
+                        citationKey,
+                        source.getUrl(),
+                        batchResult.competitor());
+                if (added >= maxSearchSources) {
+                    break;
                 }
             }
         }
@@ -205,6 +219,96 @@ public class SourceCollectionService {
         }
     }
 
+    private int searchSourcesPerCompetitor(int competitorCount) {
+        if (competitorCount > LARGE_BATCH_COMPETITOR_THRESHOLD) {
+            return LARGE_BATCH_SEARCH_SOURCES_PER_COMPETITOR;
+        }
+        return SMALL_BATCH_SEARCH_SOURCES_PER_COMPETITOR;
+    }
+
+    private int maxSearchSources(int competitorCount, int sourcesPerCompetitor) {
+        return Math.min(
+                HARD_MAX_SEARCH_SOURCES,
+                Math.max(MIN_SEARCH_SOURCES, competitorCount * sourcesPerCompetitor)
+        );
+    }
+
+    private List<SearchBatchResult> collectSearchBatches(AnalysisRun run,
+                                                         List<SearchQueryPlanner.SearchQueryBatch> batches,
+                                                         Set<String> seenUrls,
+                                                         int sourcesPerCompetitor) {
+        ExecutorService executor = Executors.newFixedThreadPool(Math.min(batches.size(), 6));
+        try {
+            Set<String> existingSeenUrls = new LinkedHashSet<>(seenUrls);
+            List<CompletableFuture<SearchBatchResult>> futures = batches.stream()
+                    .map(batch -> CompletableFuture.supplyAsync(
+                            () -> collectSearchBatch(run, batch, existingSeenUrls, sourcesPerCompetitor),
+                            executor
+                    ))
+                    .toList();
+            return futures.stream()
+                    .map(this::joinSearchBatch)
+                    .filter(result -> result != SearchBatchResult.EMPTY)
+                    .toList();
+        } finally {
+            executor.shutdown();
+        }
+    }
+
+    private SearchBatchResult joinSearchBatch(CompletableFuture<SearchBatchResult> future) {
+        try {
+            return future.join();
+        } catch (CompletionException ex) {
+            log.warn("Source collection search batch failed unexpectedly: exceptionType={}, message={}",
+                    ex.getClass().getName(),
+                    ex.getMessage());
+            return SearchBatchResult.EMPTY;
+        }
+    }
+
+    private SearchBatchResult collectSearchBatch(AnalysisRun run,
+                                                 SearchQueryPlanner.SearchQueryBatch batch,
+                                                 Set<String> existingSeenUrls,
+                                                 int sourcesPerCompetitor) {
+        List<EvidenceSource> collected = new ArrayList<>();
+        List<String> failures = new ArrayList<>();
+        Set<String> localSeenUrls = new LinkedHashSet<>(existingSeenUrls);
+        for (String query : batch.queries()) {
+            if (collected.size() >= sourcesPerCompetitor) {
+                break;
+            }
+            List<SearchResult> results;
+            try {
+                results = searchProvider.search(query, MAX_RESULTS_PER_QUERY);
+            } catch (RuntimeException ex) {
+                log.warn("Source collection search query failed: runId={}, competitor={}, query={}, exceptionType={}, message={}",
+                        run.getId(),
+                        batch.competitor(),
+                        query,
+                        ex.getClass().getName(),
+                        ex.getMessage());
+                failures.add("Search query failed: " + query + ": " + ex.getMessage());
+                continue;
+            }
+            for (SearchResult result : results) {
+                if (!StringUtils.hasText(result.getUrl())) {
+                    continue;
+                }
+                if (!localSeenUrls.add(normalizeUrl(result.getUrl()))) {
+                    continue;
+                }
+                EvidenceSource source = fromSearchResult("", result);
+                if (source != null) {
+                    collected.add(source);
+                }
+                if (collected.size() >= sourcesPerCompetitor) {
+                    break;
+                }
+            }
+        }
+        return new SearchBatchResult(batch.competitor(), collected, failures);
+    }
+
     private EvidenceSource fromSearchResult(String citationKey, SearchResult result) {
         EvidenceSource fetched = fromUrl(
                 citationKey,
@@ -214,11 +318,13 @@ public class SourceCollectionService {
                 true
         );
         if (fetched != null) {
-            log.info("Search result promoted to fetched evidence: citationKey={}, url={}, query={}, rank={}",
-                    citationKey,
-                    result.getUrl(),
-                    result.getQuery(),
-                    result.getRank());
+            if (StringUtils.hasText(citationKey)) {
+                log.info("Search result promoted to fetched evidence: citationKey={}, url={}, query={}, rank={}",
+                        citationKey,
+                        result.getUrl(),
+                        result.getQuery(),
+                        result.getRank());
+            }
             return fetched;
         }
         log.debug("Search result dropped: citationKey={}, url={}, reason=fetch_failed_or_unusable_content, query={}, rank={}",
@@ -362,5 +468,9 @@ public class SourceCollectionService {
             return normalized;
         }
         return normalized.substring(0, SNIPPET_LENGTH) + "...";
+    }
+
+    private record SearchBatchResult(String competitor, List<EvidenceSource> sources, List<String> failures) {
+        private static final SearchBatchResult EMPTY = new SearchBatchResult("", Collections.emptyList(), Collections.emptyList());
     }
 }

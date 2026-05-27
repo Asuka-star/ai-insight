@@ -3,6 +3,7 @@ package com.aiinsight.workflow;
 import com.aiinsight.agent.AgentNode;
 import com.aiinsight.exception.RunNotFoundException;
 import com.aiinsight.model.enums.AgentName;
+import com.aiinsight.model.enums.AnalysisStatus;
 import com.aiinsight.model.run.AnalysisRun;
 import com.aiinsight.model.enums.ReviewAction;
 import com.aiinsight.model.review.ReviewDecision;
@@ -21,6 +22,7 @@ import java.util.EnumMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.CancellationException;
 
 @Component
 public class AnalysisLangGraphWorkflow {
@@ -108,6 +110,9 @@ public class AnalysisLangGraphWorkflow {
 
     private Map<String, Object> routeFromReview(AnalysisGraphState state) {
         AnalysisRun run = repository.findById(state.runId()).orElseThrow(() -> new RunNotFoundException(state.runId()));
+        if (run.getStatus() == AnalysisStatus.CANCELLED) {
+            throw new CancellationException("Analysis workflow cancelled: " + run.getId());
+        }
         int attempts = state.reworkAttempts();
         // REVIEW_GATE 是整个可信闭环的唯一分岔点：Reviewer 写入 ReviewDecision，
         // 这里把结构化 action 映射成 LangGraph 路由，并把选择持久化给前端回放。

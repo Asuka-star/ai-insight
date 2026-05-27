@@ -1,7 +1,12 @@
 package com.aiinsight.service;
 
+import com.aiinsight.config.HttpClientFactory;
+import com.aiinsight.config.HttpProxyProperties;
 import lombok.Getter;
 import lombok.extern.slf4j.Slf4j;
+import org.jsoup.Jsoup;
+import org.jsoup.nodes.Document;
+import org.jsoup.nodes.Element;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpHeaders;
@@ -22,6 +27,7 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.Comparator;
 import java.util.HexFormat;
 import java.util.Locale;
 import java.util.Optional;
@@ -40,11 +46,6 @@ public class WebPageFetchService {
     private static final Duration FETCH_CACHE_TTL = Duration.ofHours(6);
     private static final int MAX_FETCH_ATTEMPTS = 2;
     private static final Pattern TITLE_PATTERN = Pattern.compile("(?is)<title[^>]*>(.*?)</title>");
-    private static final Pattern NOISE_BLOCK_PATTERN = Pattern.compile("(?is)<(script|style|noscript|svg|canvas|form|iframe|nav|header|footer|aside)\\b[^>]*>.*?</\\1>");
-    private static final Pattern MAIN_TAG_PATTERN = Pattern.compile("(?is)<(main|article)\\b[^>]*>(.*?)</\\1>");
-    private static final Pattern MAIN_ATTRIBUTE_PATTERN = Pattern.compile("(?is)<([a-z][a-z0-9]*)\\b[^>]*(?:role\\s*=\\s*['\"]?main['\"]?|id\\s*=\\s*['\"]?(?:content|main)['\"]?|class\\s*=\\s*['\"][^'\"]*(?:content|main)[^'\"]*['\"])[^>]*>(.*?)</\\1>");
-    private static final Pattern COMMENT_PATTERN = Pattern.compile("(?is)<!--.*?-->");
-    private static final Pattern TAG_PATTERN = Pattern.compile("(?is)<[^>]+>");
 
     private final HttpClient httpClient;
     private final Duration readTimeout;
@@ -60,7 +61,6 @@ public class WebPageFetchService {
         this(CONNECT_TIMEOUT, READ_TIMEOUT);
     }
 
-    @Autowired
     public WebPageFetchService(ObjectProvider<JdbcTemplate> jdbcTemplateProvider) {
         this(
                 CONNECT_TIMEOUT,
@@ -70,6 +70,23 @@ public class WebPageFetchService {
                 HOST_MINIMUM_INTERVAL,
                 FETCH_CACHE_TTL,
                 MAX_FETCH_ATTEMPTS,
+                null,
+                cacheFrom(jdbcTemplateProvider)
+        );
+    }
+
+    @Autowired
+    public WebPageFetchService(ObjectProvider<JdbcTemplate> jdbcTemplateProvider,
+                               HttpProxyProperties proxyProperties) {
+        this(
+                CONNECT_TIMEOUT,
+                READ_TIMEOUT,
+                new SourceTypeClassifier(),
+                new PageQualityEvaluator(),
+                HOST_MINIMUM_INTERVAL,
+                FETCH_CACHE_TTL,
+                MAX_FETCH_ATTEMPTS,
+                proxyProperties,
                 cacheFrom(jdbcTemplateProvider)
         );
     }
@@ -83,6 +100,7 @@ public class WebPageFetchService {
                 HOST_MINIMUM_INTERVAL,
                 FETCH_CACHE_TTL,
                 MAX_FETCH_ATTEMPTS,
+                null,
                 new FetchedPageCache(FETCH_CACHE_TTL)
         );
     }
@@ -102,6 +120,7 @@ public class WebPageFetchService {
                 hostMinimumInterval,
                 fetchCacheTtl,
                 maxFetchAttempts,
+                null,
                 null,
                 null,
                 new FetchedPageCache(fetchCacheTtl)
@@ -126,6 +145,31 @@ public class WebPageFetchService {
                 maxFetchAttempts,
                 null,
                 null,
+                null,
+                fetchedPageCache
+        );
+    }
+
+    WebPageFetchService(Duration connectTimeout,
+                        Duration readTimeout,
+                        SourceTypeClassifier sourceTypeClassifier,
+                        PageQualityEvaluator pageQualityEvaluator,
+                        Duration hostMinimumInterval,
+                        Duration fetchCacheTtl,
+                        int maxFetchAttempts,
+                        HttpProxyProperties proxyProperties,
+                        FetchedPageCache fetchedPageCache) {
+        this(
+                connectTimeout,
+                readTimeout,
+                sourceTypeClassifier,
+                pageQualityEvaluator,
+                hostMinimumInterval,
+                fetchCacheTtl,
+                maxFetchAttempts,
+                proxyProperties,
+                null,
+                null,
                 fetchedPageCache
         );
     }
@@ -140,8 +184,33 @@ public class WebPageFetchService {
                         Duration robotsAvailableTtl,
                         Duration robotsUnavailableTtl,
                         FetchedPageCache fetchedPageCache) {
-        HttpClient httpClient = HttpClient.newBuilder()
-                .connectTimeout(connectTimeout)
+        this(
+                connectTimeout,
+                readTimeout,
+                sourceTypeClassifier,
+                pageQualityEvaluator,
+                hostMinimumInterval,
+                fetchCacheTtl,
+                maxFetchAttempts,
+                null,
+                robotsAvailableTtl,
+                robotsUnavailableTtl,
+                fetchedPageCache
+        );
+    }
+
+    WebPageFetchService(Duration connectTimeout,
+                        Duration readTimeout,
+                        SourceTypeClassifier sourceTypeClassifier,
+                        PageQualityEvaluator pageQualityEvaluator,
+                        Duration hostMinimumInterval,
+                        Duration fetchCacheTtl,
+                        int maxFetchAttempts,
+                        HttpProxyProperties proxyProperties,
+                        Duration robotsAvailableTtl,
+                        Duration robotsUnavailableTtl,
+                        FetchedPageCache fetchedPageCache) {
+        HttpClient httpClient = HttpClientFactory.builder(connectTimeout, proxyProperties)
                 .followRedirects(HttpClient.Redirect.NORMAL)
                 .build();
         this.httpClient = httpClient;
@@ -363,32 +432,22 @@ public class WebPageFetchService {
         if (html == null || html.isBlank()) {
             return "";
         }
-        String cleanedHtml = NOISE_BLOCK_PATTERN.matcher(html).replaceAll(" ");
-        String mainText = longestText(MAIN_TAG_PATTERN, cleanedHtml)
-                .or(() -> longestText(MAIN_ATTRIBUTE_PATTERN, cleanedHtml))
+        Document document = Jsoup.parse(html);
+        document.select("script,style,noscript,svg,canvas,form,iframe,nav,header,footer,aside").remove();
+        String mainText = selectMainContent(document)
+                .map(Element::text)
+                .map(this::normalizeText)
                 .orElse("");
         if (!mainText.isBlank()) {
             return mainText;
         }
-        return stripHtml(cleanedHtml);
+        return normalizeText(document.body() == null ? document.text() : document.body().text());
     }
 
-    private Optional<String> longestText(Pattern pattern, String html) {
-        Matcher matcher = pattern.matcher(html);
-        String longest = "";
-        while (matcher.find()) {
-            String text = stripHtml(matcher.group(2));
-            if (text.length() > longest.length()) {
-                longest = text;
-            }
-        }
-        return longest.isBlank() ? Optional.empty() : Optional.of(longest);
-    }
-
-    private String stripHtml(String html) {
-        String withoutComments = COMMENT_PATTERN.matcher(html == null ? "" : html).replaceAll(" ");
-        String withoutTags = TAG_PATTERN.matcher(withoutComments).replaceAll(" ");
-        return normalizeText(withoutTags);
+    private Optional<Element> selectMainContent(Document document) {
+        return document.select("main, article, [role=main], #content, .content, #main, .main")
+                .stream()
+                .max(Comparator.comparingInt(element -> element.text().length()));
     }
 
     private String normalizeText(String text) {

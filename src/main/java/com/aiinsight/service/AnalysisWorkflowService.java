@@ -29,6 +29,7 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.CancellationException;
 
 @Service
 public class AnalysisWorkflowService {
@@ -205,6 +206,13 @@ public class AnalysisWorkflowService {
             run.setStatus(AnalysisStatus.SUCCEEDED);
             repository.save(run);
             eventBroker.publish(run, "run_succeeded", "分析工作流已完成");
+        } catch (CancellationException ex) {
+            run = repository.findById(runId).orElse(run);
+            if (run.getStatus() != AnalysisStatus.CANCELLED) {
+                run.setStatus(AnalysisStatus.CANCELLED);
+                repository.save(run);
+            }
+            eventBroker.publish(run, "run_cancelled", "分析工作流已取消");
         } catch (RuntimeException ex) {
             run = repository.findById(runId).orElse(run);
             run.setStatus(AnalysisStatus.FAILED);

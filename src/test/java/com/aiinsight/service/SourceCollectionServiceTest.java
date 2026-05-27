@@ -8,6 +8,7 @@ import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -147,6 +148,58 @@ class SourceCollectionServiceTest {
         assertThat(sources)
                 .extracting(source -> source.getUrl())
                 .anyMatch(url -> url.contains("search.example.test"));
+    }
+
+    @Test
+    void searchesCompetitorBatchesInParallelAndKeepsCompetitorCoverage() {
+        AtomicInteger inFlight = new AtomicInteger();
+        AtomicInteger maxInFlight = new AtomicInteger();
+        SourceCollectionService service = new SourceCollectionService(fetchUsefulPages(), parallelRecordingSearchProvider(inFlight, maxInFlight));
+        AnalysisRequirement requirement = new AnalysisRequirement(
+                "Analyze Alpha, Beta and Gamma",
+                "AI documents",
+                List.of("Alpha", "Beta", "Gamma"),
+                List.of("core features"),
+                List.of("official_site"),
+                List.of()
+        );
+        AnalysisRun run = new AnalysisRun(requirement);
+
+        var sources = service.collect(run, false);
+
+        assertThat(maxInFlight.get()).isGreaterThan(1);
+        assertThat(sources)
+                .extracting(EvidenceSource::getUrl)
+                .anyMatch(url -> url.contains("/alpha/"))
+                .anyMatch(url -> url.contains("/beta/"))
+                .anyMatch(url -> url.contains("/gamma/"));
+    }
+
+    @Test
+    void expandsSearchSourceBudgetForLargeCompetitorLists() {
+        List<String> competitors = java.util.stream.IntStream.rangeClosed(1, 13)
+                .mapToObj(index -> "Tool" + index)
+                .toList();
+        SourceCollectionService service = new SourceCollectionService(fetchUsefulPages(), fakeSearchProvider());
+        AnalysisRun run = new AnalysisRun(new AnalysisRequirement(
+                "Analyze many AI tools",
+                "AI tools",
+                competitors,
+                List.of("pricing"),
+                List.of("official_site"),
+                List.of()
+        ));
+
+        var sources = service.collect(run, false);
+
+        assertThat(sources).hasSizeGreaterThan(12);
+        assertThat(sources)
+                .extracting(EvidenceSource::getComplianceNote)
+                .allMatch(note -> note.contains("Search query="));
+        assertThat(competitors)
+                .allSatisfy(competitor -> assertThat(sources)
+                        .extracting(EvidenceSource::getComplianceNote)
+                        .anyMatch(note -> note.contains(competitor + " ")));
     }
 
     @Test
@@ -455,6 +508,36 @@ class SourceCollectionServiceTest {
                         "Search result for " + query,
                         "https://search.example.test/" + query.toLowerCase().replaceAll("[^a-z0-9]+", "-"),
                         "Snippet for " + query + " with CRM pricing and user feedback details.",
+                        query,
+                        1
+                ));
+            }
+        };
+    }
+
+    private SearchProvider parallelRecordingSearchProvider(AtomicInteger inFlight, AtomicInteger maxInFlight) {
+        return new SearchProvider() {
+            @Override
+            public boolean isAvailable() {
+                return true;
+            }
+
+            @Override
+            public List<SearchResult> search(String query, int count) {
+                int current = inFlight.incrementAndGet();
+                maxInFlight.accumulateAndGet(current, Math::max);
+                try {
+                    Thread.sleep(80);
+                } catch (InterruptedException ex) {
+                    Thread.currentThread().interrupt();
+                } finally {
+                    inFlight.decrementAndGet();
+                }
+                String competitor = query.split("\\s+")[0].toLowerCase();
+                return List.of(new SearchResult(
+                        "Search result for " + query,
+                        "https://search.example.test/" + competitor + "/" + Integer.toUnsignedString(query.hashCode()),
+                        "Snippet for " + query + " with pricing, reviews, AI collaboration and permission details.",
                         query,
                         1
                 ));

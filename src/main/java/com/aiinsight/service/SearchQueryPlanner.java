@@ -5,6 +5,7 @@ import com.aiinsight.model.run.AnalysisRun;
 import org.springframework.stereotype.Component;
 import org.springframework.util.StringUtils;
 
+import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
@@ -14,7 +15,7 @@ import java.util.Set;
 public class SearchQueryPlanner {
 
     private static final int MAX_SEARCH_QUERIES = 8;
-    // 权威来源是默认底线；复选框只决定重点覆盖类型，不降低来源质量要求。
+    private static final int MAX_SEARCH_QUERIES_PER_COMPETITOR = 8;
     private static final List<String> DEFAULT_AUTHORITY_TOPICS = List.of(
             "official site product documentation",
             "official pricing plans",
@@ -22,15 +23,27 @@ public class SearchQueryPlanner {
             "official technical blog"
     );
 
+    public record SearchQueryBatch(String competitor, List<String> queries) {
+    }
+
     public List<String> plan(AnalysisRun run, boolean recollecting) {
+        return planByCompetitor(run, recollecting).stream()
+                .flatMap(batch -> batch.queries().stream())
+                .distinct()
+                .limit(MAX_SEARCH_QUERIES)
+                .toList();
+    }
+
+    public List<SearchQueryBatch> planByCompetitor(AnalysisRun run, boolean recollecting) {
         AnalysisRequirement requirement = run.getRequirement();
-        Set<String> queries = new LinkedHashSet<>();
         String domain = domainTerm(requirement);
+        List<SearchQueryBatch> batches = new ArrayList<>();
         for (String competitor : requirement.getCompetitors()) {
             if (!StringUtils.hasText(competitor)) {
                 continue;
             }
-            addDefaultAuthorityQueries(queries, competitor, domain);
+            Set<String> queries = new LinkedHashSet<>();
+            addQuery(queries, competitor, "official site product documentation", domain);
             if (shouldCollectPricing(requirement, recollecting)) {
                 addQuery(queries, competitor, "official pricing plans enterprise", domain);
             }
@@ -39,30 +52,33 @@ public class SearchQueryPlanner {
             }
             for (String sourcePreference : requirement.getSourcePreferences()) {
                 addSourcePreferenceQuery(queries, competitor, sourcePreference, domain);
-                if (queries.size() >= MAX_SEARCH_QUERIES) {
-                    return queries.stream().limit(MAX_SEARCH_QUERIES).toList();
+                if (queries.size() >= MAX_SEARCH_QUERIES_PER_COMPETITOR) {
+                    break;
                 }
             }
             for (String dimension : requirement.getDimensions()) {
                 if (StringUtils.hasText(dimension)) {
                     addQuery(queries, competitor, dimension, domain);
                 }
-                if (queries.size() >= MAX_SEARCH_QUERIES) {
-                    return queries.stream().limit(MAX_SEARCH_QUERIES).toList();
+                if (queries.size() >= MAX_SEARCH_QUERIES_PER_COMPETITOR) {
+                    break;
                 }
             }
-            if (queries.size() >= MAX_SEARCH_QUERIES) {
-                break;
+            addDefaultAuthorityQueries(queries, competitor, domain);
+            if (!queries.isEmpty()) {
+                batches.add(new SearchQueryBatch(
+                        competitor.trim(),
+                        queries.stream().limit(MAX_SEARCH_QUERIES_PER_COMPETITOR).toList()
+                ));
             }
         }
-        return queries.stream().limit(MAX_SEARCH_QUERIES).toList();
+        return batches;
     }
 
     private void addSourcePreferenceQuery(Set<String> queries, String competitor, String sourcePreference, String domain) {
         if (!StringUtils.hasText(sourcePreference)) {
             return;
         }
-        // 把前端枚举和自然语言提示归一到少量可控搜索主题，避免营销软文挤占采集名额。
         String normalized = sourcePreference.toLowerCase(Locale.ROOT);
         if (containsAny(normalized, "pricing", "价格", "定价")) {
             addQuery(queries, competitor, "official pricing plans", domain);
@@ -96,7 +112,7 @@ public class SearchQueryPlanner {
     private void addDefaultAuthorityQueries(Set<String> queries, String competitor, String domain) {
         for (String topic : DEFAULT_AUTHORITY_TOPICS) {
             addQuery(queries, competitor, topic, domain);
-            if (queries.size() >= MAX_SEARCH_QUERIES) {
+            if (queries.size() >= MAX_SEARCH_QUERIES_PER_COMPETITOR) {
                 return;
             }
         }

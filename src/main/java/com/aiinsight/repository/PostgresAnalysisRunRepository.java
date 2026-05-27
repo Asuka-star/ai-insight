@@ -235,7 +235,7 @@ public class PostgresAnalysisRunRepository implements AnalysisRunRepository {
                             """,
                     artifact.getId(),
                     run.getId(),
-                    enumName(artifact.getType()),
+                    varchar(enumName(artifact.getType()), 64),
                     artifact.getTitle(),
                     artifact.getVersion(),
                     artifact.getCitationKeys() == null ? 0 : artifact.getCitationKeys().size(),
@@ -254,8 +254,8 @@ public class PostgresAnalysisRunRepository implements AnalysisRunRepository {
                             """,
                     step.getId(),
                     run.getId(),
-                    enumName(step.getAgentName()),
-                    enumName(step.getStatus()),
+                    varchar(enumName(step.getAgentName()), 64),
+                    varchar(enumName(step.getStatus()), 32),
                     timestamp(step.getStartedAt()),
                     timestamp(step.getCompletedAt()),
                     toJson(step)
@@ -274,8 +274,8 @@ public class PostgresAnalysisRunRepository implements AnalysisRunRepository {
                     trace.getId(),
                     run.getId(),
                     trace.getStepId(),
-                    enumName(trace.getAgentName()),
-                    enumName(trace.getStatus()),
+                    varchar(enumName(trace.getAgentName()), 64),
+                    varchar(enumName(trace.getStatus()), 32),
                     trace.getModelName(),
                     trace.getFallbackUsed(),
                     trace.getTotalTokens(),
@@ -293,15 +293,15 @@ public class PostgresAnalysisRunRepository implements AnalysisRunRepository {
                                 (id, run_id, citation_key, title, url, source_type, collection_status,
                                  freshness, retrieved_at, source_payload)
                             values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?::jsonb)
-                            """,
+                    """,
                     source.getId(),
                     run.getId(),
-                    source.getCitationKey(),
+                    varchar(source.getCitationKey(), 32),
                     source.getTitle(),
                     source.getUrl(),
-                    source.getSourceType(),
-                    source.getCollectionStatus(),
-                    source.getFreshness(),
+                    varchar(source.getSourceType(), 64),
+                    varchar(source.getCollectionStatus(), 64),
+                    varchar(source.getFreshness(), 64),
                     timestamp(source.getRetrievedAt()),
                     toJson(source)
             );
@@ -315,11 +315,11 @@ public class PostgresAnalysisRunRepository implements AnalysisRunRepository {
                                 (id, run_id, chunk_key, source_citation_key, chunk_index, title, url,
                                  created_at, chunk_payload)
                             values (?, ?, ?, ?, ?, ?, ?, ?, ?::jsonb)
-                            """,
+                    """,
                     chunk.getId(),
                     run.getId(),
-                    chunk.getChunkKey(),
-                    chunk.getSourceCitationKey(),
+                    varchar(chunk.getChunkKey(), 128),
+                    varchar(chunk.getSourceCitationKey(), 32),
                     chunk.getChunkIndex(),
                     chunk.getTitle(),
                     chunk.getUrl(),
@@ -339,15 +339,22 @@ public class PostgresAnalysisRunRepository implements AnalysisRunRepository {
                             """,
                     finding.getId(),
                     run.getId(),
-                    enumName(finding.getSeverity()),
-                    finding.getCategory(),
+                    varchar(enumName(finding.getSeverity()), 32),
+                    varchar(finding.getCategory(), 128),
                     finding.getArtifactId(),
                     finding.getClaimId(),
-                    finding.getCitationKey(),
+                    varchar(finding.getCitationKey(), 32),
                     finding.getParagraphIndex(),
                     toJson(finding)
             );
         }
+    }
+
+    private String varchar(String value, int maxLength) {
+        if (value == null || value.length() <= maxLength) {
+            return value;
+        }
+        return value.substring(0, maxLength);
     }
 
     private String enumName(Enum<?> value) {

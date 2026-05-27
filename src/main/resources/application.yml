@@ -17,6 +17,19 @@ management:
         include: health,info
 
 ai-insight:
+  http:
+    proxy:
+      enabled: ${AI_INSIGHT_PROXY_ENABLED:false}
+      # Example: http://127.0.0.1:7890 or http://user:password@127.0.0.1:7890
+      url: ${AI_INSIGHT_PROXY_URL:}
+      host: ${AI_INSIGHT_PROXY_HOST:}
+      port: ${AI_INSIGHT_PROXY_PORT:0}
+      username: ${AI_INSIGHT_PROXY_USERNAME:}
+      password: ${AI_INSIGHT_PROXY_PASSWORD:}
+      non-proxy-hosts:
+        - localhost
+        - 127.0.0.1
+        - ::1
   llm:
     xiaomi:
       api-key: ${XIAOMI_LLM_API_KEY:}

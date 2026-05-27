@@ -173,15 +173,15 @@ class FetchedPageCache {
                     page.getTitle(),
                     page.getRawText(),
                     page.getComplianceNote(),
-                    page.getSourceType(),
-                    page.getSourceQuality(),
-                    page.getFailureReason(),
+                    varchar(page.getSourceType(), 64),
+                    varchar(page.getSourceQuality(), 32),
+                    varchar(page.getFailureReason(), 64),
                     page.getStatusCode(),
                     page.getContentType(),
-                    page.getContentHash(),
+                    varchar(page.getContentHash(), 64),
                     timestamp(page.getFetchedAt()),
                     page.isUsable(),
-                    page.getStatus(),
+                    varchar(page.getStatus(), 64),
                     timestamp(entry.cachedAt()),
                     timestamp(Instant.now())
             );
@@ -254,6 +254,13 @@ class FetchedPageCache {
 
         private Instant instant(Timestamp timestamp) {
             return timestamp == null ? Instant.now() : timestamp.toInstant();
+        }
+
+        private String varchar(String value, int maxLength) {
+            if (value == null || value.length() <= maxLength) {
+                return value;
+            }
+            return value.substring(0, maxLength);
         }
     }
 

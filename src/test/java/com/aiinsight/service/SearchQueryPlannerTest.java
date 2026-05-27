@@ -31,4 +31,27 @@ class SearchQueryPlannerTest {
         assertThat(queries).anyMatch(query -> query.contains("official technical blog"));
         assertThat(queries).anyMatch(query -> query.contains("independent user reviews customer feedback"));
     }
+
+    @Test
+    void createsSeparateQueryBatchForEachCompetitor() {
+        AnalysisRun run = new AnalysisRun(new AnalysisRequirement(
+                "Analyze AI coding tools",
+                "AI coding tools",
+                List.of("Cursor", "Copilot", "Claude Code"),
+                List.of("pricing", "reviews"),
+                List.of("official_site"),
+                List.of()
+        ));
+
+        List<SearchQueryPlanner.SearchQueryBatch> batches = planner.planByCompetitor(run, false);
+
+        assertThat(batches)
+                .extracting(SearchQueryPlanner.SearchQueryBatch::competitor)
+                .containsExactly("Cursor", "Copilot", "Claude Code");
+        assertThat(batches)
+                .allSatisfy(batch -> {
+                    assertThat(batch.queries()).isNotEmpty();
+                    assertThat(batch.queries()).allMatch(query -> query.contains(batch.competitor()));
+                });
+    }
 }

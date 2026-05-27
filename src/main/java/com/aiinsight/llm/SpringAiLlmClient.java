@@ -21,6 +21,7 @@ class SpringAiLlmClient implements LlmClient {
 
     private static final int RETRY_TOKEN_HEADROOM = 800;
     private static final int MAX_RETRY_TOKENS = 6000;
+    private static final boolean SEND_MAX_TOKENS = false;
     private static final String COMPACT_RETRY_INSTRUCTION = """
             Return only the final answer. Do not include reasoning or explanations.
             Keep the response compact and valid for the requested format.
@@ -54,10 +55,11 @@ class SpringAiLlmClient implements LlmClient {
         if (!hasText(content) && shouldRetryBlankLength(response, options)) {
             ChatOptions retryOptions = retryOptions(options);
             ChatRequest retryRequest = compactRetryRequest(request);
-            log.warn("LLM response blank because output reached length limit; retrying compactly: model={}, originalMaxTokens={}, retryMaxTokens={}, generationMetadata={}",
+            log.warn("LLM response blank because output reached length limit; retrying compactly: model={}, originalMaxTokens={}, retryMaxTokens={}, sendMaxTokens={}, generationMetadata={}",
                     properties.getModel(),
                     options.getMaxTokens(),
                     retryOptions.getMaxTokens(),
+                    SEND_MAX_TOKENS,
                     generationMetadata(response));
             response = callModel(retryRequest, retryOptions, startedAt, 2);
             content = responseText(response);
@@ -94,7 +96,7 @@ class SpringAiLlmClient implements LlmClient {
                 usage == null ? null : usage.getPromptTokens(),
                 usage == null ? null : usage.getCompletionTokens(),
                 generationMetadata(response));
-        if (usage != null && usage.getCompletionTokens() != null && usage.getCompletionTokens() >= effectiveOptions.getMaxTokens()) {
+        if (SEND_MAX_TOKENS && usage != null && usage.getCompletionTokens() != null && usage.getCompletionTokens() >= effectiveOptions.getMaxTokens()) {
             log.warn("LLM response reached maxTokens: model={}, maxTokens={}, promptTokens={}, completionTokens={}, generationMetadata={}",
                     properties.getModel(),
                     effectiveOptions.getMaxTokens(),
@@ -107,12 +109,14 @@ class SpringAiLlmClient implements LlmClient {
 
     private ChatResponse callModel(ChatRequest request, ChatOptions options, long startedAt, int attempt) {
         log.info("LLM request started: model={}, attempt={}, messages={}, temperature={}, maxTokens={}",
-                properties.getModel(), attempt, request.getMessages().size(), options.getTemperature(), options.getMaxTokens());
-        OpenAiChatOptions springAiOptions = OpenAiChatOptions.builder()
+                properties.getModel(), attempt, request.getMessages().size(), options.getTemperature(), maxTokensLogValue(options));
+        OpenAiChatOptions.Builder optionsBuilder = OpenAiChatOptions.builder()
                 .model(properties.getModel())
-                .temperature(options.getTemperature())
-                .maxTokens(options.getMaxTokens())
-                .build();
+                .temperature(options.getTemperature());
+        if (SEND_MAX_TOKENS) {
+            optionsBuilder.maxTokens(options.getMaxTokens());
+        }
+        OpenAiChatOptions springAiOptions = optionsBuilder.build();
         try {
             return chatModel.call(new Prompt(toSpringMessages(request.getMessages()), springAiOptions));
         } catch (RuntimeException ex) {
@@ -156,6 +160,13 @@ class SpringAiLlmClient implements LlmClient {
         messages.add(ChatMessage.system(COMPACT_RETRY_INSTRUCTION));
         messages.addAll(request.getMessages());
         return new ChatRequest(messages, request.getOptions());
+    }
+
+    private String maxTokensLogValue(ChatOptions options) {
+        if (SEND_MAX_TOKENS) {
+            return String.valueOf(options.getMaxTokens());
+        }
+        return "server-default(localBudget=" + options.getMaxTokens() + ")";
     }
 
     private String responseText(ChatResponse response) {

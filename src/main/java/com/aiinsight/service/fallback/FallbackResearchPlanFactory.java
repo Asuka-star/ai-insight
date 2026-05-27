@@ -31,7 +31,10 @@ public class FallbackResearchPlanFactory {
     }
 
     private List<String> buildPlannedSearchQueries(AnalysisRun run) {
-        return searchQueryPlanner.plan(run, false);
+        return searchQueryPlanner.planByCompetitor(run, false).stream()
+                .flatMap(batch -> batch.queries().stream().limit(2))
+                .limit(40)
+                .toList();
     }
 
     private List<ResearchTask> buildPublicSourceTasks(AnalysisRun run) {

@@ -95,13 +95,13 @@ public class AnalystNode implements AgentNode {
     private AnalysisDraft analysisDraftWithLlm(AnalysisRun run) {
         AnalysisDraft fallback = fallbackAnalysisDraftFactory.build(run);
         CompletableFuture<LlmSubtaskResult<List<AnalysisClaim>>> claimsTask = CompletableFuture.supplyAsync(
-                () -> runAnalystSubtask(run, "claims", () -> generateClaimsWithLlm(run))
+                AgentTraceContext.wrap(() -> runAnalystSubtask(run, "claims", () -> generateClaimsWithLlm(run)))
         );
         CompletableFuture<LlmSubtaskResult<String>> matrixTask = CompletableFuture.supplyAsync(
-                () -> runAnalystSubtask(run, "competitive-matrix", () -> generateMatrixWithLlm(run))
+                AgentTraceContext.wrap(() -> runAnalystSubtask(run, "competitive-matrix", () -> generateMatrixWithLlm(run)))
         );
         CompletableFuture<LlmSubtaskResult<String>> swotTask = CompletableFuture.supplyAsync(
-                () -> runAnalystSubtask(run, "swot", () -> generateSwotWithLlm(run))
+                AgentTraceContext.wrap(() -> runAnalystSubtask(run, "swot", () -> generateSwotWithLlm(run)))
         );
         CompletableFuture.allOf(claimsTask, matrixTask, swotTask).join();
 
@@ -280,7 +280,7 @@ public class AnalystNode implements AgentNode {
                         result.succeeded() ? "" : " (" + result.errorMessage() + ")"
                 ))
                 .collect(Collectors.joining("\n"));
-        AgentTraceContext.recordModelResponse("Parallel Analyst LLM subtasks:\n" + summary, null, null);
+        AgentTraceContext.recordOutputSummary("Parallel Analyst LLM subtasks:\n" + summary);
     }
 
     private AnalysisDraft parseAnalysisDraft(String raw, AnalysisRun run) {

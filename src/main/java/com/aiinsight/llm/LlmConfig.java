@@ -1,5 +1,7 @@
 package com.aiinsight.llm;
 
+import com.aiinsight.config.HttpClientFactory;
+import com.aiinsight.config.HttpProxyProperties;
 import io.micrometer.observation.ObservationRegistry;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.chat.model.ChatModel;
@@ -26,19 +28,22 @@ public class LlmConfig {
 
     @Bean
     @Primary
-    LlmClient xiaomiLlmClient(XiaomiLlmProperties properties) {
+    LlmClient xiaomiLlmClient(XiaomiLlmProperties properties, HttpProxyProperties proxyProperties) {
         if (!StringUtils.hasText(properties.getApiKey())) {
             log.warn("LLM client disabled because XIAOMI_LLM_API_KEY is empty; LLM-first agents will use deterministic fallback.");
             return new NoopLlmClient();
         }
         log.info("LLM client enabled: model={}, baseUrl={}, completionsPath={}",
                 properties.getModel(), properties.getBaseUrl(), properties.getCompletionsPath());
-        return new SpringAiLlmClient(xiaomiChatModel(properties), properties);
+        return new SpringAiLlmClient(xiaomiChatModel(properties, proxyProperties), properties);
     }
 
-    private ChatModel xiaomiChatModel(XiaomiLlmProperties properties) {
-        HttpClient httpClient = HttpClient.newBuilder()
-                .connectTimeout(properties.getTimeout())
+    LlmClient xiaomiLlmClient(XiaomiLlmProperties properties) {
+        return xiaomiLlmClient(properties, null);
+    }
+
+    private ChatModel xiaomiChatModel(XiaomiLlmProperties properties, HttpProxyProperties proxyProperties) {
+        HttpClient httpClient = HttpClientFactory.builder(properties.getTimeout(), proxyProperties)
                 .build();
         OpenAiApi openAiApi = OpenAiApi.builder()
                 .baseUrl(properties.getBaseUrl())
@@ -52,7 +57,6 @@ public class LlmConfig {
         OpenAiChatOptions defaultOptions = OpenAiChatOptions.builder()
                 .model(properties.getModel())
                 .temperature(ChatOptions.deterministic().getTemperature())
-                .maxTokens(ChatOptions.deterministic().getMaxTokens())
                 .build();
 
         return OpenAiChatModel.builder()

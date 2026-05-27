@@ -1,5 +1,6 @@
 package com.aiinsight.service;
 
+import com.aiinsight.config.HttpProxyProperties;
 import com.sun.net.httpserver.HttpServer;
 import org.junit.jupiter.api.Test;
 
@@ -96,6 +97,52 @@ class WebPageFetchServiceTest {
             assertThat(page.getComplianceNote()).contains("Redirect followed from");
         } finally {
             server.stop(0);
+        }
+    }
+
+    @Test
+    void fetchesHttpPagesThroughConfiguredProxy() throws IOException {
+        HttpServer proxy = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        AtomicBoolean sawPageRequest = new AtomicBoolean(false);
+        proxy.createContext("/", exchange -> {
+            String requestedUri = exchange.getRequestURI().toString();
+            byte[] body;
+            if (requestedUri.contains("robots.txt")) {
+                body = "User-agent: *\nAllow: /\n".getBytes(StandardCharsets.UTF_8);
+            } else {
+                sawPageRequest.set(requestedUri.contains("proxy-target.test/page"));
+                body = usefulHtml("Proxied page").getBytes(StandardCharsets.UTF_8);
+            }
+            exchange.sendResponseHeaders(200, body.length);
+            exchange.getResponseBody().write(body);
+            exchange.close();
+        });
+        proxy.start();
+        try {
+            HttpProxyProperties proxyProperties = new HttpProxyProperties();
+            proxyProperties.setEnabled(true);
+            proxyProperties.setUrl("http://127.0.0.1:" + proxy.getAddress().getPort());
+            WebPageFetchService service = new WebPageFetchService(
+                    Duration.ofSeconds(1),
+                    Duration.ofSeconds(2),
+                    new SourceTypeClassifier(),
+                    new PageQualityEvaluator(),
+                    Duration.ZERO,
+                    Duration.ZERO,
+                    1,
+                    proxyProperties,
+                    Duration.ZERO,
+                    Duration.ZERO,
+                    new FetchedPageCache(Duration.ZERO)
+            );
+
+            var page = service.fetch("http://proxy-target.test/page");
+
+            assertThat(page.isUsable()).isTrue();
+            assertThat(page.getTitle()).isEqualTo("Proxied page");
+            assertThat(sawPageRequest).isTrue();
+        } finally {
+            proxy.stop(0);
         }
     }
 

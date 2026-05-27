@@ -1,5 +1,7 @@
 package com.aiinsight.service;
 
+import com.aiinsight.config.HttpClientFactory;
+import com.aiinsight.config.HttpProxyProperties;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.extern.slf4j.Slf4j;
@@ -27,10 +29,15 @@ public class TavilySearchProvider implements SearchProvider {
     private final RestClient restClient;
 
     public TavilySearchProvider(TavilySearchProperties properties, ObjectMapper objectMapper) {
+        this(properties, objectMapper, null);
+    }
+
+    public TavilySearchProvider(TavilySearchProperties properties,
+                                ObjectMapper objectMapper,
+                                HttpProxyProperties proxyProperties) {
         this.properties = properties;
         this.objectMapper = objectMapper;
-        HttpClient httpClient = HttpClient.newBuilder()
-                .connectTimeout(properties.getTimeout())
+        HttpClient httpClient = HttpClientFactory.builder(properties.getTimeout(), proxyProperties)
                 .build();
         this.restClient = RestClient.builder()
                 .requestFactory(new JdkClientHttpRequestFactory(httpClient))

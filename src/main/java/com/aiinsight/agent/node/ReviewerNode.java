@@ -43,6 +43,8 @@ import java.util.stream.Collectors;
 public class ReviewerNode implements AgentNode {
 
     private static final Pattern CITATION_PATTERN = Pattern.compile("\\[(S\\d+)]");
+    private static final Pattern CITATION_KEY_PATTERN = Pattern.compile("\\bS\\d+\\b");
+    private static final int MAX_FINDING_CATEGORY_LENGTH = 128;
 
     private final CitationCoverageEvaluator citationCoverageEvaluator;
     private final LlmClient llmClient;
@@ -194,16 +196,16 @@ public class ReviewerNode implements AgentNode {
 
     private String reviewWithLlm(AnalysisRun run, AnalysisArtifact draft) {
         CompletableFuture<LlmSubtaskResult> claimEvidenceTask = CompletableFuture.supplyAsync(
-                () -> runReviewSubtask(run, "claim-evidence", () -> reviewClaimEvidenceWithLlm(run))
+                AgentTraceContext.wrap(() -> runReviewSubtask(run, "claim-evidence", () -> reviewClaimEvidenceWithLlm(run)))
         );
         CompletableFuture<LlmSubtaskResult> reportOverclaimTask = CompletableFuture.supplyAsync(
-                () -> runReviewSubtask(run, "report-overclaim", () -> reviewReportOverclaimWithLlm(run, draft))
+                AgentTraceContext.wrap(() -> runReviewSubtask(run, "report-overclaim", () -> reviewReportOverclaimWithLlm(run, draft)))
         );
         CompletableFuture<LlmSubtaskResult> schemaConsistencyTask = CompletableFuture.supplyAsync(
-                () -> runReviewSubtask(run, "schema-consistency", () -> reviewSchemaConsistencyWithLlm(run))
+                AgentTraceContext.wrap(() -> runReviewSubtask(run, "schema-consistency", () -> reviewSchemaConsistencyWithLlm(run)))
         );
         CompletableFuture<LlmSubtaskResult> sourceQualityTask = CompletableFuture.supplyAsync(
-                () -> runReviewSubtask(run, "source-quality", () -> reviewSourceQualityWithLlm(run))
+                AgentTraceContext.wrap(() -> runReviewSubtask(run, "source-quality", () -> reviewSourceQualityWithLlm(run)))
         );
         CompletableFuture.allOf(claimEvidenceTask, reportOverclaimTask, schemaConsistencyTask, sourceQualityTask).join();
 
@@ -387,7 +389,7 @@ public class ReviewerNode implements AgentNode {
                         result.succeeded() ? "" : " (" + result.errorMessage() + ")"
                 ))
                 .collect(Collectors.joining("\n"));
-        AgentTraceContext.recordModelResponse("Parallel Reviewer LLM subtasks:\n" + summary, null, null);
+        AgentTraceContext.recordOutputSummary("Parallel Reviewer LLM subtasks:\n" + summary);
     }
 
     private LlmReviewResult parseLlmReviewResult(String raw) {
@@ -433,15 +435,31 @@ public class ReviewerNode implements AgentNode {
         }
         ReviewFinding finding = new ReviewFinding(
                 parseSeverity(draft.severity),
-                StringUtils.hasText(draft.category) ? draft.category.trim() : "llm_semantic_review",
+                sanitizeCategory(draft.category),
                 draft.message.trim(),
                 StringUtils.hasText(draft.recommendation) ? draft.recommendation.trim() : "请人工复核该问题并补充证据或修订报告。"
         );
         finding.setClaimId(blankToNull(draft.claimId));
-        finding.setCitationKey(blankToNull(draft.citationKey));
+        finding.setCitationKey(sanitizeCitationKey(draft.citationKey));
         finding.setParagraphIndex(draft.paragraphIndex);
         finding.setExcerpt(blankToNull(draft.excerpt));
         return finding;
+    }
+
+    private String sanitizeCategory(String category) {
+        String normalized = StringUtils.hasText(category) ? category.trim() : "llm_semantic_review";
+        if (normalized.length() <= MAX_FINDING_CATEGORY_LENGTH) {
+            return normalized;
+        }
+        return normalized.substring(0, MAX_FINDING_CATEGORY_LENGTH);
+    }
+
+    private String sanitizeCitationKey(String citationKey) {
+        if (!StringUtils.hasText(citationKey)) {
+            return null;
+        }
+        Matcher matcher = CITATION_KEY_PATTERN.matcher(citationKey.trim());
+        return matcher.find() ? matcher.group() : null;
     }
 
     private ReviewSeverity parseSeverity(String value) {

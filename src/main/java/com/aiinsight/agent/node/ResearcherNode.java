@@ -173,13 +173,13 @@ public class ResearcherNode implements AgentNode {
 
     private ResearchPlan generateResearchPlanWithLlm(AnalysisRun run, ResearchPlan fallback) {
         CompletableFuture<LlmSubtaskResult<ResearchPlan>> strategyTask = CompletableFuture.supplyAsync(
-                () -> runResearchPlanSubtask("research-strategy", () -> generateResearchStrategyWithLlm(run))
+                AgentTraceContext.wrap(() -> runResearchPlanSubtask("research-strategy", () -> generateResearchStrategyWithLlm(run)))
         );
         CompletableFuture<LlmSubtaskResult<Questionnaire>> questionnaireTask = CompletableFuture.supplyAsync(
-                () -> runResearchPlanSubtask("questionnaire", () -> generateQuestionnaireWithLlm(run))
+                AgentTraceContext.wrap(() -> runResearchPlanSubtask("questionnaire", () -> generateQuestionnaireWithLlm(run)))
         );
         CompletableFuture<LlmSubtaskResult<InterviewGuide>> interviewTask = CompletableFuture.supplyAsync(
-                () -> runResearchPlanSubtask("interview-guide", () -> generateInterviewGuideWithLlm(run))
+                AgentTraceContext.wrap(() -> runResearchPlanSubtask("interview-guide", () -> generateInterviewGuideWithLlm(run)))
         );
         CompletableFuture.allOf(strategyTask, questionnaireTask, interviewTask).join();
 
@@ -360,7 +360,7 @@ public class ResearcherNode implements AgentNode {
                         result.succeeded() ? "" : " (" + result.errorMessage() + ")"
                 ))
                 .collect(Collectors.joining("\n"));
-        AgentTraceContext.recordModelResponse("Parallel Researcher LLM subtasks:\n" + summary, null, null);
+        AgentTraceContext.recordOutputSummary("Parallel Researcher LLM subtasks:\n" + summary);
     }
 
     private String compactEvidenceSources(AnalysisRun run, int limit) {
