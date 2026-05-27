@@ -2,18 +2,25 @@ package com.aiinsight.service;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.http.client.JdkClientHttpRequestFactory;
 import org.springframework.util.StringUtils;
 import org.springframework.web.client.RestClient;
+import org.springframework.web.client.RestClientException;
+import org.springframework.web.client.RestClientResponseException;
+import org.springframework.web.client.ResourceAccessException;
 
 import java.net.http.HttpClient;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
+@Slf4j
 public class TavilySearchProvider implements SearchProvider {
+
+    private static final int MAX_ATTEMPTS = 2;
 
     private final TavilySearchProperties properties;
     private final ObjectMapper objectMapper;
@@ -49,12 +56,45 @@ public class TavilySearchProvider implements SearchProvider {
                 "max_results", Math.max(1, Math.min(count, properties.getMaxResults())),
                 "include_raw_content", properties.isIncludeRawContent()
         );
-        String body = restClient.post()
-                .uri(properties.getBaseUrl())
-                .body(request)
-                .retrieve()
-                .body(String.class);
+        String body = postWithRetry(request, query);
         return parseResults(body, query);
+    }
+
+    private String postWithRetry(Map<String, Object> request, String query) {
+        RuntimeException lastFailure = null;
+        for (int attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+            try {
+                return restClient.post()
+                        .uri(properties.getBaseUrl())
+                        .body(request)
+                        .retrieve()
+                        .body(String.class);
+            } catch (RestClientException ex) {
+                lastFailure = ex;
+                if (attempt >= MAX_ATTEMPTS || !isRetryable(ex)) {
+                    throw ex;
+                }
+                log.warn("Tavily search request failed transiently; retrying once: query={}, exceptionType={}, message={}",
+                        query,
+                        ex.getClass().getName(),
+                        ex.getMessage());
+            }
+        }
+        throw lastFailure;
+    }
+
+    private boolean isRetryable(RestClientException ex) {
+        if (ex instanceof ResourceAccessException) {
+            return true;
+        }
+        if (ex instanceof RestClientResponseException responseException) {
+            int status = responseException.getStatusCode().value();
+            return status == 429 || status >= 500;
+        }
+        String message = ex.getMessage();
+        return message != null && (message.contains("Connection reset")
+                || message.contains("timed out")
+                || message.contains("I/O error"));
     }
 
     private List<SearchResult> parseResults(String body, String query) {

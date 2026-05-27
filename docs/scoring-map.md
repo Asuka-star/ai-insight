@@ -7,7 +7,7 @@
 | 评分维度 | 权重 | 当前支撑能力 | 演示证据 |
 | --- | --- | --- | --- |
 | 多 Agent 协作与输出可信度 | 35% | LangGraph4j DAG、Reviewer 打回、citation、ReviewDecision、证据链 | Agent DAG、质检与打回、EvidencePanel、WorkflowTransitions |
-| 技术深度与工程完整度 | 25% | Spring Boot、LangGraph4j、SSE、Trace、PostgreSQL JSONB、Web fetch、单 Agent 重跑 | Mermaid 图、TraceDrawer、API、测试结果 |
+| 技术深度与工程完整度 | 25% | Spring Boot、LangGraph4j、SSE、Trace、PostgreSQL JSONB、Web fetch、单 Agent 重跑 | ReactFlow DAG、TraceDrawer、API、测试结果 |
 | 业务价值与产品体验 | 20% | 任务确认流、前端 workbench、上下文补充、版本面板、指标面板 | 三栏工作台、范围确认、报告版本、运行指标 |
 | 代码质量与文档 | 10% | 分层结构、单元测试、路线图、演示脚本、架构文档 | `src/main/java` 模块结构、`docs/` 文档、`mvn test` |
 | 合规、材料与答辩 | 10% | robots 检查、敏感资料标记、API Key 隔离、搜索来源说明、合规说明 | EvidenceSource complianceNote、`.env` 忽略、合规文档 |
@@ -75,8 +75,7 @@
 
 演示方式：
 
-- 展示 `/api/analysis-runs/workflow/mermaid`。
-- 展示前端 Mermaid 源码和 DAG。
+- 展示前端 ReactFlow Agent DAG。
 - 说明条件边由 ReviewDecision 驱动。
 
 ### 3.2 可观测性
@@ -161,7 +160,7 @@ Trace 字段：
 
 - 左侧：任务配置、范围确认、上下文补充、补充资料、运行指标。
 - 中间：DAG、最终报告、Schema、竞品矩阵、报告版本。
-- 右侧：时间线、证据来源、质检与打回、Mermaid 源码。
+- 右侧：时间线、证据来源、质检与打回、运行指标。
 
 演示方式：
 

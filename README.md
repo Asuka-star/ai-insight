@@ -171,12 +171,6 @@ curl "http://localhost:8080/api/analysis-runs/{runId}/retrieval?query=价格%20�
 curl -N http://localhost:8080/api/analysis-runs/{runId}/events
 ```
 
-查看 LangGraph4j Mermaid 图：
-
-```bash
-curl http://localhost:8080/api/analysis-runs/workflow/mermaid
-```
-
 重跑单个 Agent：
 
 ```bash

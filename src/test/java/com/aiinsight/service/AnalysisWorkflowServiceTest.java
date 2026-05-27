@@ -88,10 +88,6 @@ class AnalysisWorkflowServiceTest {
         assertThat(withContext.getRequirement().getDimensions()).contains("权限协作", "AI 搜索", "价格策略", "用户评价");
         assertThat(withContext.getRequirement().getSourcePreferences()).contains("pricing_page", "public_reviews");
 
-        assertThatThrownBy(() -> service.startExecution(draft.getId()))
-                .isInstanceOf(InvalidRunStateException.class)
-                .hasMessageContaining("scope must be confirmed");
-
         UpdateAnalysisRequirementRequest reconfirm = new UpdateAnalysisRequirementRequest();
         reconfirm.setCompetitors(withContext.getRequirement().getCompetitors());
         reconfirm.setDimensions(withContext.getRequirement().getDimensions());
@@ -105,7 +101,7 @@ class AnalysisWorkflowServiceTest {
     }
 
     @Test
-    void blocksStartBeforeScopeConfirmation() {
+    void startAutoConfirmsScopeDraft() {
         AnalysisWorkflowService service = newService();
         CreateAnalysisRunRequest request = new CreateAnalysisRunRequest();
         request.setPrompt("Analyze Notion and Confluence for AI document collaboration.");
@@ -113,10 +109,13 @@ class AnalysisWorkflowServiceTest {
 
         assertThat(run.getStatus()).isEqualTo(AnalysisStatus.AWAITING_CONFIRMATION);
         assertThat(run.getClarificationDraft().isConfirmed()).isFalse();
-        assertThatThrownBy(() -> service.startExecution(run.getId()))
-                .isInstanceOf(InvalidRunStateException.class)
-                .hasMessageContaining("scope must be confirmed");
-        assertThat(service.get(run.getId()).getSteps()).isEmpty();
+
+        var finished = service.startExecution(run.getId());
+
+        assertThat(finished.getStatus()).isEqualTo(AnalysisStatus.SUCCEEDED);
+        assertThat(finished.getClarificationDraft().isConfirmed()).isTrue();
+        assertThat(finished.getClarificationDraft().getConfirmedAt()).isNotNull();
+        assertThat(finished.getSteps()).isNotEmpty();
     }
 
     @Test
@@ -725,7 +724,7 @@ class AnalysisWorkflowServiceTest {
                         """;
             }
         };
-        SourceCollectionService sourceCollectionService = new SourceCollectionService(fetchAlwaysFails(), fakeSearchProvider());
+        SourceCollectionService sourceCollectionService = new SourceCollectionService(fetchUsefulPages(), fakeSearchProvider());
         ResearcherNode researcherNode = researcherNode(sourceCollectionService, researchPlanLlm);
         var run = new com.aiinsight.model.run.AnalysisRun(new com.aiinsight.model.run.AnalysisRequirement(
                 "分析 Salesforce 和 HubSpot 在 CRM 销售自动化方向的竞品机会。",
@@ -1263,7 +1262,7 @@ class AnalysisWorkflowServiceTest {
         AnalysisRunRepository repository = new TestAnalysisRunRepository();
         AnalysisEventBroker eventBroker = new AnalysisEventBroker();
         WorkflowNodeExecutor nodeExecutor = new WorkflowNodeExecutor(repository, eventBroker);
-        SourceCollectionService sourceCollectionService = new SourceCollectionService(fetchAlwaysFails(), fakeSearchProvider());
+        SourceCollectionService sourceCollectionService = new SourceCollectionService(fetchUsefulPages(), fakeSearchProvider());
         FallbackClarificationDraftFactory fallbackClarificationDraftFactory = new FallbackClarificationDraftFactory();
         AnalysisLangGraphWorkflow graphWorkflow = new AnalysisLangGraphWorkflow(
                 List.of(
@@ -1279,8 +1278,6 @@ class AnalysisWorkflowServiceTest {
                 repository,
                 eventBroker
         );
-        assertThat(graphWorkflow.mermaid())
-                .contains("REVIEW_GATE", AgentName.CLARIFIER.name(), AgentName.RESEARCHER.name());
         return new AnalysisWorkflowService(
                 repository,
                 new AnalysisRequestNormalizer(),
@@ -1289,8 +1286,7 @@ class AnalysisWorkflowServiceTest {
                 graphWorkflow,
                 new EvidenceRetrievalService(),
                 sourceCollectionService,
-                new EvidenceChunkService(),
-                fallbackClarificationDraftFactory
+                new EvidenceChunkService()
         );
     }
 
@@ -1299,6 +1295,25 @@ class AnalysisWorkflowServiceTest {
             @Override
             public FetchedPage fetch(String url) {
                 return FetchedPage.failed(url, "simulated fetch failure");
+            }
+        };
+    }
+
+    private WebPageFetchService fetchUsefulPages() {
+        return new WebPageFetchService() {
+            @Override
+            public FetchedPage fetch(String url) {
+                return FetchedPage.success(
+                        url,
+                        "Useful page for " + url,
+                        """
+                                This official product documentation page describes pricing, reviews, enterprise controls,
+                                collaboration workflows, permission governance, AI features, release notes, support options,
+                                customer feedback, integration details, and product positioning for competitive analysis.
+                                The content is intentionally long enough to be treated as a useful fetched search result.
+                                """,
+                        "robots.txt checked: allowed for public fetch."
+                );
             }
         };
     }

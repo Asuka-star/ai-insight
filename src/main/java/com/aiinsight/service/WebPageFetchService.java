@@ -10,8 +10,9 @@ import org.springframework.web.util.HtmlUtils;
 
 import java.net.URI;
 import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
 import java.time.Duration;
-import java.util.List;
 import java.util.Locale;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -22,16 +23,29 @@ public class WebPageFetchService {
 
     private static final String USER_AGENT = "AI-Insight-ResearchBot/0.1";
     private static final int MAX_TEXT_LENGTH = 12_000;
+    private static final Duration CONNECT_TIMEOUT = Duration.ofSeconds(5);
+    private static final Duration READ_TIMEOUT = Duration.ofSeconds(10);
     private static final Pattern TITLE_PATTERN = Pattern.compile("(?is)<title[^>]*>(.*?)</title>");
 
+    private final HttpClient httpClient;
+    private final Duration readTimeout;
     private final RestClient restClient;
 
     public WebPageFetchService() {
+        this(CONNECT_TIMEOUT, READ_TIMEOUT);
+    }
+
+    WebPageFetchService(Duration connectTimeout, Duration readTimeout) {
         HttpClient httpClient = HttpClient.newBuilder()
-                .connectTimeout(Duration.ofSeconds(8))
+                .connectTimeout(connectTimeout)
+                .followRedirects(HttpClient.Redirect.NORMAL)
                 .build();
+        this.httpClient = httpClient;
+        this.readTimeout = readTimeout;
+        JdkClientHttpRequestFactory requestFactory = new JdkClientHttpRequestFactory(httpClient);
+        requestFactory.setReadTimeout(readTimeout);
         this.restClient = RestClient.builder()
-                .requestFactory(new JdkClientHttpRequestFactory(httpClient))
+                .requestFactory(requestFactory)
                 .defaultHeader(HttpHeaders.USER_AGENT, USER_AGENT)
                 .build();
     }
@@ -39,25 +53,28 @@ public class WebPageFetchService {
     public FetchedPage fetch(String url) {
         URI uri = URI.create(url);
         validateHttpUri(uri);
-        // 抓取用户提供的公开 URL 前先做轻量 robots 检查；被阻止或失败时返回不可用页面，让流程可降级。
         RobotsDecision robotsDecision = robotsDecision(uri);
         if (!robotsDecision.allowed()) {
             log.warn("Web page fetch blocked by robots: url={}, note={}", url, robotsDecision.note());
             return FetchedPage.blocked(url, robotsDecision.note());
         }
         try {
-            String html = restClient.get()
-                    .uri(uri)
-                    .retrieve()
-                    .body(String.class);
-            String title = extractTitle(html, uri);
+            HttpResponse<String> response = httpClient.send(pageRequest(uri), HttpResponse.BodyHandlers.ofString());
+            if (response.statusCode() >= 400) {
+                throw new IllegalStateException("HTTP " + response.statusCode());
+            }
+            String html = response.body();
+            URI finalUri = response.uri();
+            String title = extractTitle(html, finalUri);
             String text = extractText(html);
+            String finalUrl = finalUri.toString();
+            String complianceNote = redirectNote(url, finalUrl, robotsDecision.note());
             log.info("Web page fetch completed: url={}, title={}, rawTextChars={}, note={}",
-                    url,
+                    finalUrl,
                     title,
                     text.length(),
-                    robotsDecision.note());
-            return FetchedPage.success(url, title, truncate(text), robotsDecision.note());
+                    complianceNote);
+            return FetchedPage.success(finalUrl, title, truncate(text), complianceNote);
         } catch (RuntimeException ex) {
             log.warn("Web page fetch failed: url={}, exceptionType={}, message={}, note={}",
                     url,
@@ -65,7 +82,29 @@ public class WebPageFetchService {
                     ex.getMessage(),
                     robotsDecision.note());
             return FetchedPage.failed(url, "页面抓取失败：" + ex.getMessage() + "；" + robotsDecision.note());
+        } catch (Exception ex) {
+            log.warn("Web page fetch failed: url={}, exceptionType={}, message={}, note={}",
+                    url,
+                    ex.getClass().getName(),
+                    ex.getMessage(),
+                    robotsDecision.note());
+            return FetchedPage.failed(url, "页面抓取失败：" + ex.getMessage() + "；" + robotsDecision.note());
         }
+    }
+
+    private HttpRequest pageRequest(URI uri) {
+        return HttpRequest.newBuilder(uri)
+                .timeout(readTimeout)
+                .header(HttpHeaders.USER_AGENT, USER_AGENT)
+                .GET()
+                .build();
+    }
+
+    private String redirectNote(String originalUrl, String finalUrl, String robotsNote) {
+        if (normalizeUrl(originalUrl).equals(normalizeUrl(finalUrl))) {
+            return robotsNote;
+        }
+        return robotsNote + " Redirect followed from " + originalUrl + " to " + finalUrl + ".";
     }
 
     private void validateHttpUri(URI uri) {
@@ -145,6 +184,10 @@ public class WebPageFetchService {
 
     private String normalizeText(String text) {
         return HtmlUtils.htmlUnescape(text).replaceAll("\\s+", " ").trim();
+    }
+
+    private String normalizeUrl(String url) {
+        return url == null ? "" : url.trim().replaceFirst("/+$", "").toLowerCase(Locale.ROOT);
     }
 
     private String truncate(String text) {

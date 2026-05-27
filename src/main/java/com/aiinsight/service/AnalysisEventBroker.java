@@ -15,13 +15,13 @@ import java.util.concurrent.CopyOnWriteArrayList;
 @Component
 public class AnalysisEventBroker {
 
-    private static final long SSE_TIMEOUT = 30 * 60 * 1000L;
+    private static final long SSE_NO_TIMEOUT = 0L;
 
     // 一个 run 可以被多个工作台页面同时订阅，所以按 runId 保存 emitter 列表。
     private final ConcurrentMap<UUID, List<SseEmitter>> emitters = new ConcurrentHashMap<>();
 
     public SseEmitter subscribe(UUID runId) {
-        SseEmitter emitter = new SseEmitter(SSE_TIMEOUT);
+        SseEmitter emitter = new SseEmitter(SSE_NO_TIMEOUT);
         emitters.computeIfAbsent(runId, ignored -> new CopyOnWriteArrayList<>()).add(emitter);
         // 浏览器断开后及时移除，防止长期演示时堆积失效连接。
         emitter.onCompletion(() -> remove(runId, emitter));

@@ -92,10 +92,6 @@ public class AnalysisWorkflowService {
         return evidenceRetrievalService.retrieve(get(runId), query, topK);
     }
 
-    public String workflowMermaid() {
-        return graphWorkflow.mermaid();
-    }
-
     public AnalysisRun updateRequirement(UUID runId, UpdateAnalysisRequirementRequest request) {
         AnalysisRun run = get(runId);
         ensureRequirementEditable(run);
@@ -125,7 +121,7 @@ public class AnalysisWorkflowService {
             run.getClarificationDraft().setConfirmed(true);
             run.getClarificationDraft().setConfirmedAt(Instant.now());
         }
-        run.setStatus(AnalysisStatus.PENDING);
+        run.setStatus(AnalysisStatus.RUNNING);
         repository.save(run);
         eventBroker.publish(run, "run_start_requested", "分析工作流已请求启动");
         // LangGraph 执行可能包含外部采集和 LLM 调用，放到异步线程后接口可以立即返回当前 run 状态。

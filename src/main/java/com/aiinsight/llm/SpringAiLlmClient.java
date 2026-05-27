@@ -1,6 +1,7 @@
 package com.aiinsight.llm;
 
 import com.aiinsight.observability.AgentTraceContext;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.messages.Message;
 import org.springframework.ai.chat.messages.SystemMessage;
@@ -10,12 +11,22 @@ import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.chat.prompt.Prompt;
 import org.springframework.ai.openai.OpenAiChatOptions;
-import lombok.extern.slf4j.Slf4j;
 
+import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 
 @Slf4j
 class SpringAiLlmClient implements LlmClient {
+
+    private static final int RETRY_TOKEN_HEADROOM = 800;
+    private static final int MAX_RETRY_TOKENS = 6000;
+    private static final String COMPACT_RETRY_INSTRUCTION = """
+            Return only the final answer. Do not include reasoning or explanations.
+            Keep the response compact and valid for the requested format.
+            If the requested output is JSON, return a single valid JSON object.
+            Prefer a shorter complete answer over a long truncated answer.
+            """;
 
     private final ChatModel chatModel;
     private final XiaomiLlmProperties properties;
@@ -33,27 +44,24 @@ class SpringAiLlmClient implements LlmClient {
     @Override
     public String complete(ChatRequest request) {
         ChatOptions options = request.getOptions() == null ? ChatOptions.deterministic() : request.getOptions();
-        // Trace 保存完整 Prompt 和模型输出；日志只打印元信息，避免控制台泄露报告内容或用户资料。
         AgentTraceContext.recordModelRequest(properties.getModel(), request);
+
         long startedAt = System.currentTimeMillis();
-        log.info("LLM request started: model={}, messages={}, temperature={}, maxTokens={}",
-                properties.getModel(), request.getMessages().size(), options.getTemperature(), options.getMaxTokens());
-        OpenAiChatOptions springAiOptions = OpenAiChatOptions.builder()
-                .model(properties.getModel())
-                .temperature(options.getTemperature())
-                .maxTokens(options.getMaxTokens())
-                .build();
-        ChatResponse response;
-        try {
-            response = chatModel.call(new Prompt(toSpringMessages(request.getMessages()), springAiOptions));
-        } catch (RuntimeException ex) {
-            log.error("LLM request failed: model={}, latencyMs={}, exceptionType={}, message={}",
+        ChatResponse response = callModel(request, options, startedAt, 1);
+        String content = responseText(response);
+        ChatOptions effectiveOptions = options;
+
+        if (!hasText(content) && shouldRetryBlankLength(response, options)) {
+            ChatOptions retryOptions = retryOptions(options);
+            ChatRequest retryRequest = compactRetryRequest(request);
+            log.warn("LLM response blank because output reached length limit; retrying compactly: model={}, originalMaxTokens={}, retryMaxTokens={}, generationMetadata={}",
                     properties.getModel(),
-                    System.currentTimeMillis() - startedAt,
-                    ex.getClass().getName(),
-                    ex.getMessage(),
-                    ex);
-            throw ex;
+                    options.getMaxTokens(),
+                    retryOptions.getMaxTokens(),
+                    generationMetadata(response));
+            response = callModel(retryRequest, retryOptions, startedAt, 2);
+            content = responseText(response);
+            effectiveOptions = retryOptions;
         }
 
         if (response == null || response.getResult() == null || response.getResult().getOutput() == null) {
@@ -63,9 +71,8 @@ class SpringAiLlmClient implements LlmClient {
                     generationMetadata(response));
             throw new IllegalStateException("Spring AI returned an empty chat response");
         }
-        String content = response.getResult().getOutput().getText();
-        if (content == null || content.isBlank()) {
-            Usage usage = response.getMetadata() == null ? null : response.getMetadata().getUsage();
+        if (!hasText(content)) {
+            Usage usage = usage(response);
             log.warn("LLM response blank: model={}, latencyMs={}, promptTokens={}, completionTokens={}, generationMetadata={}",
                     properties.getModel(),
                     System.currentTimeMillis() - startedAt,
@@ -74,7 +81,8 @@ class SpringAiLlmClient implements LlmClient {
                     generationMetadata(response));
             throw new IllegalStateException("Spring AI returned an empty chat message");
         }
-        Usage usage = response.getMetadata() == null ? null : response.getMetadata().getUsage();
+
+        Usage usage = usage(response);
         AgentTraceContext.recordModelResponse(
                 content,
                 usage == null ? null : usage.getPromptTokens(),
@@ -86,15 +94,83 @@ class SpringAiLlmClient implements LlmClient {
                 usage == null ? null : usage.getPromptTokens(),
                 usage == null ? null : usage.getCompletionTokens(),
                 generationMetadata(response));
-        if (usage != null && usage.getCompletionTokens() != null && usage.getCompletionTokens() >= options.getMaxTokens()) {
+        if (usage != null && usage.getCompletionTokens() != null && usage.getCompletionTokens() >= effectiveOptions.getMaxTokens()) {
             log.warn("LLM response reached maxTokens: model={}, maxTokens={}, promptTokens={}, completionTokens={}, generationMetadata={}",
                     properties.getModel(),
-                    options.getMaxTokens(),
+                    effectiveOptions.getMaxTokens(),
                     usage.getPromptTokens(),
                     usage.getCompletionTokens(),
                     generationMetadata(response));
         }
         return content.trim();
+    }
+
+    private ChatResponse callModel(ChatRequest request, ChatOptions options, long startedAt, int attempt) {
+        log.info("LLM request started: model={}, attempt={}, messages={}, temperature={}, maxTokens={}",
+                properties.getModel(), attempt, request.getMessages().size(), options.getTemperature(), options.getMaxTokens());
+        OpenAiChatOptions springAiOptions = OpenAiChatOptions.builder()
+                .model(properties.getModel())
+                .temperature(options.getTemperature())
+                .maxTokens(options.getMaxTokens())
+                .build();
+        try {
+            return chatModel.call(new Prompt(toSpringMessages(request.getMessages()), springAiOptions));
+        } catch (RuntimeException ex) {
+            log.error("LLM request failed: model={}, attempt={}, latencyMs={}, exceptionType={}, message={}",
+                    properties.getModel(),
+                    attempt,
+                    System.currentTimeMillis() - startedAt,
+                    ex.getClass().getName(),
+                    ex.getMessage(),
+                    ex);
+            throw ex;
+        }
+    }
+
+    private boolean shouldRetryBlankLength(ChatResponse response, ChatOptions options) {
+        if (response == null || response.getResult() == null) {
+            return false;
+        }
+        String finishReason = response.getResult().getMetadata() == null
+                ? null
+                : response.getResult().getMetadata().getFinishReason();
+        if (finishReason != null && finishReason.toUpperCase(Locale.ROOT).contains("LENGTH")) {
+            return true;
+        }
+        Usage usage = usage(response);
+        return usage != null
+                && usage.getCompletionTokens() != null
+                && usage.getCompletionTokens() >= options.getMaxTokens();
+    }
+
+    private ChatOptions retryOptions(ChatOptions options) {
+        int retryMaxTokens = Math.min(
+                MAX_RETRY_TOKENS,
+                Math.max(options.getMaxTokens() + RETRY_TOKEN_HEADROOM, (int) Math.ceil(options.getMaxTokens() * 1.5))
+        );
+        return new ChatOptions(options.getTemperature(), retryMaxTokens);
+    }
+
+    private ChatRequest compactRetryRequest(ChatRequest request) {
+        List<ChatMessage> messages = new ArrayList<>();
+        messages.add(ChatMessage.system(COMPACT_RETRY_INSTRUCTION));
+        messages.addAll(request.getMessages());
+        return new ChatRequest(messages, request.getOptions());
+    }
+
+    private String responseText(ChatResponse response) {
+        if (response == null || response.getResult() == null || response.getResult().getOutput() == null) {
+            return null;
+        }
+        return response.getResult().getOutput().getText();
+    }
+
+    private Usage usage(ChatResponse response) {
+        return response == null || response.getMetadata() == null ? null : response.getMetadata().getUsage();
+    }
+
+    private boolean hasText(String value) {
+        return value != null && !value.isBlank();
     }
 
     private String generationMetadata(ChatResponse response) {

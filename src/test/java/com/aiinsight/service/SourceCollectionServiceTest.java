@@ -50,7 +50,7 @@ class SourceCollectionServiceTest {
 
     @Test
     void collectsUserProvidedEvidenceBeforeSearchEvidence() {
-        SourceCollectionService service = new SourceCollectionService(fetchAlwaysFails(), fakeSearchProvider());
+        SourceCollectionService service = new SourceCollectionService(fetchUsefulPages(), fakeSearchProvider());
         AnalysisRequirement requirement = new AnalysisRequirement(
                 "Analyze Notion",
                 "AI documents",
@@ -77,7 +77,7 @@ class SourceCollectionServiceTest {
         assertThat(sources.get(0).getComplianceNote()).contains("internal-only");
         assertThat(sources)
                 .extracting(EvidenceSource::getSourceType)
-                .contains("search_result_snippet");
+                .contains("search_result_web_page");
         assertThat(sources)
                 .extracting(EvidenceSource::getUrl)
                 .filteredOn(url -> url.startsWith("https://"))
@@ -102,7 +102,7 @@ class SourceCollectionServiceTest {
 
     @Test
     void usesSearchResultsInsteadOfBuiltInOrSeedEvidence() {
-        SourceCollectionService service = new SourceCollectionService(fetchAlwaysFails(), fakeSearchProvider());
+        SourceCollectionService service = new SourceCollectionService(fetchUsefulPages(), fakeSearchProvider());
         AnalysisRequirement requirement = new AnalysisRequirement(
                 "Analyze Notion and Confluence",
                 "AI documents",
@@ -119,24 +119,154 @@ class SourceCollectionServiceTest {
         assertThat(sources).allSatisfy(source -> assertThat(source.getUrl()).doesNotContain("example.com"));
         assertThat(sources)
                 .extracting(source -> source.getSourceType())
-                .containsOnly("search_result_snippet");
+                .containsOnly("search_result_web_page");
         assertThat(sources)
                 .extracting(source -> source.getCollectionStatus())
-                .allMatch(status -> status.equals("FETCH_FAILED"));
+                .allMatch(status -> status.equals("FETCHED"));
         assertThat(sources)
                 .extracting(source -> source.getFreshness())
-                .allMatch(freshness -> freshness.equals("SEARCH_RESULT_SNIPPET"));
+                .allMatch(freshness -> freshness.equals("LIVE_FETCHED"));
         assertThat(sources)
                 .extracting(source -> source.getComplianceNote())
-                .allMatch(note -> note.contains("Search result snippet only"));
+                .allMatch(note -> note.contains("Search query="));
         assertThat(sources)
                 .extracting(source -> source.getUrl())
                 .anyMatch(url -> url.contains("search.example.test"));
     }
 
     @Test
+    void dropsAntiBotSearchSnippetsWhenPageFetchFails() {
+        SourceCollectionService service = new SourceCollectionService(fetchAlwaysFails(), searchProviderWithSnippet(
+                "Blocked",
+                "https://blocked.example.test/page",
+                "Just a moment... Enable JavaScript and cookies to continue. Cloudflare Ray ID: abc"
+        ));
+        AnalysisRun run = new AnalysisRun(new AnalysisRequirement(
+                "Analyze Notion",
+                "AI documents",
+                List.of("Notion"),
+                List.of("core features"),
+                List.of("official_site"),
+                List.of()
+        ));
+
+        var sources = service.collect(run, false);
+
+        assertThat(sources).isEmpty();
+        assertThat(run.getRecommendedActions()).anyMatch(action -> action.contains("没有形成可用网页证据"));
+    }
+
+    @Test
+    void dropsUnusableFetchedSearchResultWithoutMarkingItAsFetchFailureEvidence() {
+        WebPageFetchService fetchService = new WebPageFetchService() {
+            @Override
+            public FetchedPage fetch(String url) {
+                return FetchedPage.success(
+                        url,
+                        "Just a moment...",
+                        "Enable JavaScript and cookies to continue. Cloudflare Ray ID: abc.",
+                        "robots.txt checked: allowed for public fetch."
+                );
+            }
+        };
+        SourceCollectionService service = new SourceCollectionService(fetchService, searchProviderWithSnippet(
+                "Blocked",
+                "https://blocked.example.test/page",
+                "Just a moment... Enable JavaScript and cookies to continue. Cloudflare Ray ID: abc"
+        ));
+        AnalysisRun run = new AnalysisRun(new AnalysisRequirement(
+                "Analyze Notion",
+                "AI documents",
+                List.of("Notion"),
+                List.of("core features"),
+                List.of("official_site"),
+                List.of()
+        ));
+
+        var sources = service.collect(run, false);
+
+        assertThat(sources).isEmpty();
+        assertThat(run.getRecommendedActions()).anyMatch(action -> action.contains("没有形成可用网页证据"));
+    }
+
+    @Test
+    void keepsUserProvidedUrlEvenWhenFetchedContentLooksLikeChallengePage() {
+        WebPageFetchService fetchService = new WebPageFetchService() {
+            @Override
+            public FetchedPage fetch(String url) {
+                return FetchedPage.success(
+                        url,
+                        "Just a moment...",
+                        "Enable JavaScript and cookies to continue. Cloudflare Ray ID: abc.",
+                        "robots.txt checked: allowed for public fetch."
+                );
+            }
+        };
+        SourceCollectionService service = new SourceCollectionService(fetchService, new NoopSearchProvider());
+        AnalysisRun run = new AnalysisRun(new AnalysisRequirement(
+                "Analyze user supplied URL",
+                "AI documents",
+                List.of("Notion"),
+                List.of("core features"),
+                List.of("official_site"),
+                List.of("https://user.example.test/provided")
+        ));
+
+        var sources = service.collect(run, false);
+
+        assertThat(sources).hasSize(1);
+        assertThat(sources.get(0).getSourceType()).isEqualTo("user_source_url");
+        assertThat(sources.get(0).getCollectionStatus()).isEqualTo("FETCHED");
+        assertThat(sources.get(0).getRawText()).contains("Cloudflare Ray ID");
+    }
+
+    @Test
+    void keepsFailedUserProvidedUrlAsFetchFailedEvidence() {
+        SourceCollectionService service = new SourceCollectionService(fetchAlwaysFails(), new NoopSearchProvider());
+        AnalysisRun run = new AnalysisRun(new AnalysisRequirement(
+                "Analyze user supplied URL",
+                "AI documents",
+                List.of("Notion"),
+                List.of("core features"),
+                List.of("official_site"),
+                List.of("https://user.example.test/unreachable")
+        ));
+
+        var sources = service.collect(run, false);
+
+        assertThat(sources).hasSize(1);
+        assertThat(sources.get(0).getSourceType()).isEqualTo("user_source_url");
+        assertThat(sources.get(0).getCollectionStatus()).isEqualTo("FETCH_FAILED");
+        assertThat(sources.get(0).getFreshness()).isEqualTo("FETCH_FAILED");
+        assertThat(sources.get(0).getSnippet()).contains("User-provided URL could not be fetched");
+        assertThat(run.getRecommendedActions()).anyMatch(action -> action.contains("User-provided URL fetch failed"));
+    }
+
+    @Test
+    void dropsSearchResultWhenFetchFailsEvenWithUsefulSnippet() {
+        String longSnippet = "Useful AI coding assistant comparison. " + "pricing and reviews ".repeat(200);
+        SourceCollectionService service = new SourceCollectionService(fetchAlwaysFails(), searchProviderWithSnippet(
+                "Useful comparison",
+                "https://search.example.test/useful-comparison",
+                longSnippet
+        ));
+        AnalysisRun run = new AnalysisRun(new AnalysisRequirement(
+                "Analyze Notion",
+                "AI documents",
+                List.of("Notion"),
+                List.of("pricing"),
+                List.of("public_reviews"),
+                List.of()
+        ));
+
+        var sources = service.collect(run, false);
+
+        assertThat(sources).isEmpty();
+    }
+
+    @Test
     void recollectionPreservesExistingCitationKeysAndAppendsNewSources() {
-        SourceCollectionService service = new SourceCollectionService(fetchAlwaysFails(), fakeSearchProvider());
+        SourceCollectionService service = new SourceCollectionService(fetchUsefulPages(), fakeSearchProvider());
         AnalysisRequirement requirement = new AnalysisRequirement(
                 "Analyze Notion",
                 "AI documents",
@@ -186,7 +316,7 @@ class SourceCollectionServiceTest {
 
     @Test
     void addsPreferredPricingAndFeedbackSearchSourcesWhenRequested() {
-        SourceCollectionService service = new SourceCollectionService(fetchAlwaysFails(), fakeSearchProvider());
+        SourceCollectionService service = new SourceCollectionService(fetchUsefulPages(), fakeSearchProvider());
         AnalysisRequirement requirement = new AnalysisRequirement(
                 "Analyze Notion",
                 "AI documents",
@@ -239,6 +369,25 @@ class SourceCollectionServiceTest {
         };
     }
 
+    private WebPageFetchService fetchUsefulPages() {
+        return new WebPageFetchService() {
+            @Override
+            public FetchedPage fetch(String url) {
+                return FetchedPage.success(
+                        url,
+                        "Useful page for " + url,
+                        """
+                                This official product documentation page describes pricing, reviews, enterprise controls,
+                                collaboration workflows, permission governance, AI features, release notes, support options,
+                                customer feedback, integration details, and product positioning for competitive analysis.
+                                The content is intentionally long enough to be treated as a useful fetched search result.
+                                """,
+                        "robots.txt checked: allowed for public fetch."
+                );
+            }
+        };
+    }
+
     private SearchProvider fakeSearchProvider() {
         return new SearchProvider() {
             @Override
@@ -255,6 +404,20 @@ class SourceCollectionServiceTest {
                         query,
                         1
                 ));
+            }
+        };
+    }
+
+    private SearchProvider searchProviderWithSnippet(String title, String url, String snippet) {
+        return new SearchProvider() {
+            @Override
+            public boolean isAvailable() {
+                return true;
+            }
+
+            @Override
+            public List<SearchResult> search(String query, int count) {
+                return List.of(new SearchResult(title, url, snippet, query, 1));
             }
         };
     }

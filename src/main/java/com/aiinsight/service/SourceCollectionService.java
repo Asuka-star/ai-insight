@@ -19,6 +19,7 @@ import java.util.Set;
 public class SourceCollectionService {
 
     private static final int SNIPPET_LENGTH = 220;
+    private static final int MIN_SEARCH_FETCH_TEXT_LENGTH = 180;
     private static final int MAX_RESULTS_PER_QUERY = 3;
     private static final int MAX_SEARCH_SOURCES = 8;
 
@@ -40,8 +41,6 @@ public class SourceCollectionService {
     }
 
     public List<EvidenceSource> collect(AnalysisRun run, boolean recollecting) {
-        // 采集是 append-only 语义：重跑 Researcher 时保留旧 EvidenceSource，
-        // 新来源从当前最大 S 编号继续追加，避免历史 artifact 中的 [S1] 指向变化。
         List<EvidenceSource> sources = new ArrayList<>(run.getEvidenceSources());
         Set<String> seenUrls = new LinkedHashSet<>();
         sources.stream()
@@ -49,28 +48,28 @@ public class SourceCollectionService {
                 .filter(StringUtils::hasText)
                 .map(this::normalizeUrl)
                 .forEach(seenUrls::add);
+
         int index = maxCitationNumber(sources) + 1;
-        // 用户明确提供的调研材料优先进入证据链；重跑时保留旧 citation，只追加新增资料。
         for (UserProvidedEvidence evidence : run.getUserProvidedEvidence()) {
             EvidenceSource source = fromUserProvidedEvidence("S" + index, evidence);
-            // 用户资料会生成 user-evidence://{id}，因此同一份资料多次重跑不会重复入链。
             if (seenUrls.add(normalizeUrl(source.getUrl()))) {
                 sources.add(source);
                 index++;
             }
         }
+
         for (String url : run.getRequirement().getSourceUrls()) {
             if (!seenUrls.add(normalizeUrl(url))) {
                 continue;
             }
-            EvidenceSource source = fromUrl("S" + index, url, "user_source_url", "");
-            if (source != null) {
-                sources.add(source);
-                index++;
-            } else {
-                run.getRecommendedActions().add("用户提供的公开 URL 抓取失败，已跳过：" + url);
+            EvidenceSource source = fromUserUrl("S" + index, url);
+            sources.add(source);
+            index++;
+            if ("FETCH_FAILED".equals(source.getCollectionStatus()) || "BLOCKED_BY_ROBOTS".equals(source.getCollectionStatus())) {
+                run.getRecommendedActions().add("User-provided URL fetch failed: " + url);
             }
         }
+
         appendSearchEvidence(run, sources, index, recollecting);
         return sources;
     }
@@ -132,9 +131,6 @@ public class SourceCollectionService {
     }
 
     private void appendSearchEvidence(AnalysisRun run, List<EvidenceSource> sources, int index, boolean recollecting) {
-        // 搜索 query 由任务范围、竞品、维度和返工状态共同决定；
-        // 默认优先官方/权威来源，来源偏好只决定重点覆盖类型，不降低来源质量要求。
-        // recollecting=true 时会更主动补价格页和用户评价，响应 Reviewer 的证据缺口。
         List<String> queries = searchQueryPlanner.plan(run, recollecting);
         if (queries.isEmpty()) {
             return;
@@ -146,12 +142,14 @@ public class SourceCollectionService {
             run.getRecommendedActions().add("搜索服务未配置：请设置 TAVILY_API_KEY，或在公开来源 URL 中手动补充可抓取页面。");
             return;
         }
+
         Set<String> seenUrls = new LinkedHashSet<>();
         sources.stream()
                 .map(EvidenceSource::getUrl)
                 .filter(StringUtils::hasText)
                 .map(this::normalizeUrl)
                 .forEach(seenUrls::add);
+
         int added = 0;
         int nextIndex = index;
         for (String query : queries) {
@@ -186,6 +184,7 @@ public class SourceCollectionService {
                 }
             }
         }
+
         if (added == 0) {
             log.warn("Source collection produced no search evidence: runId={}, queries={}, existingSources={}",
                     run.getId(),
@@ -196,13 +195,12 @@ public class SourceCollectionService {
     }
 
     private EvidenceSource fromSearchResult(String citationKey, SearchResult result) {
-        // 搜索命中的 URL 仍优先尝试真实抓取；只有抓取失败且搜索摘要可用时，
-        // 才降级为 SEARCH_RESULT_SNIPPET，并在 complianceNote 中明确标注。
         EvidenceSource fetched = fromUrl(
                 citationKey,
                 result.getUrl(),
                 "search_result_web_page",
-                "Search query=\"" + result.getQuery() + "\", rank=" + result.getRank() + ". "
+                "Search query=\"" + result.getQuery() + "\", rank=" + result.getRank() + ". ",
+                true
         );
         if (fetched != null) {
             log.info("Search result promoted to fetched evidence: citationKey={}, url={}, query={}, rank={}",
@@ -212,35 +210,58 @@ public class SourceCollectionService {
                     result.getRank());
             return fetched;
         }
-        if (!StringUtils.hasText(result.getSnippet())) {
-            log.warn("Search result dropped: citationKey={}, url={}, reason=no_snippet_after_fetch_failure, query={}, rank={}",
-                    citationKey,
-                    result.getUrl(),
-                    result.getQuery(),
-                    result.getRank());
-            return null;
-        }
-        log.warn("Search result snippet fallback activated: citationKey={}, url={}, reason=page_fetch_failed, query={}, rank={}, snippetChars={}",
+        log.debug("Search result dropped: citationKey={}, url={}, reason=fetch_failed_or_unusable_content, query={}, rank={}",
                 citationKey,
                 result.getUrl(),
                 result.getQuery(),
-                result.getRank(),
-                result.getSnippet().length());
+                result.getRank());
+        return null;
+    }
+
+    private EvidenceSource fromUserUrl(String citationKey, String url) {
+        WebPageFetchService.FetchedPage page;
+        try {
+            page = webPageFetchService.fetch(url);
+        } catch (RuntimeException ex) {
+            return failedUserUrl(citationKey, url, "FETCH_FAILED", "Page fetch failed: " + ex.getMessage());
+        }
+        if (!page.isUsable() || !StringUtils.hasText(page.getRawText())) {
+            return failedUserUrl(citationKey, url, page.getStatus(), page.getComplianceNote());
+        }
         return new EvidenceSource(
                 citationKey,
-                result.getTitle(),
-                result.getUrl(),
-                "search_result_snippet",
-                "FETCH_FAILED",
-                "SEARCH_RESULT_SNIPPET",
-                snippet(result.getSnippet()),
-                result.getSnippet(),
-                "Search result snippet only; page fetch failed or was not usable. "
-                        + "Search query=\"" + result.getQuery() + "\", rank=" + result.getRank()
+                page.getTitle(),
+                page.getUrl(),
+                "user_source_url",
+                page.getStatus(),
+                "LIVE_FETCHED",
+                snippet(page.getRawText()),
+                page.getRawText(),
+                page.getComplianceNote()
         );
     }
 
-    private EvidenceSource fromUrl(String citationKey, String url, String sourceType, String compliancePrefix) {
+    private EvidenceSource failedUserUrl(String citationKey, String url, String status, String complianceNote) {
+        String normalizedStatus = StringUtils.hasText(status) ? status : "FETCH_FAILED";
+        String message = "User-provided URL could not be fetched: " + url;
+        return new EvidenceSource(
+                citationKey,
+                url,
+                url,
+                "user_source_url",
+                normalizedStatus,
+                "FETCH_FAILED",
+                message,
+                "",
+                complianceNote
+        );
+    }
+
+    private EvidenceSource fromUrl(String citationKey,
+                                   String url,
+                                   String sourceType,
+                                   String compliancePrefix,
+                                   boolean requireUsefulFetchedContent) {
         WebPageFetchService.FetchedPage page;
         try {
             page = webPageFetchService.fetch(url);
@@ -248,6 +269,16 @@ public class SourceCollectionService {
             return null;
         }
         if (!page.isUsable() || !StringUtils.hasText(page.getRawText())) {
+            return null;
+        }
+        String unusableReason = searchFetchedContentIssue(page);
+        if (requireUsefulFetchedContent && unusableReason != null) {
+            log.debug("Fetched search result dropped: citationKey={}, url={}, reason={}, title={}, rawTextChars={}",
+                    citationKey,
+                    url,
+                    unusableReason,
+                    page.getTitle(),
+                    page.getRawText().length());
             return null;
         }
         return new EvidenceSource(
@@ -263,8 +294,39 @@ public class SourceCollectionService {
         );
     }
 
+    private String searchFetchedContentIssue(WebPageFetchService.FetchedPage page) {
+        String title = page.getTitle() == null ? "" : page.getTitle().toLowerCase(Locale.ROOT);
+        String text = page.getRawText() == null ? "" : page.getRawText().toLowerCase(Locale.ROOT);
+        String searchable = title + " " + text;
+        if (containsAny(searchable,
+                "301 moved permanently",
+                "302 found",
+                "403 forbidden",
+                "just a moment",
+                "attention required",
+                "enable javascript and cookies",
+                "sorry, you have been blocked",
+                "cloudflare ray id",
+                "challenge-platform")) {
+            return "anti_bot_or_redirect_page";
+        }
+        if (text.length() < MIN_SEARCH_FETCH_TEXT_LENGTH) {
+            return "thin_page_text";
+        }
+        return null;
+    }
+
     private boolean containsIgnoreCase(String text, String pattern) {
         return text != null && pattern != null && text.toLowerCase(Locale.ROOT).contains(pattern.toLowerCase(Locale.ROOT));
+    }
+
+    private boolean containsAny(String text, String... patterns) {
+        for (String pattern : patterns) {
+            if (text.contains(pattern)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private String normalizeUrl(String url) {

@@ -47,7 +47,7 @@ Spring Boot API
 ```text
 左侧：任务配置 / 范围确认 / 上下文补充 / 补充资料 / 指标
 中间：Agent DAG / 最终报告 / 结构化 Schema / 竞品矩阵 / 报告版本
-右侧：Agent 时间线 / 证据来源 / Reviewer 质检 / Mermaid 源码
+右侧：Agent 时间线 / 证据来源 / Reviewer 质检 / 运行指标
 ```
 
 关键组件：
@@ -303,7 +303,7 @@ EvidenceSource
 
 - `FETCHED` + `LIVE_FETCHED`：已按 robots 策略抓取到公开页面正文。
 - `FETCHED` + `LIVE_FETCHED` + `search_result_web_page`：搜索结果网页已抓取到正文。
-- `FETCH_FAILED` + `SEARCH_RESULT_SNIPPET`：搜索命中了 URL，但页面正文抓取失败，仅保留搜索结果摘要，报告前需要人工确认。
+- 搜索命中的 URL 如果抓取失败或内容不可用，会被后端直接跳过，不进入证据列表；只有用户主动提供的 URL 抓取失败时才会生成 `FETCH_FAILED` 来源，方便用户定位和补充材料。
 - `USER_PROVIDED`：用户补充资料，敏感资料会标记 `INTERNAL_ONLY`。
 
 未配置搜索 API key 时，Researcher 不生成伪造网页证据，只记录证据缺口和补充 URL/问卷/访谈资料的建议。

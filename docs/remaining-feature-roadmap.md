@@ -21,7 +21,6 @@
 - `GET /api/analysis-runs/{runId}/events` 支持 SSE 进度事件。
 - `GET /api/analysis-runs/{runId}/traces` 支持 Agent Trace 查询。
 - `GET /api/analysis-runs/{runId}/retrieval` 支持证据片段召回。
-- `GET /api/analysis-runs/workflow/mermaid` 返回 LangGraph4j Mermaid 图。
 
 ### 2.2 多 Agent 与结构化产物
 
@@ -37,7 +36,7 @@
 
 - 左侧任务创建、范围确认、上下文补充。
 - 中间 Agent DAG、最终报告、结构化 Schema、竞品矩阵、报告版本。
-- 右侧 Agent 时间线、证据来源、Reviewer 质检、Mermaid 源码。
+- 右侧 Agent 时间线、证据来源、Reviewer 质检和运行指标。
 - 点击报告 citation 可以选中证据来源。
 - 点击 Agent 可以打开 Trace 抽屉。
 - 支持手动重跑单个 Agent。
@@ -232,7 +231,7 @@
 
 - 如果用户提供 URL，后端会抓取网页并检查 robots。
 - 如果没有 URL，后端会按竞品和来源偏好生成搜索 query；配置 `TAVILY_API_KEY` 后会调用真实搜索服务。
-- 搜索结果 URL 会继续走网页抓取和 robots 检查；抓取失败时可保留 `SEARCH_RESULT_SNIPPET`，并在 complianceNote 中说明不是完整网页正文。
+- 搜索结果 URL 会继续走网页抓取和 robots 检查；抓取失败或内容不可用时直接跳过，不进入前端证据列表。只有用户主动提供的 URL 抓取失败时才保留 `FETCH_FAILED` 来源。
 - EvidenceSource 已记录 `collectionStatus` 和 `freshness`，前端证据面板会展示实时抓取、搜索摘要、用户资料等状态。
 
 需要实现：
@@ -244,7 +243,7 @@
   - `FETCHED`。
   - `BLOCKED_BY_ROBOTS`。
   - `FETCH_FAILED`。
-  - `SEARCH_RESULT_SNIPPET`。
+  - 搜索结果抓取失败时跳过，不生成 snippet-only 证据。
 
 涉及文件：
 

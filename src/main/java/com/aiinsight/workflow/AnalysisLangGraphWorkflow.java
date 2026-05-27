@@ -11,7 +11,6 @@ import com.aiinsight.repository.AnalysisRunRepository;
 import com.aiinsight.service.AnalysisEventBroker;
 import org.bsc.langgraph4j.CompiledGraph;
 import org.bsc.langgraph4j.GraphDefinition;
-import org.bsc.langgraph4j.GraphRepresentation;
 import org.bsc.langgraph4j.StateGraph;
 import org.bsc.langgraph4j.action.AsyncEdgeAction;
 import org.bsc.langgraph4j.action.AsyncNodeAction;
@@ -67,10 +66,6 @@ public class AnalysisLangGraphWorkflow {
             throw new IllegalArgumentException("Unsupported agent: " + agentName);
         }
         return nodeExecutor.executeNode(runId, node, "Manual rerun requested for " + agentName);
-    }
-
-    public String mermaid() {
-        return graph.getGraph(GraphRepresentation.Type.MERMAID).content();
     }
 
     private CompiledGraph<AnalysisGraphState> buildGraph() {

@@ -44,11 +44,6 @@ public class AnalysisRunController {
         return workflowService.list();
     }
 
-    @GetMapping(path = "/workflow/mermaid", produces = MediaType.TEXT_PLAIN_VALUE)
-    public String workflowMermaid() {
-        return workflowService.workflowMermaid();
-    }
-
     @GetMapping("/{runId}")
     public AnalysisRun get(@PathVariable UUID runId) {
         return workflowService.get(runId);
