@@ -5,7 +5,6 @@ import com.aiinsight.model.run.AnalysisArtifact;
 import com.aiinsight.model.run.AnalysisRun;
 import com.aiinsight.model.enums.ArtifactType;
 import com.aiinsight.model.run.EvidenceSource;
-import com.aiinsight.model.schema.AnalysisClaim;
 import com.aiinsight.model.schema.CompetitorProfile;
 import com.aiinsight.llm.ChatMessage;
 import com.aiinsight.llm.ChatOptions;
@@ -87,45 +86,59 @@ public class WriterNode implements AgentNode {
     }
 
     private String generateWithLlm(AnalysisRun run) {
-        // Prompt 中显式传入证据和中间产物，避免模型绕过已沉淀的 Schema 状态自由发挥。
+        // Prompt 只提供报告所需上下文，避免 Writer 重新做 Researcher/Analyst 的工作。
         String prompt = """
-                你是竞品分析小组中的 Writer Agent。请基于给定需求、结构化产物和证据，生成一版中文竞品分析报告草稿。
+                你是竞品分析小组中的 Writer Agent。请基于给定的报告上下文，生成一版中文竞品分析报告草稿。
+                你的职责是报告编排和表达，不要重新采集事实，也不要推翻 Analyst 已生成的结构化结论。
 
                 约束:
                 1. 输出 Markdown。
-                2. 关键结论必须使用 [S1]、[S2] 这样的证据编号。
+                2. 关键结论必须使用 evidenceIds 中已有的 [S1]、[S2] 证据编号。
                 3. 不确定的内容要标为“待验证”，不要编造价格、营收、客户案例。
                 4. 保留一个“需补充证据”小节，列出证据覆盖不足的点。
-                5. 必须优先使用“结构化结论”和“竞品画像 Schema”，不要只改写 artifact 文本。
+                5. 必须优先使用“结构化结论”、竞品矩阵和 SWOT；证据索引只用于引用定位，不用于重新分析。
+                6. 建议结构：执行摘要、分析范围与证据说明、竞品定位概览、核心发现、能力/策略对比、SWOT/机会风险、对 AI Insight 的借鉴建议、需补充证据。
 
                 用户需求:
+                %s
+
+                输出目标:
                 %s
 
                 竞品:
                 %s
 
+                分析维度:
+                %s
+
                 结构化结论:
                 %s
 
-                竞品画像 Schema:
+                竞品画像摘要:
+                %s
+
+                竞品矩阵:
+                %s
+
+                SWOT 分析:
                 %s
 
                 采集包缺口与一手洞察:
                 %s
 
-                已采集证据:
-                %s
-
-                中间产物:
+                证据索引:
                 %s
                 """.formatted(
                 run.getRequirement().getOriginalPrompt(),
+                textOrDefault(run.getRequirement().getOutputGoal(), "竞品分析报告"),
                 String.join(", ", run.getRequirement().getCompetitors()),
+                String.join(", ", run.getRequirement().getDimensions()),
                 claimsBlock(run),
                 competitorProfileBlock(run),
+                latestArtifactContent(run, ArtifactType.COMPETITIVE_MATRIX),
+                latestArtifactContent(run, ArtifactType.SWOT_ANALYSIS),
                 researchPackageBlock(run),
-                evidenceBlock(run),
-                artifactBlock(run)
+                evidenceIndexBlock(run)
         );
         return llmClient.complete(new ChatRequest(
                 List.of(
@@ -228,84 +241,73 @@ public class WriterNode implements AgentNode {
         return "证据缺口：" + gaps + "\n访谈洞察：\n" + insights;
     }
 
-    private String evidenceBlock(AnalysisRun run) {
-        // Prompt 同时给完整来源和相关 chunk：完整来源用于溯源说明，
-        // chunk 用于把长网页压缩成 Writer 更容易消费的证据片段。
-        String sources = run.getEvidenceSources().stream()
-                .map(source -> "[%s] %s\nURL: %s\n片段: %s".formatted(
+    private String evidenceIndexBlock(AnalysisRun run) {
+        Set<String> neededCitationKeys = reportCitationKeys(run);
+        List<EvidenceSource> indexedSources = run.getEvidenceSources().stream()
+                .filter(source -> neededCitationKeys.isEmpty() || neededCitationKeys.contains(source.getCitationKey()))
+                .limit(12)
+                .toList();
+        if (indexedSources.isEmpty()) {
+            indexedSources = run.getEvidenceSources().stream().limit(8).toList();
+        }
+        if (indexedSources.isEmpty()) {
+            return "暂无可引用证据。";
+        }
+        return indexedSources.stream()
+                .map(source -> "[%s] %s | type=%s | quality=%s | status=%s\nURL: %s\n摘要: %s".formatted(
                         source.getCitationKey(),
-                        source.getTitle(),
+                        textOrDefault(source.getTitle(), "未命名来源"),
+                        textOrDefault(source.getSourceType(), "unknown"),
+                        textOrDefault(source.getSourceQuality(), "UNKNOWN"),
+                        textOrDefault(source.getCollectionStatus(), "UNKNOWN"),
                         source.getUrl(),
-                        source.getSnippet()
+                        abbreviate(source.getSnippet(), 180)
                 ))
                 .collect(Collectors.joining("\n\n"));
-        String chunks = relevantChunks(run, writerQuery(run), 8).stream()
-                .map(chunk -> "- [%s/%s] %s".formatted(chunk.getSourceCitationKey(), chunk.getChunkKey(), chunk.getText()))
-                .collect(Collectors.joining("\n"));
-        if (chunks.isBlank()) {
-            return sources;
-        }
-        return sources + "\n\n相关证据切片:\n" + chunks;
     }
 
-    private String artifactBlock(AnalysisRun run) {
-        return run.getArtifacts().stream()
-                .filter(artifact -> artifact.getType() != ArtifactType.REPORT_DRAFT)
-                .map(artifact -> "## %s\n%s".formatted(artifact.getTitle(), artifact.getContent()))
-                .collect(Collectors.joining("\n\n"));
+    private Set<String> reportCitationKeys(AnalysisRun run) {
+        Set<String> keys = new LinkedHashSet<>();
+        run.getClaims().forEach(claim -> keys.addAll(claim.getEvidenceIds()));
+        run.getCompetitorProfiles().forEach(profile -> {
+            keys.addAll(profile.getEvidenceIds());
+            if (profile.getPricingModel() != null) {
+                keys.addAll(profile.getPricingModel().getEvidenceIds());
+            }
+        });
+        latestArtifact(run, ArtifactType.COMPETITIVE_MATRIX).ifPresent(artifact -> keys.addAll(artifact.getCitationKeys()));
+        latestArtifact(run, ArtifactType.SWOT_ANALYSIS).ifPresent(artifact -> keys.addAll(artifact.getCitationKeys()));
+        keys.retainAll(knownCitationKeys(run));
+        return keys;
     }
 
-    private String writerQuery(AnalysisRun run) {
-        String claims = run.getClaims().stream()
-                .map(AnalysisClaim::getContent)
-                .collect(Collectors.joining(" "));
-        return run.getRequirement().getOriginalPrompt()
-                + " " + String.join(" ", run.getRequirement().getDimensions())
-                + " " + claims;
+    private String latestArtifactContent(AnalysisRun run, ArtifactType type) {
+        return latestArtifact(run, type)
+                .map(artifact -> artifact.getContent() == null || artifact.getContent().isBlank()
+                        ? "暂无 " + type + " 产物。"
+                        : artifact.getContent())
+                .orElse("暂无 " + type + " 产物。");
     }
 
-    private List<com.aiinsight.model.run.EvidenceChunk> relevantChunks(AnalysisRun run, String query, int limit) {
-        Set<String> queryTerms = terms(query);
-        if (queryTerms.isEmpty()) {
-            return run.getEvidenceChunks().stream().limit(limit).toList();
-        }
-        return run.getEvidenceChunks().stream()
-                .map(chunk -> new ChunkScore(chunk, score(chunk.getTitle() + " " + chunk.getText(), queryTerms)))
-                .filter(scored -> scored.score() > 0)
-                .sorted((left, right) -> Double.compare(right.score(), left.score()))
-                .limit(limit)
-                .map(ChunkScore::chunk)
-                .toList();
-    }
-
-    private double score(String text, Set<String> queryTerms) {
-        String normalized = (text == null ? "" : text).toLowerCase();
-        double score = 0;
-        for (String term : queryTerms) {
-            if (normalized.contains(term)) {
-                score += term.length() <= 2 ? 0.5 : 1.0;
+    private java.util.Optional<AnalysisArtifact> latestArtifact(AnalysisRun run, ArtifactType type) {
+        List<AnalysisArtifact> artifacts = run.getArtifacts();
+        for (int i = artifacts.size() - 1; i >= 0; i--) {
+            AnalysisArtifact artifact = artifacts.get(i);
+            if (artifact.getType() == type) {
+                return java.util.Optional.of(artifact);
             }
         }
-        return score;
+        return java.util.Optional.empty();
     }
 
-    private Set<String> terms(String text) {
-        Set<String> terms = new LinkedHashSet<>();
-        String normalized = (text == null ? "" : text).toLowerCase()
-                .replaceAll("[^\\p{IsHan}a-z0-9]+", " ")
-                .trim();
-        for (String part : normalized.split("\\s+")) {
-            if (part.length() >= 2) {
-                terms.add(part);
-            }
-        }
-        String chineseOnly = normalized.replaceAll("[^\\p{IsHan}]", "");
-        for (int i = 0; i < chineseOnly.length() - 1; i++) {
-            terms.add(chineseOnly.substring(i, i + 2));
-        }
-        return terms;
+    private String textOrDefault(String value, String fallback) {
+        return value == null || value.isBlank() ? fallback : value;
     }
 
-    private record ChunkScore(com.aiinsight.model.run.EvidenceChunk chunk, double score) {
+    private String abbreviate(String value, int maxChars) {
+        if (value == null || value.isBlank() || value.length() <= maxChars) {
+            return textOrDefault(value, "暂无摘要");
+        }
+        return value.substring(0, maxChars) + "...";
     }
 }

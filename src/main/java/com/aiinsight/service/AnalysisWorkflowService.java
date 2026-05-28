@@ -2,22 +2,28 @@ package com.aiinsight.service;
 
 import com.aiinsight.dto.AddAnalysisContextRequest;
 import com.aiinsight.dto.AddUserEvidenceRequest;
+import com.aiinsight.dto.AnalysisRunMetrics;
+import com.aiinsight.dto.AnalysisRunSummary;
 import com.aiinsight.dto.CreateAnalysisRunRequest;
 import com.aiinsight.dto.UpdateAnalysisRequirementRequest;
 import com.aiinsight.exception.InvalidRunStateException;
 import com.aiinsight.exception.RunNotFoundException;
 import com.aiinsight.model.enums.AgentName;
 import com.aiinsight.model.enums.AnalysisStatus;
+import com.aiinsight.model.enums.ArtifactType;
 import com.aiinsight.model.enums.ContextIntent;
 import com.aiinsight.model.enums.ContextRole;
+import com.aiinsight.model.enums.ReviewSeverity;
 import com.aiinsight.model.run.AgentTrace;
 import com.aiinsight.model.run.AnalysisContextMessage;
+import com.aiinsight.model.run.AnalysisArtifact;
 import com.aiinsight.model.run.AnalysisRequirement;
 import com.aiinsight.model.run.AnalysisRun;
 import com.aiinsight.model.run.ClarificationDraft;
 import com.aiinsight.model.run.EvidenceChunk;
 import com.aiinsight.model.run.EvidenceSource;
 import com.aiinsight.model.run.UserProvidedEvidence;
+import com.aiinsight.model.schema.CompetitorProfile;
 import com.aiinsight.repository.AnalysisRunRepository;
 import com.aiinsight.workflow.AnalysisLangGraphWorkflow;
 import org.springframework.core.task.AsyncTaskExecutor;
@@ -30,9 +36,12 @@ import java.util.Collection;
 import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.CancellationException;
+import java.util.regex.Pattern;
 
 @Service
 public class AnalysisWorkflowService {
+
+    private static final Pattern CITATION_PATTERN = Pattern.compile("\\[S\\d+]");
 
     private final AnalysisRunRepository repository;
     private final AnalysisRequestNormalizer normalizer;
@@ -85,8 +94,56 @@ public class AnalysisWorkflowService {
         return repository.findAll();
     }
 
+    public Collection<AnalysisRunSummary> listSummaries() {
+        return repository.findSummaries();
+    }
+
     public Collection<AgentTrace> traces(UUID runId) {
         return get(runId).getTraces();
+    }
+
+    public AnalysisRunMetrics metrics(UUID runId) {
+        AnalysisRun run = get(runId);
+        int claimCount = run.getClaims().size();
+        int citedClaims = (int) run.getClaims().stream()
+                .filter(claim -> claim.getEvidenceIds() != null && !claim.getEvidenceIds().isEmpty())
+                .count();
+        int profileCount = run.getCompetitorProfiles().size();
+        int completeProfiles = (int) run.getCompetitorProfiles().stream()
+                .filter(this::isCompleteProfile)
+                .count();
+        int citationMentions = run.getArtifacts().stream()
+                .filter(artifact -> artifact.getType() == ArtifactType.FINAL_REPORT
+                        || artifact.getType() == ArtifactType.REPORT_DRAFT)
+                .mapToInt(this::countCitationMentions)
+                .sum();
+        int reworkCount = (int) run.getWorkflowTransitions().stream()
+                .filter(transition -> StringUtils.hasText(transition.getRoute()))
+                .filter(transition -> !"finish".equalsIgnoreCase(transition.getRoute()))
+                .count();
+        int totalTokens = run.getTraces().stream()
+                .mapToInt(this::traceTotalTokens)
+                .sum();
+        long totalLatencyMs = run.getTraces().stream()
+                .mapToLong(trace -> trace.getLatencyMs() == null ? 0 : trace.getLatencyMs())
+                .sum();
+
+        return new AnalysisRunMetrics(
+                run.getId(),
+                run.getSteps().size(),
+                run.getEvidenceSources().size(),
+                run.getReviewFindings().size(),
+                citationMentions,
+                percent(citedClaims, claimCount),
+                percent(completeProfiles, profileCount),
+                reworkCount,
+                claimCount == 0 ? 0 : round(run.getEvidenceSources().size() / (double) claimCount, 1),
+                totalTokens,
+                totalLatencyMs,
+                countFindings(run, ReviewSeverity.HIGH),
+                countFindings(run, ReviewSeverity.MEDIUM),
+                countFindings(run, ReviewSeverity.LOW)
+        );
     }
 
     public Collection<EvidenceChunk> retrieveEvidence(UUID runId, String query, Integer topK) {
@@ -220,6 +277,58 @@ public class AnalysisWorkflowService {
             repository.save(run);
             eventBroker.publish(run, "run_failed", ex.getMessage());
         }
+    }
+
+    private boolean isCompleteProfile(CompetitorProfile profile) {
+        if (profile == null) {
+            return false;
+        }
+        return StringUtils.hasText(profile.getPositioning())
+                && profile.getFeatureTree() != null
+                && profile.getFeatureTree().getRoots() != null
+                && !profile.getFeatureTree().getRoots().isEmpty()
+                && profile.getPricingModel() != null
+                && StringUtils.hasText(profile.getPricingModel().getStrategySummary())
+                && profile.getPersonas() != null
+                && !profile.getPersonas().isEmpty()
+                && profile.getEvidenceIds() != null
+                && !profile.getEvidenceIds().isEmpty();
+    }
+
+    private int countCitationMentions(AnalysisArtifact artifact) {
+        if (artifact == null || artifact.getContent() == null) {
+            return 0;
+        }
+        return (int) CITATION_PATTERN.matcher(artifact.getContent()).results().count();
+    }
+
+    private int traceTotalTokens(AgentTrace trace) {
+        if (trace == null) {
+            return 0;
+        }
+        if (trace.getTotalTokens() != null) {
+            return trace.getTotalTokens();
+        }
+        return (trace.getPromptTokens() == null ? 0 : trace.getPromptTokens())
+                + (trace.getCompletionTokens() == null ? 0 : trace.getCompletionTokens());
+    }
+
+    private int countFindings(AnalysisRun run, ReviewSeverity severity) {
+        return (int) run.getReviewFindings().stream()
+                .filter(finding -> finding.getSeverity() == severity)
+                .count();
+    }
+
+    private int percent(int part, int total) {
+        if (total == 0) {
+            return 0;
+        }
+        return Math.round((part * 100f) / total);
+    }
+
+    private double round(double value, int precision) {
+        double factor = Math.pow(10, precision);
+        return Math.round(value * factor) / factor;
     }
 
     private void ensureRequirementEditable(AnalysisRun run) {

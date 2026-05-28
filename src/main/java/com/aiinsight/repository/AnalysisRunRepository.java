@@ -1,6 +1,7 @@
 package com.aiinsight.repository;
 
 import com.aiinsight.model.run.AnalysisRun;
+import com.aiinsight.dto.AnalysisRunSummary;
 
 import java.util.Collection;
 import java.util.Optional;
@@ -13,4 +14,6 @@ public interface AnalysisRunRepository {
     Optional<AnalysisRun> findById(UUID id);
 
     Collection<AnalysisRun> findAll();
+
+    Collection<AnalysisRunSummary> findSummaries();
 }

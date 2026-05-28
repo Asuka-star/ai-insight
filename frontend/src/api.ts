@@ -3,12 +3,18 @@ import type {
   AddUserEvidenceRequest,
   AgentName,
   AnalysisRun,
+  AnalysisRunMetrics,
+  AnalysisRunSummary,
   CreateAnalysisRunRequest,
   UpdateAnalysisRequirementRequest
 } from "./types";
 
 export async function listRuns(): Promise<AnalysisRun[]> {
   return requestJson("/api/analysis-runs");
+}
+
+export async function listRunSummaries(): Promise<AnalysisRunSummary[]> {
+  return requestJson("/api/analysis-runs/summaries");
 }
 
 export async function createRun(payload: CreateAnalysisRunRequest): Promise<AnalysisRun> {
@@ -21,6 +27,10 @@ export async function createRun(payload: CreateAnalysisRunRequest): Promise<Anal
 
 export async function getRun(runId: string): Promise<AnalysisRun> {
   return requestJson(`/api/analysis-runs/${runId}`);
+}
+
+export async function getRunMetrics(runId: string): Promise<AnalysisRunMetrics> {
+  return requestJson(`/api/analysis-runs/${runId}/metrics`);
 }
 
 export async function updateRequirement(runId: string, payload: UpdateAnalysisRequirementRequest): Promise<AnalysisRun> {
@@ -63,11 +73,14 @@ async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, init);
   if (!response.ok) {
     let message = `HTTP ${response.status}`;
-    try {
-      const body = await response.json();
-      message = body.message || body.error || message;
-    } catch {
-      message = await response.text();
+    const text = await response.text();
+    if (text) {
+      try {
+        const body = JSON.parse(text);
+        message = body.message || body.error || text;
+      } catch {
+        message = text;
+      }
     }
     throw new Error(message);
   }

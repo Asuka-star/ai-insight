@@ -36,6 +36,28 @@ class CitationCoverageEvaluatorTest {
     }
 
     @Test
+    void ignoresEvidenceGapAndRecommendationGuidanceWithoutCitation() {
+        String report = """
+                # Report
+
+                机会点是构建可复核的 Agent 工作流。
+
+                四、 需补充证据
+
+                为确保选型分析的准确性和全面性，建议在后续调研中优先补充以下信息：
+
+                五、 结论与建议
+
+                明确自身定位：建议先判断平台聚合型还是生态闭环型工具更适合当前阶段。
+                """;
+
+        var findings = evaluator.evaluate(report);
+
+        assertThat(findings).hasSize(1);
+        assertThat(findings.get(0).getExcerpt()).contains("机会点");
+    }
+
+    @Test
     void flagsUnknownCitationKey() {
         AnalysisRun run = runWithEvidence();
         String report = "风险在于价格策略证据不足 [S404]。";

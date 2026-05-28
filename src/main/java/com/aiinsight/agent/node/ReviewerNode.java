@@ -114,7 +114,10 @@ public class ReviewerNode implements AgentNode {
             decision.setAction(ReviewAction.PASS);
             decision.setReason(run.getReviewFindings().isEmpty()
                     ? "规则检查未发现高风险问题。"
-                    : "仅发现中低风险质检提醒，不阻断当前报告流程。");
+                    : "仅发现 %d 个质量提醒和 %d 个人工复核项，不阻断当前报告流程。".formatted(
+                            countBySeverity(run, ReviewSeverity.MEDIUM),
+                            countBySeverity(run, ReviewSeverity.LOW)
+                    ));
             return decision;
         }
         applyBlockingDecision(run, decision, blockingFindings);
@@ -188,6 +191,12 @@ public class ReviewerNode implements AgentNode {
                 .filter(StringUtils::hasText)
                 .distinct()
                 .collect(Collectors.joining("、"));
+    }
+
+    private long countBySeverity(AnalysisRun run, ReviewSeverity severity) {
+        return run.getReviewFindings().stream()
+                .filter(finding -> finding.getSeverity() == severity)
+                .count();
     }
 
     private String normalizedCategory(ReviewFinding finding) {

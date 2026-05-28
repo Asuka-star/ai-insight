@@ -22,7 +22,7 @@ public class AnalysisRequestNormalizer {
     private static final List<String> DEFAULT_SOURCES = List.of(
             "official_site", "pricing_page", "product_docs", "release_notes", "technical_blog", "authoritative_media", "public_reviews"
     );
-    private static final Pattern URL_PATTERN = Pattern.compile("https?://[^\\s，。；,;]+");
+    private static final Pattern URL_PATTERN = Pattern.compile("https?://[^\\s，。；、,;]+");
 
     public AnalysisRequirement normalize(CreateAnalysisRunRequest request) {
         String industry = StringUtils.hasText(request.getIndustry()) ? request.getIndustry() : inferIndustry(request.getPrompt());

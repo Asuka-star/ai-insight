@@ -7,7 +7,8 @@ export type AnalysisStatus =
   | "NEEDS_USER_INPUT"
   | "REVISING"
   | "SUCCEEDED"
-  | "FAILED";
+  | "FAILED"
+  | "CANCELLED";
 export type StepStatus = "PENDING" | "RUNNING" | "SUCCEEDED" | "FAILED";
 export type AgentName =
   | "CLARIFIER"
@@ -48,6 +49,38 @@ export interface AnalysisRequirement {
   sourcePreferences: string[];
   sourceUrls?: string[];
   outputGoal?: string;
+}
+
+export interface AnalysisRunSummary {
+  id: string;
+  status: AnalysisStatus;
+  industry?: string;
+  competitors: string[];
+  outputGoal?: string;
+  originalPrompt?: string;
+  evidenceCount: number;
+  artifactCount: number;
+  findingCount: number;
+  stepCount: number;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface AnalysisRunMetrics {
+  runId: string;
+  agentStepCount: number;
+  evidenceCount: number;
+  reviewFindingCount: number;
+  citationMentionCount: number;
+  claimCoverage: number;
+  schemaCompleteness: number;
+  reworkCount: number;
+  evidencePerClaim: number;
+  totalTokens: number;
+  totalLatencyMs: number;
+  highFindingCount: number;
+  mediumFindingCount: number;
+  lowFindingCount: number;
 }
 
 export interface UpdateAnalysisRequirementRequest {

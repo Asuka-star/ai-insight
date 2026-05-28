@@ -33,14 +33,20 @@ public class CitationCoverageEvaluator {
     public List<ReviewFinding> evaluate(String reportContent, AnalysisRun run) {
         List<ReviewFinding> findings = new ArrayList<>();
         int paragraphIndex = 0;
+        String currentSection = "";
         for (String paragraph : reportContent.split("\\R\\R+")) {
             String trimmed = paragraph.trim();
-            if (trimmed.isEmpty() || trimmed.startsWith("#") || trimmed.startsWith("##")) {
+            String section = sectionHeading(trimmed);
+            if (StringUtils.hasText(section)) {
+                currentSection = section;
+            }
+            if (trimmed.isEmpty() || trimmed.startsWith("#") || trimmed.startsWith("##") || StringUtils.hasText(section)) {
                 paragraphIndex++;
                 continue;
             }
             // 先用确定性规则兜底，保证即使 LLM 质检漏判也能抓住“无引用结论”。
-            if (looksLikeClaim(trimmed) && !CITATION_PATTERN.matcher(trimmed).find()) {
+            if (looksLikeClaim(trimmed) && !CITATION_PATTERN.matcher(trimmed).find()
+                    && !allowsMissingCitation(trimmed, currentSection)) {
                 ReviewFinding finding = new ReviewFinding(
                         ReviewSeverity.HIGH,
                         "citation_missing",
@@ -60,6 +66,39 @@ public class CitationCoverageEvaluator {
             findings.addAll(validateStructuredClaims(run));
         }
         return findings;
+    }
+
+    private String sectionHeading(String paragraph) {
+        if (!StringUtils.hasText(paragraph)) {
+            return "";
+        }
+        String normalized = paragraph.replaceAll("\\s+", "");
+        if (normalized.matches("^#{1,6}.+")) {
+            return normalized.replaceFirst("^#{1,6}", "");
+        }
+        if (normalized.matches("^[一二三四五六七八九十]+[、.．].{1,40}$")
+                || normalized.matches("^\\d+\\.\\d+(?:\\.\\d+)*.{1,40}$")) {
+            return normalized;
+        }
+        if (normalized.matches("^(复核结论|质检问题摘要|人工复核建议)$")) {
+            return normalized;
+        }
+        return "";
+    }
+
+    private boolean allowsMissingCitation(String paragraph, String currentSection) {
+        String section = currentSection == null ? "" : currentSection;
+        if (containsAny(section, "需补充证据", "证据覆盖缺口", "结论与建议", "人工复核建议", "复核结论", "质检问题摘要")) {
+            return true;
+        }
+        String normalized = paragraph.replaceAll("\\s+", "");
+        return containsAny(normalized,
+                "建议在后续调研",
+                "建议补充",
+                "需补充",
+                "人工复核",
+                "优先补充证据",
+                "报告依据说明");
     }
 
     private List<ReviewFinding> validateCitationSupport(String paragraph, int paragraphIndex, AnalysisRun run) {

@@ -3,7 +3,7 @@ import { AGENTS } from "./constants";
 
 export function splitList(value: string): string[] {
   return value
-    .split(/[,，\n]/)
+    .split(/[,，、\n]/)
     .map((item) => item.trim())
     .filter(Boolean);
 }
@@ -78,8 +78,7 @@ export function countCitedClaims(run?: AnalysisRun | null): number {
 }
 
 export function calculateRunMetrics(run?: AnalysisRun | null) {
-  // These metrics are intentionally computed client-side from the run aggregate so demos can
-  // explain credibility without adding another backend DTO just for read-only dashboard cards.
+  // Local fallback for older/failed metrics endpoints; backend metrics are authoritative when available.
   const claims = run?.claims ?? [];
   const profiles = run?.competitorProfiles ?? [];
   const traces = run?.traces ?? [];

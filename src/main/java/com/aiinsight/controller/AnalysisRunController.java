@@ -3,6 +3,8 @@ package com.aiinsight.controller;
 import com.aiinsight.dto.CreateAnalysisRunRequest;
 import com.aiinsight.dto.AddAnalysisContextRequest;
 import com.aiinsight.dto.AddUserEvidenceRequest;
+import com.aiinsight.dto.AnalysisRunMetrics;
+import com.aiinsight.dto.AnalysisRunSummary;
 import com.aiinsight.dto.UpdateAnalysisRequirementRequest;
 import com.aiinsight.model.enums.AgentName;
 import com.aiinsight.model.run.AgentTrace;
@@ -44,6 +46,11 @@ public class AnalysisRunController {
         return workflowService.list();
     }
 
+    @GetMapping("/summaries")
+    public Collection<AnalysisRunSummary> listSummaries() {
+        return workflowService.listSummaries();
+    }
+
     @GetMapping("/{runId}")
     public AnalysisRun get(@PathVariable UUID runId) {
         return workflowService.get(runId);
@@ -80,6 +87,11 @@ public class AnalysisRunController {
     @GetMapping("/{runId}/traces")
     public Collection<AgentTrace> traces(@PathVariable UUID runId) {
         return workflowService.traces(runId);
+    }
+
+    @GetMapping("/{runId}/metrics")
+    public AnalysisRunMetrics metrics(@PathVariable UUID runId) {
+        return workflowService.metrics(runId);
     }
 
     @GetMapping("/{runId}/retrieval")

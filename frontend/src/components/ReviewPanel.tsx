@@ -14,6 +14,7 @@ export function ReviewPanel({ findings, decision, onRerunTarget, onLocateFinding
   const groupedFindings = groupFindings(findings);
   const decisionAction = decision?.action || "PASS";
   const targetAgent = decision?.targetAgent;
+  const quality = qualityProfile(groupedFindings);
 
   return (
     <section className="panel">
@@ -24,12 +25,25 @@ export function ReviewPanel({ findings, decision, onRerunTarget, onLocateFinding
         </div>
         {findings.length ? <AlertTriangle size={18} /> : <ShieldCheck size={18} />}
       </div>
+      <div className={`credibility-card ${quality.tone}`}>
+        <div>
+          <span>可信度状态</span>
+          <strong>{quality.label}</strong>
+        </div>
+        <p>{quality.description}</p>
+        <div className="credibility-counts" aria-label="质检分层统计">
+          <span>{groupedFindings.HIGH.length} 阻断</span>
+          <span>{groupedFindings.MEDIUM.length} 建议</span>
+          <span>{groupedFindings.LOW.length} 复核</span>
+        </div>
+      </div>
       {decision ? (
         <div className={`decision-box ${decisionClass(decisionAction)}`}>
           <div className="decision-header">
-            <span>{decisionAction}</span>
+            <span>{decisionActionLabel(decisionAction)}</span>
             {targetAgent ? <strong>{AGENT_LABELS[targetAgent] ?? targetAgent}</strong> : <strong>无需打回</strong>}
           </div>
+          <small className="decision-action-code">{decisionAction}</small>
           <p>{decision.reason || "等待复核 Agent 给出结构化决策"}</p>
           <div className="decision-meta-grid">
             <DecisionMeta label="影响 Claim" values={decision.affectedClaimIds} empty="无指定 Claim" />
@@ -53,6 +67,7 @@ export function ReviewPanel({ findings, decision, onRerunTarget, onLocateFinding
                   <strong>{severity_LABELS[severity]}</strong>
                   <small>{groupedFindings[severity].length}</small>
                 </div>
+                <p className="finding-group-note">{severity_DESCRIPTIONS[severity]}</p>
                 {groupedFindings[severity].map((finding) => (
                   <FindingItem finding={finding} onLocateFinding={onLocateFinding} key={finding.id} />
                 ))}
@@ -72,10 +87,15 @@ export function ReviewPanel({ findings, decision, onRerunTarget, onLocateFinding
 
 function DecisionMeta({ label, values, empty }: { label: string; values?: string[]; empty: string }) {
   const normalized = values?.filter(Boolean) ?? [];
+  const visibleValues = normalized.slice(0, 3);
+  const hiddenCount = Math.max(normalized.length - visibleValues.length, 0);
+  const displayValue = normalized.length
+    ? `${visibleValues.join("、")}${hiddenCount ? ` 等 ${hiddenCount} 项` : ""}`
+    : empty;
   return (
     <div className="decision-meta">
       <span>{label}</span>
-      <p>{normalized.length ? normalized.join("、") : empty}</p>
+      <p title={normalized.join("、")}>{displayValue}</p>
     </div>
   );
 }
@@ -111,6 +131,12 @@ const severity_LABELS: Record<ReviewFinding["severity"], string> = {
   LOW: "人工复核"
 };
 
+const severity_DESCRIPTIONS: Record<ReviewFinding["severity"], string> = {
+  HIGH: "会影响报告是否可以对外发布，通常需要补证、重做分析或修订报告。",
+  MEDIUM: "不阻断演示，但建议在正式使用前补强证据、降低措辞或替换来源。",
+  LOW: "系统无法自动定论，保留给人工检查、访谈、实测或最新价格确认。"
+};
+
 function groupFindings(findings: ReviewFinding[]) {
   return findings.reduce<Record<ReviewFinding["severity"], ReviewFinding[]>>(
     (groups, finding) => {
@@ -123,6 +149,38 @@ function groupFindings(findings: ReviewFinding[]) {
 
 function decisionClass(action: string) {
   return action === "PASS" ? "pass" : "blocked";
+}
+
+function decisionActionLabel(action: string) {
+  const labels: Record<string, string> = {
+    PASS: "可继续",
+    RECOLLECT_EVIDENCE: "需补证",
+    REWORK_ANALYSIS: "需重析",
+    REVISE_REPORT: "需修订"
+  };
+  return labels[action] ?? action;
+}
+
+function qualityProfile(groupedFindings: Record<ReviewFinding["severity"], ReviewFinding[]>) {
+  if (groupedFindings.HIGH.length > 0) {
+    return {
+      tone: "blocked",
+      label: "不建议对外发布",
+      description: "存在阻断问题，相关结论需要先补证、降级或重新修订。"
+    };
+  }
+  if (groupedFindings.MEDIUM.length + groupedFindings.LOW.length > 0) {
+    return {
+      tone: "review",
+      label: "可演示，需人工确认",
+      description: "未发现阻断项，但还有质量提醒或人工复核项，正式使用前建议逐条确认。"
+    };
+  }
+  return {
+    tone: "pass",
+    label: "已通过高风险检查",
+    description: "当前未发现阻断、质量提醒或人工复核项，可进入人工抽查。"
+  };
 }
 
 function rerunLabel(agent: AgentName) {

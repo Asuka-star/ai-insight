@@ -32,4 +32,19 @@ class AnalysisRequestNormalizerTest {
         assertThat(requirement.getSourceUrls())
                 .containsExactly("https://www.feishu.cn/product/docs", "https://www.notion.so/product");
     }
+
+    @Test
+    void separatesPromptUrlsJoinedByChineseEnumerationComma() {
+        CreateAnalysisRunRequest request = new CreateAnalysisRunRequest();
+        request.setPrompt("公开来源：https://cursor.com、https://github.com/features/copilot、https://www.jetbrains.com/ai/");
+
+        var requirement = normalizer.normalize(request);
+
+        assertThat(requirement.getSourceUrls())
+                .containsExactly(
+                        "https://cursor.com",
+                        "https://github.com/features/copilot",
+                        "https://www.jetbrains.com/ai/"
+                );
+    }
 }

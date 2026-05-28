@@ -10,6 +10,8 @@ import com.aiinsight.agent.node.RevisionNode;
 import com.aiinsight.agent.node.WriterNode;
 import com.aiinsight.dto.AddAnalysisContextRequest;
 import com.aiinsight.dto.AddUserEvidenceRequest;
+import com.aiinsight.dto.AnalysisRunMetrics;
+import com.aiinsight.dto.AnalysisRunSummary;
 import com.aiinsight.dto.CreateAnalysisRunRequest;
 import com.aiinsight.dto.UpdateAnalysisRequirementRequest;
 import com.aiinsight.exception.InvalidRunStateException;
@@ -118,6 +120,26 @@ class AnalysisWorkflowServiceTest {
         assertThat(finished.getClarificationDraft().isConfirmed()).isTrue();
         assertThat(finished.getClarificationDraft().getConfirmedAt()).isNotNull();
         assertThat(finished.getSteps()).isNotEmpty();
+    }
+
+    @Test
+    void exposesAuthoritativeRunMetrics() {
+        AnalysisWorkflowService service = newService();
+        CreateAnalysisRunRequest request = new CreateAnalysisRunRequest();
+        request.setPrompt("Analyze Notion and Confluence for AI document collaboration.");
+
+        var finished = service.start(request);
+        AnalysisRunMetrics metrics = service.metrics(finished.getId());
+
+        assertThat(metrics.getRunId()).isEqualTo(finished.getId());
+        assertThat(metrics.getAgentStepCount()).isEqualTo(finished.getSteps().size());
+        assertThat(metrics.getEvidenceCount()).isEqualTo(finished.getEvidenceSources().size());
+        assertThat(metrics.getReviewFindingCount()).isEqualTo(finished.getReviewFindings().size());
+        assertThat(metrics.getHighFindingCount() + metrics.getMediumFindingCount() + metrics.getLowFindingCount())
+                .isEqualTo(finished.getReviewFindings().size());
+        assertThat(metrics.getClaimCoverage()).isBetween(0, 100);
+        assertThat(metrics.getSchemaCompleteness()).isBetween(0, 100);
+        assertThat(metrics.getTotalLatencyMs()).isGreaterThanOrEqualTo(0);
     }
 
     @Test
@@ -502,8 +524,9 @@ class AnalysisWorkflowServiceTest {
         new WriterNode(writerLlm, new FallbackReportDraftFactory()).execute(run);
 
         assertThat(promptCapture.toString())
-                .contains("结构化结论:", "竞品画像 Schema:", "采集包缺口与一手洞察:")
-                .contains("Notion 的 AI 搜索能力可作为产品规划参考。", "AI 知识协作工具", "证据缺口", "相关证据切片", "S1-C1");
+                .contains("结构化结论:", "竞品画像摘要:", "竞品矩阵:", "SWOT 分析:", "采集包缺口与一手洞察:", "证据索引:")
+                .contains("Notion 的 AI 搜索能力可作为产品规划参考。", "AI 知识协作工具", "证据缺口", "Notion AI search")
+                .doesNotContain("相关证据切片", "S1-C1");
     }
 
     @Test
@@ -1036,6 +1059,11 @@ class AnalysisWorkflowServiceTest {
         assertThat(run.getReviewDecision().getTargetAgent()).isEqualTo(AgentName.RESEARCHER);
         assertThat(run.getReviewDecision().getRequiredEvidenceTypes()).containsExactly("pricing_page");
         assertThat(run.getReviewDecision().getReason()).contains("citation_missing", "pricing_page");
+        assertThat(run.getArtifacts())
+                .filteredOn(artifact -> artifact.getType() == ArtifactType.REVIEW_FINDINGS)
+                .last()
+                .satisfies(artifact -> assertThat(artifact.getContent())
+                        .contains("可信度状态", "阻断问题", "citation_missing"));
     }
 
     @Test
@@ -1222,6 +1250,8 @@ class AnalysisWorkflowServiceTest {
                     assertThat(finding.getCategory()).hasSizeLessThanOrEqualTo(128);
                     assertThat(finding.getCitationKey()).isEqualTo("S1");
                 });
+        assertThat(run.getReviewDecision().getAction()).isEqualTo(ReviewAction.PASS);
+        assertThat(run.getReviewDecision().getReason()).contains("质量提醒", "不阻断");
     }
 
     @Test
@@ -1330,13 +1360,19 @@ class AnalysisWorkflowServiceTest {
     }
 
     @Test
-    void revisionSummarizesReviewerDecisionAndFindingsInFinalReport() {
+    void revisionKeepsFinalReportCleanAndLeavesFindingsInReviewArtifact() {
         AnalysisRun run = new AnalysisRun();
         run.addArtifact(new AnalysisArtifact(
                 ArtifactType.REPORT_DRAFT,
                 "draft",
                 "# 报告草稿\n\n机会点是优化价格策略 [S1]。",
                 List.of("S1")
+        ));
+        run.addArtifact(new AnalysisArtifact(
+                ArtifactType.REVIEW_FINDINGS,
+                "review",
+                "claim_missing_evidence：结构化结论未绑定证据。",
+                List.of()
         ));
         ReviewFinding finding = new ReviewFinding(
                 ReviewSeverity.HIGH,
@@ -1359,9 +1395,15 @@ class AnalysisWorkflowServiceTest {
                 .last()
                 .satisfies(artifact -> assertThat(artifact.getContent())
                         .contains("Reviewer 当前决策为 `REWORK_ANALYSIS`")
-                        .contains("claim_missing_evidence")
+                        .contains("详细清单请查看 Reviewer 复核结果产物")
+                        .doesNotContain("claim_missing_evidence")
+                        .doesNotContain("结构化结论未绑定证据。")
                         .contains("需重点复核 Claim：C-1")
                         .contains("优先补充证据类型：pricing_page"));
+        assertThat(run.getArtifacts())
+                .filteredOn(artifact -> artifact.getType() == ArtifactType.REVIEW_FINDINGS)
+                .last()
+                .satisfies(artifact -> assertThat(artifact.getContent()).contains("claim_missing_evidence"));
         assertThat(run.getRecommendedActions())
                 .anyMatch(action -> action.contains("HIGH 质检项"));
     }
@@ -1549,6 +1591,11 @@ class AnalysisWorkflowServiceTest {
         public Collection<AnalysisRun> findAll() {
             return runs.values();
         }
+
+        @Override
+        public Collection<AnalysisRunSummary> findSummaries() {
+            return runs.values().stream().map(AnalysisWorkflowServiceTest::summaryOf).toList();
+        }
     }
 
     private static class CopyingTestAnalysisRunRepository implements AnalysisRunRepository {
@@ -1573,6 +1620,11 @@ class AnalysisWorkflowServiceTest {
             return runs.values().stream().map(this::deserialize).toList();
         }
 
+        @Override
+        public Collection<AnalysisRunSummary> findSummaries() {
+            return findAll().stream().map(AnalysisWorkflowServiceTest::summaryOf).toList();
+        }
+
         private AnalysisRun copy(AnalysisRun run) {
             return deserialize(serialize(run));
         }
@@ -1592,5 +1644,24 @@ class AnalysisWorkflowServiceTest {
                 throw new IllegalStateException(ex);
             }
         }
+    }
+
+    private static AnalysisRunSummary summaryOf(AnalysisRun run) {
+        var scope = run.getClarificationDraft() != null ? run.getClarificationDraft() : null;
+        var requirement = run.getRequirement();
+        return new AnalysisRunSummary(
+                run.getId(),
+                run.getStatus(),
+                scope != null && scope.getIndustry() != null ? scope.getIndustry() : requirement == null ? null : requirement.getIndustry(),
+                scope != null && !scope.getCompetitors().isEmpty() ? scope.getCompetitors() : requirement == null ? List.of() : requirement.getCompetitors(),
+                scope != null && scope.getOutputGoal() != null ? scope.getOutputGoal() : requirement == null ? null : requirement.getOutputGoal(),
+                requirement == null ? null : requirement.getOriginalPrompt(),
+                run.getEvidenceSources().size(),
+                run.getArtifacts().size(),
+                run.getReviewFindings().size(),
+                run.getSteps().size(),
+                run.getCreatedAt(),
+                run.getUpdatedAt()
+        );
     }
 }

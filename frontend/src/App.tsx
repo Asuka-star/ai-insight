@@ -1,4 +1,4 @@
-import { type CSSProperties, type PointerEvent as ReactPointerEvent, useCallback, useEffect, useMemo, useState } from "react";
+import { Suspense, lazy, type CSSProperties, type PointerEvent as ReactPointerEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Activity,
   AlertTriangle,
@@ -6,6 +6,8 @@ import {
   Clock3,
   Gauge,
   GripVertical,
+  History,
+  Plus,
   RefreshCw,
   RotateCcw,
   Search,
@@ -13,8 +15,8 @@ import {
   Sparkles,
   UploadCloud
 } from "lucide-react";
-import type { AnalysisContextMessage, AgentName, AnalysisArtifact, AnalysisRun, ContextIntent, ReviewFinding, RunEvent } from "./types";
-import { addContext, addEvidence, createRun, listRuns, getRun, rerunAgent, startAnalysis, updateRequirement } from "./api";
+import type { AnalysisContextMessage, AgentName, AnalysisArtifact, AnalysisRun, AnalysisRunMetrics, AnalysisRunSummary, ContextIntent, ReviewFinding, RunEvent } from "./types";
+import { addContext, addEvidence, createRun, getRun, getRunMetrics, listRunSummaries, rerunAgent, startAnalysis, updateRequirement } from "./api";
 import { AGENTS, AGENT_LABELS, ARTIFACT_LABELS, SOURCE_OPTIONS } from "./constants";
 import {
   calculateRunMetrics,
@@ -28,16 +30,14 @@ import {
   splitList
 } from "./utils";
 import { StatusBadge } from "./components/StatusBadge";
-import { WorkflowGraph } from "./components/WorkflowGraph";
 import { AgentTimeline } from "./components/AgentTimeline";
-import { ArtifactViewer } from "./components/ArtifactViewer";
 import { EvidencePanel } from "./components/EvidencePanel";
 import { ReviewPanel } from "./components/ReviewPanel";
 import { TraceDrawer } from "./components/TraceDrawer";
-import { SchemaPanel } from "./components/SchemaPanel";
 import { ScopeConfirmationPanel } from "./components/ScopeConfirmationPanel";
 import { ContextPanel } from "./components/ContextPanel";
 import { ArtifactVersionsPanel } from "./components/ArtifactVersionsPanel";
+import { HistoryDrawer } from "./components/HistoryDrawer";
 
 type MainView = "dag" | "report" | "schema" | "matrix" | "versions";
 
@@ -47,9 +47,15 @@ const MIN_CENTER_WIDTH = 420;
 const MIN_RIGHT_RAIL_WIDTH = 280;
 const MAX_RIGHT_RAIL_WIDTH = 520;
 const RESIZE_LAYOUT_RESERVE = 72;
+const CURRENT_RUN_STORAGE_KEY = "ai-insight.currentRunId";
+const WorkflowGraph = lazy(() => import("./components/WorkflowGraph").then((module) => ({ default: module.WorkflowGraph })));
+const ArtifactViewer = lazy(() => import("./components/ArtifactViewer").then((module) => ({ default: module.ArtifactViewer })));
+const SchemaPanel = lazy(() => import("./components/SchemaPanel").then((module) => ({ default: module.SchemaPanel })));
 
 export function App() {
   const [run, setRun] = useState<AnalysisRun | null>(null);
+  const [serverRunMetrics, setServerRunMetrics] = useState<AnalysisRunMetrics | null>(null);
+  const [historyRuns, setHistoryRuns] = useState<AnalysisRunSummary[]>([]);
   const [industry, setIndustry] = useState("");
   const [competitors, setCompetitors] = useState("");
   const [dimensions, setDimensions] = useState("");
@@ -76,8 +82,12 @@ export function App() {
   const [backendOk, setBackendOk] = useState(false);
   const [isCreating, setIsCreating] = useState(false);
   const [isScopeBusy, setIsScopeBusy] = useState(false);
+  const [isHistoryLoading, setIsHistoryLoading] = useState(false);
+  const [historyOpen, setHistoryOpen] = useState(false);
   const [leftRailWidth, setLeftRailWidth] = useState(286);
   const [rightRailWidth, setRightRailWidth] = useState(342);
+  const refreshTimerRef = useRef<number>();
+  const workspaceRequestTokenRef = useRef(0);
   // Requirement may change without changing run.id, for example after ADJUST_SCOPE context.
   // Keep a narrow sync key so the editable scope form follows backend scope updates.
   const scopeSyncKey = useMemo(() => {
@@ -96,25 +106,130 @@ export function App() {
     });
   }, [run]);
 
+  const loadHistory = useCallback(async () => {
+    const runs = await listRunSummaries();
+    setHistoryRuns(runs);
+    setBackendOk(true);
+    return runs;
+  }, []);
+
+  const selectRun = useCallback(async (runId: string) => {
+    const requestToken = ++workspaceRequestTokenRef.current;
+    setIsHistoryLoading(true);
+    setServerRunMetrics(null);
+    setEventMessage("正在恢复历史会话");
+    try {
+      const latest = await getRun(runId);
+      if (requestToken !== workspaceRequestTokenRef.current) return;
+      window.localStorage.setItem(CURRENT_RUN_STORAGE_KEY, runId);
+      setBackendOk(true);
+      setRun(latest);
+      setArtifactPinned(false);
+      setSelectedArtifactId(undefined);
+      setSelectedCitationKey(undefined);
+      setSelectedClaimId(undefined);
+      setSelectedAgent(null);
+      setMainView("dag");
+      setLocalContextMessages([]);
+      setEventMessage("历史会话已恢复");
+      setHistoryOpen(false);
+      setHistoryRuns((runs) => upsertHistorySummary(runs, summaryFromRun(latest)));
+    } catch (error) {
+      if (requestToken !== workspaceRequestTokenRef.current) return;
+      window.localStorage.removeItem(CURRENT_RUN_STORAGE_KEY);
+      setBackendOk(false);
+      setEventMessage(error instanceof Error ? `历史会话恢复失败：${error.message}` : "历史会话恢复失败");
+    } finally {
+      if (requestToken === workspaceRequestTokenRef.current) {
+        setIsHistoryLoading(false);
+      }
+    }
+  }, []);
+
   const refreshRun = useCallback(async (runId?: string) => {
     const id = runId ?? run?.id;
     if (!id) {
-      // 初始进入工作台时只探测后端连通性，不自动选中历史任务，避免旧报告被误认为内置示例数据。
-      await listRuns();
-      setBackendOk(true);
+      await loadHistory();
       return;
     }
     const latest = await getRun(id);
+    if (window.localStorage.getItem(CURRENT_RUN_STORAGE_KEY) !== id) return;
+    window.localStorage.setItem(CURRENT_RUN_STORAGE_KEY, id);
     setBackendOk(true);
     setRun(latest);
-  }, [run?.id]);
+    setHistoryRuns((runs) => upsertHistorySummary(runs, summaryFromRun(latest)));
+  }, [loadHistory, run?.id]);
 
   useEffect(() => {
-    refreshRun().catch((error) => {
-      setBackendOk(false);
-      setEventMessage(error.message);
-    });
-  }, []);
+    if (!run?.id) {
+      setServerRunMetrics(null);
+      return;
+    }
+    let cancelled = false;
+    getRunMetrics(run.id)
+      .then((metrics) => {
+        if (!cancelled && metrics.runId === run.id) {
+          setServerRunMetrics(metrics);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setServerRunMetrics(null);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    run?.id,
+    run?.updatedAt,
+    run?.steps.length,
+    run?.evidenceSources.length,
+    run?.reviewFindings.length,
+    run?.artifacts.length,
+    run?.claims?.length,
+    run?.competitorProfiles?.length,
+    run?.traces?.length,
+    run?.workflowTransitions?.length
+  ]);
+
+  const requestRunRefresh = useCallback((runId: string) => {
+    if (refreshTimerRef.current) return;
+    refreshTimerRef.current = window.setTimeout(() => {
+      refreshTimerRef.current = undefined;
+      refreshRun(runId).catch((error) => setEventMessage(error.message));
+    }, 500);
+  }, [refreshRun]);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function restoreWorkspace() {
+      try {
+        const runs = await loadHistory();
+        if (cancelled) return;
+        const storedRunId = window.localStorage.getItem(CURRENT_RUN_STORAGE_KEY);
+        if (!storedRunId) {
+          setEventMessage(runs.length ? "请选择历史会话或创建新分析" : "等待填写范围确认");
+          return;
+        }
+        const exists = runs.some((item) => item.id === storedRunId);
+        if (!exists) {
+          window.localStorage.removeItem(CURRENT_RUN_STORAGE_KEY);
+          setEventMessage("上次会话不存在，请从历史列表重新选择");
+          return;
+        }
+        await selectRun(storedRunId);
+      } catch (error) {
+        if (cancelled) return;
+        setBackendOk(false);
+        setEventMessage(error instanceof Error ? error.message : "后端连接失败");
+      }
+    }
+    restoreWorkspace();
+    return () => {
+      cancelled = true;
+    };
+  }, [loadHistory, selectRun]);
 
   useEffect(() => {
     if (!run?.id) return;
@@ -143,21 +258,29 @@ export function App() {
       events.addEventListener(type, (event) => {
         const data = safeParseEvent(event);
         setEventMessage(data?.message || type);
-        refreshRun(run.id).catch((error) => setEventMessage(error.message));
+        requestRunRefresh(run.id);
       });
     });
     events.onerror = () => setEventMessage("SSE 暂不可用，使用轮询刷新");
     return () => events.close();
-  }, [run?.id, refreshRun]);
+  }, [run?.id, requestRunRefresh]);
 
   useEffect(() => {
     if (!run || !isActiveRun(run)) return;
     const activeRunId = run.id;
     const timer = window.setInterval(() => {
       refreshRun(activeRunId).catch((error) => setEventMessage(error.message));
-    }, 1400);
+    }, 2500);
     return () => window.clearInterval(timer);
   }, [run, refreshRun]);
+
+  useEffect(() => {
+    return () => {
+      if (refreshTimerRef.current) {
+        window.clearTimeout(refreshTimerRef.current);
+      }
+    };
+  }, []);
 
   const selectedArtifact = useMemo(() => {
     const artifacts = run?.artifacts ?? [];
@@ -247,7 +370,40 @@ export function App() {
     window.addEventListener("pointercancel", stopResize);
   }, [leftRailWidth, rightRailWidth]);
 
+  function handleNewRun() {
+    workspaceRequestTokenRef.current += 1;
+    window.localStorage.removeItem(CURRENT_RUN_STORAGE_KEY);
+    setRun(null);
+    setServerRunMetrics(null);
+    setIndustry("");
+    setCompetitors("");
+    setDimensions("");
+    setOutputGoal("");
+    setSources(SOURCE_OPTIONS.map((source) => source.value));
+    setSourceUrls("");
+    setSelectedArtifactId(undefined);
+    setArtifactPinned(false);
+    setSelectedCitationKey(undefined);
+    setSelectedClaimId(undefined);
+    setSelectedAgent(null);
+    setContextText("");
+    setContextIntent("ADJUST_SCOPE");
+    setContextTargetAgent(undefined);
+    setEvidenceTitle("");
+    setEvidenceUrl("");
+    setEvidenceContent("");
+    setEvidenceSensitive(false);
+    setLocalContextMessages([]);
+    setLocalScopeConfirmed(false);
+    setIsCreating(false);
+    setIsHistoryLoading(false);
+    setMainView("dag");
+    setHistoryOpen(false);
+    setEventMessage("已切换到新建分析");
+  }
+
   async function handleCreateRun() {
+    const requestToken = ++workspaceRequestTokenRef.current;
     setIsCreating(true);
     setEventMessage("正在生成范围确认内容");
     setArtifactPinned(false);
@@ -266,13 +422,19 @@ export function App() {
         sourceUrls: sourceUrlList,
         outputGoal
       });
+      if (requestToken !== workspaceRequestTokenRef.current) return;
       setBackendOk(true);
       setRun(nextRun);
+      window.localStorage.setItem(CURRENT_RUN_STORAGE_KEY, nextRun.id);
+      setHistoryRuns((runs) => upsertHistorySummary(runs, summaryFromRun(nextRun)));
     } catch (error) {
+      if (requestToken !== workspaceRequestTokenRef.current) return;
       setBackendOk(false);
       setEventMessage(error instanceof Error ? error.message : "范围确认生成失败");
     } finally {
-      setIsCreating(false);
+      if (requestToken === workspaceRequestTokenRef.current) {
+        setIsCreating(false);
+      }
     }
   }
 
@@ -394,12 +556,29 @@ export function App() {
     }
   }
 
-  const runMetrics = calculateRunMetrics(run);
+  const localRunMetrics = calculateRunMetrics(run);
+  const authoritativeMetrics = serverRunMetrics?.runId === run?.id ? serverRunMetrics : null;
+  const runMetrics = authoritativeMetrics ?? {
+    runId: run?.id ?? "",
+    agentStepCount: run?.steps.length ?? 0,
+    evidenceCount: run?.evidenceSources.length ?? 0,
+    reviewFindingCount: run?.reviewFindings.length ?? 0,
+    citationMentionCount: countCitedClaims(run),
+    claimCoverage: localRunMetrics.claimCoverage,
+    schemaCompleteness: localRunMetrics.schemaCompleteness,
+    reworkCount: localRunMetrics.reworkCount,
+    evidencePerClaim: localRunMetrics.evidencePerClaim,
+    totalTokens: localRunMetrics.totalTokens,
+    totalLatencyMs: localRunMetrics.totalLatencyMs,
+    highFindingCount: run?.reviewFindings.filter((finding) => finding.severity === "HIGH").length ?? 0,
+    mediumFindingCount: run?.reviewFindings.filter((finding) => finding.severity === "MEDIUM").length ?? 0,
+    lowFindingCount: run?.reviewFindings.filter((finding) => finding.severity === "LOW").length ?? 0
+  };
   const metricCards = [
-    { label: "Agent 步骤", value: run?.steps.length ?? 0, icon: Activity },
-    { label: "证据来源", value: run?.evidenceSources.length ?? 0, icon: Search },
-    { label: "质检问题", value: run?.reviewFindings.length ?? 0, icon: ShieldCheck },
-    { label: "引用标记", value: countCitedClaims(run), icon: BookOpenCheck },
+    { label: "Agent 步骤", value: runMetrics.agentStepCount, icon: Activity },
+    { label: "证据来源", value: runMetrics.evidenceCount, icon: Search },
+    { label: "质检问题", value: runMetrics.reviewFindingCount, icon: ShieldCheck },
+    { label: "引用标记", value: runMetrics.citationMentionCount, icon: BookOpenCheck },
     { label: "Claim 覆盖", value: formatPercent(runMetrics.claimCoverage), icon: ShieldCheck },
     { label: "Schema 完整", value: formatPercent(runMetrics.schemaCompleteness), icon: BookOpenCheck },
     { label: "打回次数", value: runMetrics.reworkCount, icon: RefreshCw },
@@ -427,6 +606,12 @@ export function App() {
           </div>
         </div>
         <div className="header-actions">
+          <button className="toolbar-button" type="button" onClick={() => setHistoryOpen(true)}>
+            <History size={16} /> 历史会话
+          </button>
+          <button className="toolbar-button" type="button" onClick={handleNewRun}>
+            <Plus size={16} /> 新建分析
+          </button>
           <StatusBadge label={backendOk ? "后端已连接" : "后端未连接"} tone={backendOk ? "success" : "danger"} />
           <StatusBadge label={displayRunPhase(String(resolveRunPhase(run)))} tone={statusTone(run?.status)} />
           <button className="icon-button" type="button" onClick={() => refreshRun()} aria-label="刷新任务">
@@ -551,7 +736,9 @@ export function App() {
             </div>
 
             {mainView === "dag" ? (
-              <WorkflowGraph run={run} onSelectAgent={setSelectedAgent} />
+              <Suspense fallback={<PanelLoading label="正在加载工作流视图" />}>
+                <WorkflowGraph run={run} onSelectAgent={setSelectedAgent} />
+              </Suspense>
             ) : null}
 
             {mainView === "report" ? (
@@ -572,31 +759,37 @@ export function App() {
                     ))}
                   </select>
                 </div>
-                <ArtifactViewer
-                  artifact={reportDisplayArtifact}
-                  sources={run?.evidenceSources ?? []}
-                  onSelectCitation={setSelectedCitationKey}
-                />
+                <Suspense fallback={<PanelLoading label="正在加载报告阅读器" />}>
+                  <ArtifactViewer
+                    artifact={reportDisplayArtifact}
+                    sources={run?.evidenceSources ?? []}
+                    onSelectCitation={setSelectedCitationKey}
+                  />
+                </Suspense>
               </div>
             ) : null}
 
             {mainView === "schema" ? (
               <div className="tab-content">
-                <SchemaPanel
-                  embedded
-                  researchPackage={run?.researchPackage}
-                  profiles={run?.competitorProfiles ?? []}
-                  claims={run?.claims ?? []}
-                  transitions={run?.workflowTransitions ?? []}
-                  selectedClaimId={selectedClaimId}
-                  onSelectCitation={setSelectedCitationKey}
-                />
+                <Suspense fallback={<PanelLoading label="正在加载结构化视图" />}>
+                  <SchemaPanel
+                    embedded
+                    researchPackage={run?.researchPackage}
+                    profiles={run?.competitorProfiles ?? []}
+                    claims={run?.claims ?? []}
+                    transitions={run?.workflowTransitions ?? []}
+                    selectedClaimId={selectedClaimId}
+                    onSelectCitation={setSelectedCitationKey}
+                  />
+                </Suspense>
               </div>
             ) : null}
 
             {mainView === "matrix" ? (
               <div className="tab-content">
-                <ArtifactViewer artifact={matrixArtifact} sources={run?.evidenceSources ?? []} onSelectCitation={setSelectedCitationKey} />
+                <Suspense fallback={<PanelLoading label="正在加载矩阵阅读器" />}>
+                  <ArtifactViewer artifact={matrixArtifact} sources={run?.evidenceSources ?? []} onSelectCitation={setSelectedCitationKey} />
+                </Suspense>
               </div>
             ) : null}
 
@@ -691,6 +884,17 @@ export function App() {
           <AlertTriangle size={16} /> {run.errorMessage}
         </div>
       ) : null}
+
+      <HistoryDrawer
+        open={historyOpen}
+        summaries={historyRuns}
+        currentRunId={run?.id}
+        loading={isHistoryLoading}
+        onClose={() => setHistoryOpen(false)}
+        onNewRun={handleNewRun}
+        onRefresh={() => loadHistory().catch((error) => setEventMessage(error.message))}
+        onSelectRun={selectRun}
+      />
     </div>
   );
 }
@@ -700,6 +904,47 @@ function statusTone(status?: string) {
   if (status === "FAILED") return "danger";
   if (status === "RUNNING" || status === "PENDING") return "running";
   return "neutral";
+}
+
+function PanelLoading({ label }: { label: string }) {
+  return (
+    <div className="panel-loading">
+      <RefreshCw size={16} />
+      <span>{label}</span>
+    </div>
+  );
+}
+
+function upsertHistorySummary(runs: AnalysisRunSummary[], latest: AnalysisRunSummary) {
+  const exists = runs.some((item) => item.id === latest.id);
+  const nextRuns = exists
+    ? runs.map((item) => item.id === latest.id ? latest : item)
+    : [latest, ...runs];
+  return [...nextRuns].sort((left, right) => timestampValue(right.updatedAt ?? right.createdAt) - timestampValue(left.updatedAt ?? left.createdAt));
+}
+
+function summaryFromRun(run: AnalysisRun): AnalysisRunSummary {
+  const scope = run.clarificationDraft ?? run.requirement;
+  return {
+    id: run.id,
+    status: run.status,
+    industry: scope?.industry,
+    competitors: scope?.competitors ?? [],
+    outputGoal: scope?.outputGoal,
+    originalPrompt: run.requirement?.originalPrompt,
+    evidenceCount: run.evidenceSources.length,
+    artifactCount: run.artifacts.length,
+    findingCount: run.reviewFindings.length,
+    stepCount: run.steps.length,
+    createdAt: run.createdAt,
+    updatedAt: run.updatedAt
+  };
+}
+
+function timestampValue(value?: string) {
+  if (!value) return 0;
+  const time = new Date(value).getTime();
+  return Number.isNaN(time) ? 0 : time;
 }
 
 function safeParseEvent(event: MessageEvent<string>): RunEvent | null {
@@ -712,7 +957,7 @@ function safeParseEvent(event: MessageEvent<string>): RunEvent | null {
 
 function splitLines(value: string) {
   return value
-    .split(/\r?\n/)
+    .split(/[\r\n、]+/)
     .map((item) => item.trim())
     .filter(Boolean);
 }

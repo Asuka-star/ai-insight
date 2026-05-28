@@ -1,5 +1,6 @@
 package com.aiinsight.service.fallback;
 
+import com.aiinsight.model.enums.ReviewSeverity;
 import com.aiinsight.model.review.ReviewFinding;
 import com.aiinsight.model.run.AnalysisRun;
 import org.springframework.stereotype.Component;
@@ -29,21 +30,55 @@ public class FallbackReviewReportFactory {
 
                 %s
 
+                %s
+
                 ## 人工复核建议
 
-                - 优先处理 HIGH 级问题，避免无引用结论或不存在的 citation 进入最终报告。
-                - MEDIUM 级问题通常代表弱支撑、低质量来源或高置信结论证据不足，建议补采后再确认。
-                - LOW 级问题可作为人工审阅提醒，不阻断当前流程。
-                """.formatted(findingsBlock(run.getReviewFindings()));
+                - 阻断问题会影响 ReviewDecision，并可能触发补证、重做分析或修订报告。
+                - 质量提醒不阻断当前流程，但建议在正式发布前补强证据或降低措辞强度。
+                - 人工复核项用于提醒需要访谈、实测、定价时效或企业判断的内容。
+                """.formatted(qualitySummary(run.getReviewFindings()), findingsBlock(run.getReviewFindings()));
+    }
+
+    private String qualitySummary(List<ReviewFinding> findings) {
+        long high = countBySeverity(findings, ReviewSeverity.HIGH);
+        long medium = countBySeverity(findings, ReviewSeverity.MEDIUM);
+        long low = countBySeverity(findings, ReviewSeverity.LOW);
+        String status = high > 0
+                ? "不建议对外发布，需先处理阻断问题。"
+                : medium + low > 0
+                        ? "可演示，但建议进入人工确认。"
+                        : "已通过高风险检查。";
+        return "可信度状态：%s 当前包含 %d 个阻断问题、%d 个质量提醒、%d 个人工复核项。".formatted(
+                status,
+                high,
+                medium,
+                low
+        );
     }
 
     private String findingsBlock(List<ReviewFinding> findings) {
-        return findings.stream()
-                .sorted(Comparator
-                        .comparing(ReviewFinding::getSeverity, Comparator.nullsLast(Comparator.reverseOrder()))
-                        .thenComparing(finding -> nullToEmpty(finding.getCategory())))
+        return List.of(
+                        findingsGroup(findings, ReviewSeverity.HIGH, "阻断问题"),
+                        findingsGroup(findings, ReviewSeverity.MEDIUM, "质量提醒"),
+                        findingsGroup(findings, ReviewSeverity.LOW, "人工复核项")
+                ).stream()
+                .filter(this::hasText)
+                .collect(Collectors.joining("\n\n"));
+    }
+
+    private String findingsGroup(List<ReviewFinding> findings, ReviewSeverity severity, String title) {
+        List<ReviewFinding> group = findings.stream()
+                .filter(finding -> finding.getSeverity() == severity)
+                .sorted(Comparator.comparing(finding -> nullToEmpty(finding.getCategory())))
+                .toList();
+        if (group.isEmpty()) {
+            return "";
+        }
+        String lines = group.stream()
                 .map(this::findingLine)
                 .collect(Collectors.joining("\n"));
+        return "### " + title + "\n\n" + lines;
     }
 
     private String findingLine(ReviewFinding finding) {
@@ -65,6 +100,12 @@ public class FallbackReviewReportFactory {
                 .filter(this::hasText)
                 .collect(Collectors.joining(", "));
         return hasText(location) ? "（" + location + "）" : "";
+    }
+
+    private long countBySeverity(List<ReviewFinding> findings, ReviewSeverity severity) {
+        return findings.stream()
+                .filter(finding -> finding.getSeverity() == severity)
+                .count();
     }
 
     private boolean hasText(String text) {

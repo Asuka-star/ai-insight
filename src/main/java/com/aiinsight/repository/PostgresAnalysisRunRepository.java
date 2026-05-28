@@ -1,5 +1,7 @@
 package com.aiinsight.repository;
 
+import com.aiinsight.dto.AnalysisRunSummary;
+import com.aiinsight.model.enums.AnalysisStatus;
 import com.aiinsight.model.run.AnalysisRun;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -14,6 +16,7 @@ import java.sql.SQLException;
 import java.sql.Timestamp;
 import java.time.Instant;
 import java.util.Collection;
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -194,6 +197,33 @@ public class PostgresAnalysisRunRepository implements AnalysisRunRepository {
         return jdbcTemplate.query(
                 "select run_payload from analysis_run order by updated_at desc",
                 (rs, rowNum) -> toRun(rs)
+        );
+    }
+
+    @Override
+    public Collection<AnalysisRunSummary> findSummaries() {
+        return jdbcTemplate.query("""
+                        select
+                            ar.id,
+                            ar.status,
+                            ar.original_prompt,
+                            coalesce(nullif(ar.run_payload #>> '{clarificationDraft,industry}', ''),
+                                     nullif(ar.run_payload #>> '{requirement,industry}', '')) as industry,
+                            coalesce(ar.run_payload #> '{clarificationDraft,competitors}',
+                                     ar.run_payload #> '{requirement,competitors}',
+                                     '[]'::jsonb)::text as competitors_json,
+                            coalesce(nullif(ar.run_payload #>> '{clarificationDraft,outputGoal}', ''),
+                                     nullif(ar.run_payload #>> '{requirement,outputGoal}', '')) as output_goal,
+                            (select count(*) from evidence_source es where es.run_id = ar.id) as evidence_count,
+                            (select count(*) from analysis_artifact aa where aa.run_id = ar.id) as artifact_count,
+                            (select count(*) from review_finding rf where rf.run_id = ar.id) as finding_count,
+                            (select count(*) from agent_step ast where ast.run_id = ar.id) as step_count,
+                            ar.created_at,
+                            ar.updated_at
+                        from analysis_run ar
+                        order by ar.updated_at desc
+                        """,
+                (rs, rowNum) -> toSummary(rs)
         );
     }
 
@@ -379,5 +409,38 @@ public class PostgresAnalysisRunRepository implements AnalysisRunRepository {
         } catch (JsonProcessingException ex) {
             throw new IllegalStateException("Failed to deserialize analysis run payload", ex);
         }
+    }
+
+    private AnalysisRunSummary toSummary(ResultSet rs) throws SQLException {
+        return new AnalysisRunSummary(
+                rs.getObject("id", UUID.class),
+                AnalysisStatus.valueOf(rs.getString("status")),
+                rs.getString("industry"),
+                toStringList(rs.getString("competitors_json")),
+                rs.getString("output_goal"),
+                rs.getString("original_prompt"),
+                rs.getInt("evidence_count"),
+                rs.getInt("artifact_count"),
+                rs.getInt("finding_count"),
+                rs.getInt("step_count"),
+                timestampValue(rs, "created_at"),
+                timestampValue(rs, "updated_at")
+        );
+    }
+
+    private List<String> toStringList(String json) {
+        if (json == null || json.isBlank()) {
+            return List.of();
+        }
+        try {
+            return objectMapper.readerForListOf(String.class).readValue(json);
+        } catch (JsonProcessingException ex) {
+            throw new IllegalStateException("Failed to deserialize summary competitors", ex);
+        }
+    }
+
+    private Instant timestampValue(ResultSet rs, String column) throws SQLException {
+        Timestamp timestamp = rs.getTimestamp(column);
+        return timestamp == null ? null : timestamp.toInstant();
     }
 }
