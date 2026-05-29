@@ -21,5 +21,10 @@ public class ReviewDecision {
     private String reason;
     private List<String> affectedClaimIds = new ArrayList<>();
     private List<String> requiredEvidenceTypes = new ArrayList<>();
+    private List<String> findingCategories = new ArrayList<>();
+    private List<String> blockingFindingIds = new ArrayList<>();
+    private List<String> repairInstructions = new ArrayList<>();
+    private List<ReviewRepairTask> repairTasks = new ArrayList<>();
+    private String repairScopeSummary;
     private Instant decidedAt = Instant.now();
 }

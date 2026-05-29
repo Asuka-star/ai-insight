@@ -1,5 +1,7 @@
 package com.aiinsight.service;
 
+import com.aiinsight.model.enums.AgentName;
+import com.aiinsight.model.enums.ReviewAction;
 import com.aiinsight.model.run.AnalysisRequirement;
 import com.aiinsight.model.run.AnalysisRun;
 import org.junit.jupiter.api.Test;
@@ -53,5 +55,26 @@ class SearchQueryPlannerTest {
                     assertThat(batch.queries()).isNotEmpty();
                     assertThat(batch.queries()).allMatch(query -> query.contains(batch.competitor()));
                 });
+    }
+
+    @Test
+    void recollectionUsesRequiredEvidenceTypesAsRepairScope() {
+        AnalysisRun run = new AnalysisRun(new AnalysisRequirement(
+                "Analyze AI coding tools",
+                "AI coding tools",
+                List.of("Cursor"),
+                List.of("reviews"),
+                List.of("public_reviews"),
+                List.of()
+        ));
+        run.getReviewDecision().setAction(ReviewAction.RECOLLECT_EVIDENCE);
+        run.getReviewDecision().setTargetAgent(AgentName.RESEARCHER);
+        run.getReviewDecision().setRequiredEvidenceTypes(List.of("pricing_page"));
+
+        List<String> queries = planner.plan(run, true);
+
+        assertThat(queries).isNotEmpty();
+        assertThat(queries).allMatch(query -> query.contains("official pricing plans"));
+        assertThat(queries).noneMatch(query -> query.contains("independent user reviews"));
     }
 }

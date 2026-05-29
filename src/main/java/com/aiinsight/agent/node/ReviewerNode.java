@@ -9,6 +9,7 @@ import com.aiinsight.model.enums.ClaimType;
 import com.aiinsight.model.enums.ReviewAction;
 import com.aiinsight.model.review.ReviewDecision;
 import com.aiinsight.model.review.ReviewFinding;
+import com.aiinsight.model.review.ReviewRepairTask;
 import com.aiinsight.llm.ChatMessage;
 import com.aiinsight.llm.ChatOptions;
 import com.aiinsight.llm.ChatRequest;
@@ -70,10 +71,11 @@ public class ReviewerNode implements AgentNode {
             run.getReviewFindings().addAll(citationCoverageEvaluator.evaluate(draft.getContent(), run));
             enrichFindingLocations(run, draft);
         }
-        String content;
+        String semanticReviewContent = "";
+        boolean deterministicFallback = false;
         if (llmClient.isAvailable() && draft != null) {
             try {
-                content = reviewWithLlm(run, draft);
+                semanticReviewContent = reviewWithLlm(run, draft);
                 enrichFindingLocations(run, draft);
             } catch (RuntimeException ex) {
                 log.warn("Reviewer fallback activated: runId={}, reason=llm_exception, exceptionType={}, message={}, draftId={}, evidenceSources={}, claims={}, ruleFindings={}",
@@ -85,8 +87,7 @@ public class ReviewerNode implements AgentNode {
                         run.getClaims().size(),
                         run.getReviewFindings().size());
                 run.getRecommendedActions().add("LLM 质检失败，已使用确定性 Reviewer 结果：" + ex.getMessage());
-                content = fallbackReviewReportFactory.build(run);
-                AgentTraceContext.recordFallback("deterministic-reviewer-fallback", content);
+                deterministicFallback = true;
             }
         } else {
             log.warn("Reviewer fallback activated: runId={}, reason={}, draftPresent={}, evidenceSources={}, claims={}, ruleFindings={}",
@@ -96,33 +97,48 @@ public class ReviewerNode implements AgentNode {
                     run.getEvidenceSources().size(),
                     run.getClaims().size(),
                     run.getReviewFindings().size());
-            content = fallbackReviewReportFactory.build(run);
-            AgentTraceContext.recordFallback("deterministic-reviewer-fallback", content);
+            deterministicFallback = true;
         }
         run.setReviewDecision(buildDecision(run));
+        String content = StringUtils.hasText(semanticReviewContent)
+                ? semanticReviewContent + "\n\n" + fallbackReviewReportFactory.build(run)
+                : fallbackReviewReportFactory.build(run);
+        if (deterministicFallback) {
+            AgentTraceContext.recordFallback("deterministic-reviewer-fallback", content);
+        }
         run.addArtifact(new AnalysisArtifact(ArtifactType.REVIEW_FINDINGS, "Reviewer 复核结果", content, List.of()));
         return run;
     }
 
     private ReviewDecision buildDecision(AnalysisRun run) {
         ReviewDecision decision = new ReviewDecision();
-        // 只有 HIGH finding 会阻断自动流程；MEDIUM/LOW 作为质量提醒保留给前端和最终报告。
+        decision.setFindingCategories(distinctCategories(run.getReviewFindings()));
+        // 只有定位明确、类别确实需要返工的 HIGH finding 会阻断自动流程；
+        // 非阻断 HIGH 和 MEDIUM/LOW 都作为质量提醒保留给前端和最终报告。
         List<ReviewFinding> blockingFindings = run.getReviewFindings().stream()
-                .filter(finding -> finding.getSeverity() == ReviewSeverity.HIGH)
+                .filter(this::isBlockingFinding)
                 .toList();
         if (blockingFindings.isEmpty()) {
             decision.setAction(ReviewAction.PASS);
             decision.setReason(run.getReviewFindings().isEmpty()
                     ? "规则检查未发现高风险问题。"
-                    : "仅发现 %d 个质量提醒和 %d 个人工复核项，不阻断当前报告流程。".formatted(
+                    : "仅发现 %d 个高优先级提醒、%d 个质量提醒和 %d 个人工复核项，不阻断当前报告流程。".formatted(
+                            countBySeverity(run, ReviewSeverity.HIGH),
                             countBySeverity(run, ReviewSeverity.MEDIUM),
                             countBySeverity(run, ReviewSeverity.LOW)
                     ));
+            decision.setRepairScopeSummary("无需自动修复；非阻断问题保留为人工复核提醒。");
             return decision;
         }
         applyBlockingDecision(run, decision, blockingFindings);
+        decision.setBlockingFindingIds(blockingFindings.stream()
+                .map(finding -> finding.getId().toString())
+                .toList());
+        decision.setFindingCategories(distinctCategories(blockingFindings));
+        decision.setRepairInstructions(repairInstructions(decision, blockingFindings));
+        decision.setRepairTasks(repairTasks(decision, blockingFindings));
         // 决策元数据沿用前端“定位问题”使用的 claim 绑定；没有可绑定 finding 时再退回无证据 claim。
-        List<String> affectedClaimIds = run.getReviewFindings().stream()
+        List<String> affectedClaimIds = blockingFindings.stream()
                 .map(finding -> finding.getClaimId())
                 .filter(id -> id != null && !id.isBlank())
                 .distinct()
@@ -134,7 +150,135 @@ public class ReviewerNode implements AgentNode {
                     .toList();
         }
         decision.setAffectedClaimIds(affectedClaimIds);
+        decision.setRepairScopeSummary(repairScopeSummary(decision, blockingFindings));
         return decision;
+    }
+
+    private boolean isBlockingFinding(ReviewFinding finding) {
+        if (finding == null || finding.getSeverity() != ReviewSeverity.HIGH) {
+            return false;
+        }
+        String category = normalizedCategory(finding);
+        return !isQualityReminderOnly(category);
+    }
+
+    private boolean isQualityReminderOnly(String category) {
+        return category.contains("marketing_only")
+                || category.contains("thin_source")
+                || category.contains("low_quality_source")
+                || category.contains("snippet_only");
+    }
+
+    private List<String> distinctCategories(List<ReviewFinding> findings) {
+        return findings.stream()
+                .map(ReviewFinding::getCategory)
+                .filter(StringUtils::hasText)
+                .distinct()
+                .toList();
+    }
+
+    private List<String> repairInstructions(ReviewDecision decision, List<ReviewFinding> blockingFindings) {
+        List<String> instructions = new java.util.ArrayList<>();
+        if (decision.getAction() == ReviewAction.RECOLLECT_EVIDENCE) {
+            String evidenceTypes = decision.getRequiredEvidenceTypes().isEmpty()
+                    ? "Reviewer 指出的缺口类型"
+                    : String.join("、", decision.getRequiredEvidenceTypes());
+            instructions.add("Researcher 仅围绕必补证据类型补采：" + evidenceTypes + "。");
+            instructions.add("保留既有可用来源，只追加能支撑阻断 finding 的新证据。");
+        } else if (decision.getAction() == ReviewAction.REWORK_ANALYSIS) {
+            instructions.add("Analyst 优先修复 affectedClaimIds 指向的结构化结论，避免重写无关 claims。");
+            instructions.add("无法补足证据时，将相关 claim 降级为 LOW 并明确标注“证据不足，待验证”。");
+        } else if (decision.getAction() == ReviewAction.REVISE_REPORT) {
+            instructions.add("Writer 只修订 Reviewer 定位的段落或 citation，不重新撰写整份报告。");
+            instructions.add("过度推断应降级为待验证假设，并补充缺失 citation 或删除无证据表述。");
+        }
+        blockingFindings.stream()
+                .limit(3)
+                .map(finding -> "修复问题：" + finding.getCategory() + " - " + finding.getRecommendation())
+                .forEach(instructions::add);
+        return instructions;
+    }
+
+    private List<ReviewRepairTask> repairTasks(ReviewDecision decision, List<ReviewFinding> blockingFindings) {
+        return blockingFindings.stream()
+                .map(finding -> repairTask(decision, finding))
+                .toList();
+    }
+
+    private ReviewRepairTask repairTask(ReviewDecision decision, ReviewFinding finding) {
+        ReviewRepairTask task = new ReviewRepairTask();
+        task.setTargetAgent(decision.getTargetAgent());
+        task.setFindingId(finding.getId() == null ? null : finding.getId().toString());
+        task.setClaimId(finding.getClaimId());
+        task.setCitationKey(finding.getCitationKey());
+        task.setCategory(finding.getCategory());
+        task.setRequiredEvidenceTypes(decision.getRequiredEvidenceTypes());
+        task.setAction(repairAction(decision));
+        task.setInstruction(repairTaskInstruction(decision, finding));
+        task.setAcceptanceCriteria(repairAcceptanceCriteria(decision, finding));
+        return task;
+    }
+
+    private String repairAction(ReviewDecision decision) {
+        if (decision.getAction() == ReviewAction.RECOLLECT_EVIDENCE) {
+            return "COLLECT_TARGETED_EVIDENCE";
+        }
+        if (decision.getAction() == ReviewAction.REWORK_ANALYSIS) {
+            return "REPAIR_CLAIM_EVIDENCE";
+        }
+        if (decision.getAction() == ReviewAction.REVISE_REPORT) {
+            return "REVISE_REPORT_CITATION";
+        }
+        return "MANUAL_REVIEW";
+    }
+
+    private String repairTaskInstruction(ReviewDecision decision, ReviewFinding finding) {
+        String location = finding.getClaimId() != null ? "claim=" + finding.getClaimId()
+                : finding.getCitationKey() != null ? "citation=" + finding.getCitationKey()
+                : finding.getParagraphIndex() != null ? "paragraph=" + finding.getParagraphIndex()
+                : "未定位到具体对象";
+        if (decision.getAction() == ReviewAction.RECOLLECT_EVIDENCE) {
+            return "围绕 " + location + " 补采可验证证据：" + finding.getRecommendation();
+        }
+        if (decision.getAction() == ReviewAction.REWORK_ANALYSIS) {
+            return "修复 " + location + " 的结构化结论、证据绑定或置信度：" + finding.getRecommendation();
+        }
+        if (decision.getAction() == ReviewAction.REVISE_REPORT) {
+            return "修订 " + location + " 对应报告表述或引用：" + finding.getRecommendation();
+        }
+        return finding.getRecommendation();
+    }
+
+    private String repairAcceptanceCriteria(ReviewDecision decision, ReviewFinding finding) {
+        if (decision.getAction() == ReviewAction.RECOLLECT_EVIDENCE) {
+            String evidenceTypes = decision.getRequiredEvidenceTypes().isEmpty()
+                    ? "Reviewer 指定的证据类型"
+                    : String.join("、", decision.getRequiredEvidenceTypes());
+            return "新增证据应覆盖 " + evidenceTypes + "，且可被相关 claim 或报告段落引用。";
+        }
+        if (decision.getAction() == ReviewAction.REWORK_ANALYSIS) {
+            return "相关 claim 必须绑定有效 evidenceIds；无法支撑时应降低置信度并标注待验证。";
+        }
+        if (decision.getAction() == ReviewAction.REVISE_REPORT) {
+            return "报告段落应补齐有效 citation，或删除/降级无证据支撑的强结论。";
+        }
+        return "人工确认该问题已处理或保留为非阻断风险。";
+    }
+
+    private String repairScopeSummary(ReviewDecision decision, List<ReviewFinding> blockingFindings) {
+        String claims = decision.getAffectedClaimIds().isEmpty()
+                ? "未指定 Claim"
+                : String.join("、", decision.getAffectedClaimIds());
+        String evidenceTypes = decision.getRequiredEvidenceTypes().isEmpty()
+                ? "未指定必补证据"
+                : String.join("、", decision.getRequiredEvidenceTypes());
+        return "目标 Agent=%s；阻断问题=%d；问题类别=%s；Claim=%s；证据类型=%s。".formatted(
+                decision.getTargetAgent() == null ? "无需自动修复" : decision.getTargetAgent(),
+                blockingFindings.size(),
+                String.join("、", decision.getFindingCategories()),
+                claims,
+                evidenceTypes
+        );
     }
 
     private void applyBlockingDecision(AnalysisRun run, ReviewDecision decision, List<ReviewFinding> blockingFindings) {
@@ -251,9 +395,7 @@ public class ReviewerNode implements AgentNode {
                 .collect(Collectors.joining("\n"));
         return "## LLM 并发语义质检\n\n"
                 + subtaskSummary
-                + "\n\n结构化新增问题：" + added
-                + "\n\n"
-                + fallbackReviewReportFactory.build(run);
+                + "\n\n结构化新增问题：" + added;
     }
 
     private LlmReviewResult reviewClaimEvidenceWithLlm(AnalysisRun run) {
@@ -442,8 +584,12 @@ public class ReviewerNode implements AgentNode {
         if (draft == null || !StringUtils.hasText(draft.message)) {
             return null;
         }
+        ReviewSeverity severity = parseSeverity(draft.severity);
+        if (severity == ReviewSeverity.HIGH && !hasFindingLocation(draft)) {
+            severity = ReviewSeverity.MEDIUM;
+        }
         ReviewFinding finding = new ReviewFinding(
-                parseSeverity(draft.severity),
+                severity,
                 sanitizeCategory(draft.category),
                 draft.message.trim(),
                 StringUtils.hasText(draft.recommendation) ? draft.recommendation.trim() : "请人工复核该问题并补充证据或修订报告。"
@@ -453,6 +599,13 @@ public class ReviewerNode implements AgentNode {
         finding.setParagraphIndex(draft.paragraphIndex);
         finding.setExcerpt(blankToNull(draft.excerpt));
         return finding;
+    }
+
+    private boolean hasFindingLocation(LlmFindingDraft draft) {
+        return StringUtils.hasText(draft.claimId)
+                || StringUtils.hasText(draft.citationKey)
+                || StringUtils.hasText(draft.excerpt)
+                || draft.paragraphIndex != null;
     }
 
     private String sanitizeCategory(String category) {
@@ -637,13 +790,16 @@ public class ReviewerNode implements AgentNode {
         }
         return run.getEvidenceSources().stream()
                 .limit(16)
-                .map(source -> "[%s] title=%s | url=%s | type=%s | status=%s | freshness=%s | note=%s | snippet=%s".formatted(
+                .map(source -> "[%s] title=%s | url=%s | type=%s | quality=%s | status=%s | freshness=%s | failure=%s | rawTextChars=%d | note=%s | snippet=%s".formatted(
                         source.getCitationKey(),
                         abbreviate(source.getTitle(), 70),
                         abbreviate(source.getUrl(), 90),
                         source.getSourceType(),
+                        source.getSourceQuality(),
                         source.getCollectionStatus(),
                         source.getFreshness(),
+                        source.getFailureReason(),
+                        source.getRawText() == null ? 0 : source.getRawText().length(),
                         abbreviate(source.getComplianceNote(), 100),
                         abbreviate(source.getSnippet(), 140)
                 ))

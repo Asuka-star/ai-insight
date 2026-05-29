@@ -9,6 +9,7 @@ import com.aiinsight.model.enums.AgentName;
 import com.aiinsight.model.enums.ArtifactType;
 import com.aiinsight.model.enums.ClaimType;
 import com.aiinsight.model.enums.ConfidenceLevel;
+import com.aiinsight.model.enums.ReviewAction;
 import com.aiinsight.model.run.AnalysisArtifact;
 import com.aiinsight.model.run.AnalysisRequirement;
 import com.aiinsight.model.run.AnalysisRun;
@@ -185,11 +186,15 @@ public class AnalystNode implements AgentNode {
 
                 证据缺口与一手洞察：
                 %s
+
+                Reviewer 修复计划：
+                %s
                 """.formatted(
                 context.requirementSummary(),
                 context.profileBlock(),
                 context.evidenceIndex(),
-                context.researchContext()
+                context.researchContext(),
+                context.repairPlan()
         );
         String raw = llmClient.complete(new ChatRequest(
                 List.of(
@@ -232,11 +237,15 @@ public class AnalystNode implements AgentNode {
 
                 证据索引：
                 %s
+
+                Reviewer 修复计划：
+                %s
                 """.formatted(
                 context.requirementSummary(),
                 context.profileBlock(),
                 claimsBlock(claims),
-                context.evidenceIndex()
+                context.evidenceIndex(),
+                context.repairPlan()
         );
         String raw = llmClient.complete(new ChatRequest(
                 List.of(
@@ -275,11 +284,15 @@ public class AnalystNode implements AgentNode {
 
                 证据缺口与一手洞察：
                 %s
+
+                Reviewer 修复计划：
+                %s
                 """.formatted(
                 context.requirementSummary(),
                 context.profileBlock(),
                 claimsBlock(claims),
-                context.researchContext()
+                context.researchContext(),
+                context.repairPlan()
         );
         String raw = llmClient.complete(new ChatRequest(
                 List.of(
@@ -563,7 +576,8 @@ public class AnalystNode implements AgentNode {
                 requirementSummary(run),
                 compactProfileBlock(run),
                 evidenceIndexBlock(run),
-                researchContextBlock(run)
+                researchContextBlock(run),
+                repairPlanBlock(run)
         );
     }
 
@@ -722,6 +736,45 @@ public class AnalystNode implements AgentNode {
         return "证据缺口：" + gapText + "\n一手洞察：\n" + interviewText;
     }
 
+    private String repairPlanBlock(AnalysisRun run) {
+        if (run.getReviewDecision() == null || run.getReviewDecision().getAction() == ReviewAction.PASS) {
+            return "当前不是复核修复模式。";
+        }
+        String instructions = run.getReviewDecision().getRepairInstructions().isEmpty()
+                ? "暂无具体修复指令。"
+                : run.getReviewDecision().getRepairInstructions().stream()
+                .map(instruction -> "- " + instruction)
+                .collect(Collectors.joining("\n"));
+        String tasks = run.getReviewDecision().getRepairTasks().isEmpty()
+                ? "暂无结构化修复任务。"
+                : run.getReviewDecision().getRepairTasks().stream()
+                .filter(task -> task.getTargetAgent() == AgentName.ANALYST)
+                .map(task -> "- action=%s claim=%s citation=%s criteria=%s".formatted(
+                        task.getAction(),
+                        nullToEmpty(task.getClaimId()),
+                        nullToEmpty(task.getCitationKey()),
+                        nullToEmpty(task.getAcceptanceCriteria())
+                ))
+                .collect(Collectors.joining("\n"));
+        return """
+                修复动作：%s
+                修复范围：%s
+                受影响 Claim：%s
+                问题类别：%s
+                修复指令：
+                %s
+                结构化修复任务：
+                %s
+                """.formatted(
+                run.getReviewDecision().getAction(),
+                nullToEmpty(run.getReviewDecision().getRepairScopeSummary()),
+                run.getReviewDecision().getAffectedClaimIds(),
+                run.getReviewDecision().getFindingCategories(),
+                instructions,
+                tasks
+        );
+    }
+
     private String compactProfileBlock(AnalysisRun run) {
         return run.getCompetitorProfiles().stream()
                 .map(profile -> "- 产品=%s | 定位=%s | 优势=%s | 弱势=%s | 证据=%s".formatted(
@@ -778,7 +831,8 @@ public class AnalystNode implements AgentNode {
             String requirementSummary,
             String profileBlock,
             String evidenceIndex,
-            String researchContext
+            String researchContext,
+            String repairPlan
     ) {
     }
 

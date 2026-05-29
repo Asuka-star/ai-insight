@@ -19,6 +19,10 @@ class AnalysisRunSchemaTest {
         assertThat(run.getCompetitorProfiles()).isEmpty();
         assertThat(run.getClaims()).isEmpty();
         assertThat(run.getReviewDecision()).isNotNull();
+        assertThat(run.getReviewDecision().getFindingCategories()).isEmpty();
+        assertThat(run.getReviewDecision().getBlockingFindingIds()).isEmpty();
+        assertThat(run.getReviewDecision().getRepairInstructions()).isEmpty();
+        assertThat(run.getReviewDecision().getRepairTasks()).isEmpty();
         assertThat(run.getClarificationDraft()).isNotNull();
         assertThat(run.getContextMessages()).isEmpty();
         assertThat(run.getUserProvidedEvidence()).isEmpty();

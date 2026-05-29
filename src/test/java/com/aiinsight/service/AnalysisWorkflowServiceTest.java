@@ -1153,12 +1153,25 @@ class AnalysisWorkflowServiceTest {
         assertThat(run.getReviewDecision().getAction()).isEqualTo(ReviewAction.RECOLLECT_EVIDENCE);
         assertThat(run.getReviewDecision().getTargetAgent()).isEqualTo(AgentName.RESEARCHER);
         assertThat(run.getReviewDecision().getRequiredEvidenceTypes()).containsExactly("pricing_page");
+        assertThat(run.getReviewDecision().getFindingCategories()).containsExactly("citation_missing");
+        assertThat(run.getReviewDecision().getBlockingFindingIds()).hasSize(1);
+        assertThat(run.getReviewDecision().getRepairScopeSummary()).contains("RESEARCHER", "pricing_page");
+        assertThat(run.getReviewDecision().getRepairInstructions())
+                .anyMatch(instruction -> instruction.contains("Researcher") && instruction.contains("pricing_page"));
+        assertThat(run.getReviewDecision().getRepairTasks())
+                .singleElement()
+                .satisfies(task -> {
+                    assertThat(task.getTargetAgent()).isEqualTo(AgentName.RESEARCHER);
+                    assertThat(task.getAction()).isEqualTo("COLLECT_TARGETED_EVIDENCE");
+                    assertThat(task.getRequiredEvidenceTypes()).containsExactly("pricing_page");
+                    assertThat(task.getAcceptanceCriteria()).contains("pricing_page");
+                });
         assertThat(run.getReviewDecision().getReason()).contains("citation_missing", "pricing_page");
         assertThat(run.getArtifacts())
                 .filteredOn(artifact -> artifact.getType() == ArtifactType.REVIEW_FINDINGS)
                 .last()
                 .satisfies(artifact -> assertThat(artifact.getContent())
-                        .contains("可信度状态", "阻断问题", "citation_missing"));
+                        .contains("可信度状态", "定向修复计划", "结构化修复任务", "阻断问题", "citation_missing"));
     }
 
     @Test
@@ -1199,6 +1212,16 @@ class AnalysisWorkflowServiceTest {
         assertThat(run.getReviewDecision().getAction()).isEqualTo(ReviewAction.REWORK_ANALYSIS);
         assertThat(run.getReviewDecision().getTargetAgent()).isEqualTo(AgentName.ANALYST);
         assertThat(run.getReviewDecision().getAffectedClaimIds()).contains(claim.getId());
+        assertThat(run.getReviewDecision().getRepairInstructions())
+                .anyMatch(instruction -> instruction.contains("Analyst") && instruction.contains("affectedClaimIds"));
+        assertThat(run.getReviewDecision().getRepairTasks())
+                .singleElement()
+                .satisfies(task -> {
+                    assertThat(task.getTargetAgent()).isEqualTo(AgentName.ANALYST);
+                    assertThat(task.getAction()).isEqualTo("REPAIR_CLAIM_EVIDENCE");
+                    assertThat(task.getClaimId()).isEqualTo(claim.getId());
+                    assertThat(task.getAcceptanceCriteria()).contains("evidenceIds");
+                });
         assertThat(run.getReviewDecision().getReason()).contains("claim_missing_evidence", "Analyst");
     }
 
@@ -1276,6 +1299,8 @@ class AnalysisWorkflowServiceTest {
                     assertThat(finding.getCitationKey()).isEqualTo("S1");
                 });
         assertThat(run.getReviewDecision().getAction()).isEqualTo(ReviewAction.REVISE_REPORT);
+        assertThat(run.getReviewDecision().getRepairInstructions())
+                .anyMatch(instruction -> instruction.contains("Writer") && instruction.contains("citation"));
         assertThat(run.getArtifacts())
                 .filteredOn(artifact -> artifact.getType() == ArtifactType.REVIEW_FINDINGS)
                 .last()
@@ -1347,6 +1372,119 @@ class AnalysisWorkflowServiceTest {
                 });
         assertThat(run.getReviewDecision().getAction()).isEqualTo(ReviewAction.PASS);
         assertThat(run.getReviewDecision().getReason()).contains("质量提醒", "不阻断");
+        assertThat(run.getReviewDecision().getRepairScopeSummary()).contains("无需自动修复");
+    }
+
+    @Test
+    void reviewerDowngradesUnlocatedHighLlmFindingsToQualityReminder() {
+        LlmClient reviewerLlm = new LlmClient() {
+            @Override
+            public boolean isAvailable() {
+                return true;
+            }
+
+            @Override
+            public String complete(com.aiinsight.llm.ChatRequest request) {
+                return """
+                        {
+                          "summary": "发现一个没有定位的问题",
+                          "findings": [
+                            {
+                              "severity": "HIGH",
+                              "category": "unsupported_recommendation",
+                              "message": "报告建议可能过强。",
+                              "recommendation": "请人工复核。"
+                            }
+                          ]
+                        }
+                        """;
+            }
+        };
+        AnalysisRun run = new AnalysisRun();
+        run.getEvidenceSources().add(new EvidenceSource(
+                "S1",
+                "Official report",
+                "https://example.test/report",
+                "official_site",
+                "FETCHED",
+                "LIVE_FETCHED",
+                "报告建议需要人工确认。",
+                "报告建议需要人工确认。",
+                "test evidence"
+        ));
+        run.addArtifact(new AnalysisArtifact(
+                ArtifactType.REPORT_DRAFT,
+                "draft",
+                "报告建议需要人工确认 [S1]。",
+                List.of("S1")
+        ));
+
+        new ReviewerNode(new CitationCoverageEvaluator(), reviewerLlm, new FallbackReviewReportFactory()).execute(run);
+
+        assertThat(run.getReviewFindings())
+                .anySatisfy(finding -> {
+                    assertThat(finding.getCategory()).isEqualTo("unsupported_recommendation");
+                    assertThat(finding.getSeverity()).isEqualTo(ReviewSeverity.MEDIUM);
+                });
+        assertThat(run.getReviewDecision().getAction()).isEqualTo(ReviewAction.PASS);
+    }
+
+    @Test
+    void reviewerKeepsSourceQualityHighAsNonBlockingReminder() {
+        LlmClient reviewerLlm = new LlmClient() {
+            @Override
+            public boolean isAvailable() {
+                return true;
+            }
+
+            @Override
+            public String complete(com.aiinsight.llm.ChatRequest request) {
+                return """
+                        {
+                          "summary": "来源质量需要人工复核。",
+                          "findings": [
+                            {
+                              "severity": "HIGH",
+                              "category": "marketing_only_source",
+                              "message": "S1 带有营销页特征，不适合单独支撑关键结论。",
+                              "recommendation": "补充官方文档或一手访谈后再提升置信度。",
+                              "citationKey": "S1"
+                            }
+                          ]
+                        }
+                        """;
+            }
+        };
+        AnalysisRun run = new AnalysisRun();
+        run.getEvidenceSources().add(new EvidenceSource(
+                "S1",
+                "Official product page",
+                "https://example.test/product",
+                "official_site",
+                "FETCHED",
+                "LIVE_FETCHED",
+                "机会点是优化价格策略。",
+                "机会点是优化价格策略。",
+                "test evidence"
+        ));
+        run.addArtifact(new AnalysisArtifact(
+                ArtifactType.REPORT_DRAFT,
+                "draft",
+                "机会点是优化价格策略 [S1]。",
+                List.of("S1")
+        ));
+
+        new ReviewerNode(new CitationCoverageEvaluator(), reviewerLlm, new FallbackReviewReportFactory()).execute(run);
+
+        assertThat(run.getReviewFindings())
+                .anySatisfy(finding -> {
+                    assertThat(finding.getCategory()).isEqualTo("marketing_only_source");
+                    assertThat(finding.getSeverity()).isEqualTo(ReviewSeverity.HIGH);
+                });
+        assertThat(run.getReviewDecision().getAction()).isEqualTo(ReviewAction.PASS);
+        assertThat(run.getReviewDecision().getBlockingFindingIds()).isEmpty();
+        assertThat(run.getReviewDecision().getRepairTasks()).isEmpty();
+        assertThat(run.getReviewDecision().getRepairScopeSummary()).contains("无需自动修复");
     }
 
     @Test
@@ -1448,10 +1586,19 @@ class AnalysisWorkflowServiceTest {
                 .anySatisfy(finding -> assertThat(finding.getCategory()).isEqualTo("fetch_failed_source"));
         assertThat(run.getReviewDecision().getAction()).isEqualTo(ReviewAction.REWORK_ANALYSIS);
         assertThat(run.getReviewDecision().getTargetAgent()).isEqualTo(AgentName.ANALYST);
+        assertThat(run.getReviewDecision().getAffectedClaimIds()).containsExactly("C-SEM-1");
+        assertThat(run.getReviewDecision().getFindingCategories()).contains("claim_evidence_mismatch");
+        assertThat(run.getReviewDecision().getRepairTasks())
+                .anySatisfy(task -> {
+                    assertThat(task.getTargetAgent()).isEqualTo(AgentName.ANALYST);
+                    assertThat(task.getAction()).isEqualTo("REPAIR_CLAIM_EVIDENCE");
+                    assertThat(task.getClaimId()).isEqualTo("C-SEM-1");
+                    assertThat(task.getCitationKey()).isEqualTo("S1");
+                });
         assertThat(run.getArtifacts())
                 .filteredOn(artifact -> artifact.getType() == ArtifactType.REVIEW_FINDINGS)
                 .last()
-                .satisfies(artifact -> assertThat(artifact.getContent()).contains("LLM 并发语义质检", "结构化新增问题：2"));
+                .satisfies(artifact -> assertThat(artifact.getContent()).contains("LLM 并发语义质检", "结构化新增问题：2", "定向修复计划", "结构化修复任务"));
     }
 
     @Test
@@ -1482,6 +1629,10 @@ class AnalysisWorkflowServiceTest {
         run.getReviewDecision().setTargetAgent(AgentName.ANALYST);
         run.getReviewDecision().setAffectedClaimIds(List.of("C-1"));
         run.getReviewDecision().setRequiredEvidenceTypes(List.of("pricing_page"));
+        run.getReviewDecision().setRepairScopeSummary("目标 Agent=ANALYST；阻断问题=1；Claim=C-1；证据类型=pricing_page。");
+        run.getReviewDecision().setRepairInstructions(List.of(
+                "Analyst 优先修复 affectedClaimIds 指向的结构化结论，避免重写无关 claims。"
+        ));
 
         new RevisionNode().execute(run);
 
@@ -1491,6 +1642,8 @@ class AnalysisWorkflowServiceTest {
                 .satisfies(artifact -> assertThat(artifact.getContent())
                         .contains("Reviewer 当前决策为 `REWORK_ANALYSIS`")
                         .contains("详细清单请查看 Reviewer 复核结果产物")
+                        .contains("定向修复计划")
+                        .contains("Analyst 优先修复 affectedClaimIds")
                         .doesNotContain("claim_missing_evidence")
                         .doesNotContain("结构化结论未绑定证据。")
                         .contains("需重点复核 Claim：C-1")

@@ -51,11 +51,16 @@ public class RevisionNode implements AgentNode {
 
                 %s
 
+                ## 定向修复计划
+
+                %s
+
                 ## 证据限制说明
 
                 %s
                 """.formatted(
                 decisionSummary(run),
+                repairPlanSummary(run),
                 evidenceLimitations(run)
         );
     }
@@ -74,6 +79,31 @@ public class RevisionNode implements AgentNode {
                 low,
                 run.getReviewDecision().getTargetAgent() == null ? "无需自动打回" : run.getReviewDecision().getTargetAgent()
         );
+    }
+
+    private String repairPlanSummary(AnalysisRun run) {
+        if (run.getReviewDecision().getRepairInstructions().isEmpty()
+                && run.getReviewDecision().getRepairTasks().isEmpty()) {
+            return "Reviewer 未生成自动修复计划。";
+        }
+        String scope = run.getReviewDecision().getRepairScopeSummary() == null
+                ? "未记录修复范围。"
+                : run.getReviewDecision().getRepairScopeSummary();
+        String instructions = run.getReviewDecision().getRepairInstructions().stream()
+                .map(instruction -> "- " + instruction)
+                .collect(java.util.stream.Collectors.joining("\n"));
+        String tasks = run.getReviewDecision().getRepairTasks().isEmpty()
+                ? "暂无结构化修复任务。"
+                : run.getReviewDecision().getRepairTasks().stream()
+                .map(task -> "- `%s` -> %s；claim=%s；citation=%s；验收=%s".formatted(
+                        task.getAction(),
+                        task.getTargetAgent(),
+                        textOrDefault(task.getClaimId(), "-"),
+                        textOrDefault(task.getCitationKey(), "-"),
+                        textOrDefault(task.getAcceptanceCriteria(), "-")
+                ))
+                .collect(java.util.stream.Collectors.joining("\n"));
+        return scope + "\n\n修复指令：\n" + instructions + "\n\n结构化修复任务：\n" + tasks;
     }
 
     private String evidenceLimitations(AnalysisRun run) {
@@ -108,6 +138,10 @@ public class RevisionNode implements AgentNode {
         return run.getReviewFindings().stream()
                 .filter(finding -> finding.getSeverity() == severity)
                 .count();
+    }
+
+    private String textOrDefault(String value, String fallback) {
+        return value == null || value.isBlank() ? fallback : value;
     }
 
     private AnalysisArtifact latestArtifact(AnalysisRun run, ArtifactType type) {

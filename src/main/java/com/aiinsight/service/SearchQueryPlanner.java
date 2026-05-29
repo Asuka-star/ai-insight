@@ -37,12 +37,29 @@ public class SearchQueryPlanner {
     public List<SearchQueryBatch> planByCompetitor(AnalysisRun run, boolean recollecting) {
         AnalysisRequirement requirement = run.getRequirement();
         String domain = domainTerm(requirement);
+        List<String> targetedEvidenceTypes = targetedEvidenceTypes(run, recollecting);
         List<SearchQueryBatch> batches = new ArrayList<>();
         for (String competitor : requirement.getCompetitors()) {
             if (!StringUtils.hasText(competitor)) {
                 continue;
             }
             Set<String> queries = new LinkedHashSet<>();
+            if (!targetedEvidenceTypes.isEmpty()) {
+                for (String evidenceType : targetedEvidenceTypes) {
+                    addSourcePreferenceQuery(queries, competitor, evidenceType, domain);
+                    if (queries.size() >= MAX_SEARCH_QUERIES_PER_COMPETITOR) {
+                        break;
+                    }
+                }
+                if (queries.isEmpty()) {
+                    addDefaultAuthorityQueries(queries, competitor, domain);
+                }
+                batches.add(new SearchQueryBatch(
+                        competitor.trim(),
+                        queries.stream().limit(MAX_SEARCH_QUERIES_PER_COMPETITOR).toList()
+                ));
+                continue;
+            }
             addQuery(queries, competitor, "official site product documentation", domain);
             if (shouldCollectPricing(requirement, recollecting)) {
                 addQuery(queries, competitor, "official pricing plans enterprise", domain);
@@ -75,6 +92,19 @@ public class SearchQueryPlanner {
         return batches;
     }
 
+    private List<String> targetedEvidenceTypes(AnalysisRun run, boolean recollecting) {
+        if (!recollecting || run.getReviewDecision() == null
+                || run.getReviewDecision().getRequiredEvidenceTypes() == null
+                || run.getReviewDecision().getRequiredEvidenceTypes().isEmpty()) {
+            return List.of();
+        }
+        return run.getReviewDecision().getRequiredEvidenceTypes().stream()
+                .filter(StringUtils::hasText)
+                .distinct()
+                .limit(MAX_SEARCH_QUERIES_PER_COMPETITOR)
+                .toList();
+    }
+
     private void addSourcePreferenceQuery(Set<String> queries, String competitor, String sourcePreference, String domain) {
         if (!StringUtils.hasText(sourcePreference)) {
             return;
@@ -86,6 +116,14 @@ public class SearchQueryPlanner {
         }
         if (containsAny(normalized, "review", "评价", "反馈")) {
             addQuery(queries, competitor, "independent user reviews customer feedback", domain);
+            return;
+        }
+        if (containsAny(normalized, "survey", "问卷", "调研")) {
+            addQuery(queries, competitor, "developer survey user research feedback", domain);
+            return;
+        }
+        if (containsAny(normalized, "interview", "访谈")) {
+            addQuery(queries, competitor, "customer interview case study user feedback", domain);
             return;
         }
         if (containsAny(normalized, "doc", "documentation", "文档", "official", "官网")) {

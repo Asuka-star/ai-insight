@@ -4,6 +4,7 @@ import com.aiinsight.model.enums.AgentName;
 import com.aiinsight.model.run.AnalysisArtifact;
 import com.aiinsight.model.run.AnalysisRun;
 import com.aiinsight.model.enums.ArtifactType;
+import com.aiinsight.model.enums.ReviewAction;
 import com.aiinsight.model.run.EvidenceSource;
 import com.aiinsight.model.schema.CompetitorProfile;
 import com.aiinsight.llm.ChatMessage;
@@ -128,6 +129,9 @@ public class WriterNode implements AgentNode {
 
                 证据索引:
                 %s
+
+                Reviewer 修复计划:
+                %s
                 """.formatted(
                 run.getRequirement().getOriginalPrompt(),
                 textOrDefault(run.getRequirement().getOutputGoal(), "竞品分析报告"),
@@ -138,7 +142,8 @@ public class WriterNode implements AgentNode {
                 latestArtifactContent(run, ArtifactType.COMPETITIVE_MATRIX),
                 latestArtifactContent(run, ArtifactType.SWOT_ANALYSIS),
                 researchPackageBlock(run),
-                evidenceIndexBlock(run)
+                evidenceIndexBlock(run),
+                repairPlanBlock(run)
         );
         return llmClient.complete(new ChatRequest(
                 List.of(
@@ -264,6 +269,47 @@ public class WriterNode implements AgentNode {
                         abbreviate(source.getSnippet(), 180)
                 ))
                 .collect(Collectors.joining("\n\n"));
+    }
+
+    private String repairPlanBlock(AnalysisRun run) {
+        if (run.getReviewDecision() == null || run.getReviewDecision().getAction() == ReviewAction.PASS) {
+            return "当前不是复核修复模式。";
+        }
+        String instructions = run.getReviewDecision().getRepairInstructions().isEmpty()
+                ? "暂无具体修复指令。"
+                : run.getReviewDecision().getRepairInstructions().stream()
+                .map(instruction -> "- " + instruction)
+                .collect(Collectors.joining("\n"));
+        String tasks = run.getReviewDecision().getRepairTasks().isEmpty()
+                ? "暂无结构化修复任务。"
+                : run.getReviewDecision().getRepairTasks().stream()
+                .filter(task -> task.getTargetAgent() == AgentName.WRITER)
+                .map(task -> "- action=%s claim=%s citation=%s criteria=%s".formatted(
+                        task.getAction(),
+                        textOrDefault(task.getClaimId(), "-"),
+                        textOrDefault(task.getCitationKey(), "-"),
+                        textOrDefault(task.getAcceptanceCriteria(), "-")
+                ))
+                .collect(Collectors.joining("\n"));
+        return """
+                修复动作：%s
+                目标 Agent：%s
+                修复范围：%s
+                受影响 Claim：%s
+                必补证据类型：%s
+                修复指令：
+                %s
+                结构化修复任务：
+                %s
+                """.formatted(
+                run.getReviewDecision().getAction(),
+                run.getReviewDecision().getTargetAgent(),
+                textOrDefault(run.getReviewDecision().getRepairScopeSummary(), "未记录修复范围"),
+                run.getReviewDecision().getAffectedClaimIds(),
+                run.getReviewDecision().getRequiredEvidenceTypes(),
+                instructions,
+                tasks
+        );
     }
 
     private Set<String> reportCitationKeys(AnalysisRun run) {
