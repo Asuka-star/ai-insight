@@ -640,7 +640,102 @@ class AnalysisWorkflowServiceTest {
                     assertThat(artifact.getContent()).contains("权限审计");
                     assertThat(artifact.getCitationKeys()).containsExactly("S1");
                 });
-        assertThat(promptCapture.toString()).contains("相关证据切片", "S1-C1", "enterprise governance");
+        assertThat(promptCapture.toString())
+                .contains("证据索引", "[S1] Notion permission audit", "结构化 Claims", "应优先围绕权限审计和 AI 搜索做差异化产品规划")
+                .doesNotContain("相关证据切片", "S1-C1", "enterprise governance");
+    }
+
+    @Test
+    void analystPrioritizesStrongEvidenceAndDowngradesWeakHighConfidenceClaims() {
+        StringBuilder claimsPrompt = new StringBuilder();
+        LlmClient structuredLlm = new LlmClient() {
+            @Override
+            public boolean isAvailable() {
+                return true;
+            }
+
+            @Override
+            public String complete(com.aiinsight.llm.ChatRequest request) {
+                String prompt = request.getMessages().get(1).getContent();
+                if (prompt.contains("只生成结构化 claims")) {
+                    claimsPrompt.append(prompt);
+                    return """
+                            {
+                              "claims": [
+                                {
+                                  "type": "RISK",
+                                  "content": "Notion 的企业治理风险只来自低质量评论来源。",
+                                  "confidence": "HIGH",
+                                  "competitorNames": ["Notion"],
+                                  "evidenceIds": ["S1"]
+                                },
+                                {
+                                  "type": "STRENGTH",
+                                  "content": "Notion 官方文档显示其 AI 搜索有可验证能力。",
+                                  "confidence": "HIGH",
+                                  "competitorNames": ["Notion"],
+                                  "evidenceIds": ["S12"]
+                                }
+                              ]
+                            }
+                            """;
+                }
+                if (prompt.contains("matrixMarkdown")) {
+                    return """
+                            {"matrixMarkdown":"| 竞品 | 判断 | 证据 |\\n| --- | --- | --- |\\n| Notion | AI 搜索有官方证据 | [S12] |"}
+                            """;
+                }
+                return """
+                        {"swotMarkdown":"| 维度 | 结论 | 证据 |\\n| --- | --- | --- |\\n| Strengths | 官方 AI 搜索证据较强 | [S12] |"}
+                        """;
+            }
+        };
+        AnalysisRun run = new AnalysisRun(new AnalysisRequirement(
+                "分析 Notion 的企业治理和 AI 搜索。",
+                "协作文档",
+                List.of("Notion"),
+                List.of("企业治理", "AI 搜索"),
+                List.of("official_site", "docs"),
+                List.of()
+        ));
+        for (int i = 1; i <= 11; i++) {
+            run.getEvidenceSources().add(new EvidenceSource(
+                    "S" + i,
+                    "Low source " + i,
+                    "https://example.test/low/" + i,
+                    "public_review",
+                    "FETCHED",
+                    "LIVE_FETCHED",
+                    "LOW",
+                    "NONE",
+                    "thin user comment about governance",
+                    "",
+                    "test evidence"
+            ));
+        }
+        run.getEvidenceSources().add(new EvidenceSource(
+                "S12",
+                "Notion official AI search docs",
+                "https://example.test/notion/docs/ai-search",
+                "docs",
+                "FETCHED",
+                "LIVE_FETCHED",
+                "HIGH",
+                "NONE",
+                "Notion official docs explain AI search capabilities",
+                "Notion official docs explain AI search capabilities",
+                "test evidence"
+        ));
+
+        new AnalystNode(structuredLlm, new ObjectMapper(), new FallbackAnalysisDraftFactory()).execute(run);
+
+        assertThat(claimsPrompt.toString())
+                .contains("[S12] Notion official AI search docs", "tier=strong")
+                .contains("[S1] Low source 1", "tier=weak")
+                .doesNotContain("[S8] Low source 8");
+        assertThat(run.getClaims()).hasSize(2);
+        assertThat(run.getClaims().get(0).getConfidence()).isEqualTo(com.aiinsight.model.enums.ConfidenceLevel.LOW);
+        assertThat(run.getClaims().get(1).getConfidence()).isEqualTo(com.aiinsight.model.enums.ConfidenceLevel.HIGH);
     }
 
     @Test

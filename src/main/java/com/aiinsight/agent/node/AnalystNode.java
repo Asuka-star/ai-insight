@@ -27,9 +27,11 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.regex.Matcher;
@@ -39,6 +41,8 @@ import java.util.stream.Collectors;
 @Component
 @RequiredArgsConstructor
 @Slf4j
+// Analyst 是结构化分析层：把 Extractor 沉淀的竞品画像和证据索引转化为可复核 Claims，
+// 再基于这些 Claims 生成矩阵和 SWOT，避免 Writer 在报告阶段重新承担分析判断。
 public class AnalystNode implements AgentNode {
 
     private static final Pattern CITATION_PATTERN = Pattern.compile("\\[(S\\d+)]");
@@ -94,18 +98,31 @@ public class AnalystNode implements AgentNode {
 
     private AnalysisDraft analysisDraftWithLlm(AnalysisRun run) {
         AnalysisDraft fallback = fallbackAnalysisDraftFactory.build(run);
-        CompletableFuture<LlmSubtaskResult<List<AnalysisClaim>>> claimsTask = CompletableFuture.supplyAsync(
-                AgentTraceContext.wrap(() -> runAnalystSubtask(run, "claims", () -> generateClaimsWithLlm(run)))
+        AnalystContext context = analystContext(run);
+        LlmSubtaskResult<List<AnalysisClaim>> claimsResult = runAnalystSubtask(
+                run,
+                "claims",
+                () -> generateClaimsWithLlm(context)
         );
+        List<AnalysisClaim> effectiveClaims = claimsResult.succeeded() && !claimsResult.value().isEmpty()
+                ? claimsResult.value()
+                : fallback.claims();
         CompletableFuture<LlmSubtaskResult<String>> matrixTask = CompletableFuture.supplyAsync(
-                AgentTraceContext.wrap(() -> runAnalystSubtask(run, "competitive-matrix", () -> generateMatrixWithLlm(run)))
+                AgentTraceContext.wrap(() -> runAnalystSubtask(
+                        run,
+                        "competitive-matrix",
+                        () -> generateMatrixWithLlm(context, effectiveClaims)
+                ))
         );
         CompletableFuture<LlmSubtaskResult<String>> swotTask = CompletableFuture.supplyAsync(
-                AgentTraceContext.wrap(() -> runAnalystSubtask(run, "swot", () -> generateSwotWithLlm(run)))
+                AgentTraceContext.wrap(() -> runAnalystSubtask(
+                        run,
+                        "swot",
+                        () -> generateSwotWithLlm(context, effectiveClaims)
+                ))
         );
-        CompletableFuture.allOf(claimsTask, matrixTask, swotTask).join();
+        CompletableFuture.allOf(matrixTask, swotTask).join();
 
-        LlmSubtaskResult<List<AnalysisClaim>> claimsResult = claimsTask.join();
         LlmSubtaskResult<String> matrixResult = matrixTask.join();
         LlmSubtaskResult<String> swotResult = swotTask.join();
         List<LlmSubtaskResult<?>> results = List.of(claimsResult, matrixResult, swotResult);
@@ -122,16 +139,17 @@ public class AnalystNode implements AgentNode {
             return null;
         }
         return new AnalysisDraft(
-                claimsResult.succeeded() && !claimsResult.value().isEmpty() ? claimsResult.value() : fallback.claims(),
+                effectiveClaims,
                 matrixResult.succeeded() && hasText(matrixResult.value()) ? matrixResult.value() : fallback.matrixMarkdown(),
                 swotResult.succeeded() && hasText(swotResult.value()) ? swotResult.value() : fallback.swotMarkdown()
         );
     }
 
-    private List<AnalysisClaim> generateClaimsWithLlm(AnalysisRun run) {
+    private List<AnalysisClaim> generateClaimsWithLlm(AnalystContext context) {
         String prompt = """
                 你是竞品分析工作流中的分析 Agent。请只生成结构化 claims，不要生成矩阵或 SWOT。
-                矩阵和 SWOT 会由另外两个并行 LLM 子任务生成；你只负责提炼可追溯结论。
+                你的职责是把 Extractor 生成的事实画像转化为可复核的分析断言。
+                矩阵和 SWOT 会在下一阶段基于你生成的 claims 并行生成。
 
                 输出约束：
                 1. 只输出 JSON，不要 Markdown 代码块。
@@ -162,12 +180,16 @@ public class AnalystNode implements AgentNode {
                 结构化竞品画像：
                 %s
 
-                证据片段：
+                证据索引：
+                %s
+
+                证据缺口与一手洞察：
                 %s
                 """.formatted(
-                requirementSummary(run),
-                compactProfileBlock(run),
-                compactEvidenceBlock(run)
+                context.requirementSummary(),
+                context.profileBlock(),
+                context.evidenceIndex(),
+                context.researchContext()
         );
         String raw = llmClient.complete(new ChatRequest(
                 List.of(
@@ -176,16 +198,17 @@ public class AnalystNode implements AgentNode {
                 ),
                 ChatOptions.analyst()
         ));
-        AnalysisDraft parsed = parseAnalysisDraft(raw, run);
+        AnalysisDraft parsed = parseAnalysisDraft(raw, context.run());
         if (parsed == null || parsed.claims().isEmpty()) {
             throw new IllegalStateException("无法解析 claims JSON");
         }
         return parsed.claims();
     }
 
-    private String generateMatrixWithLlm(AnalysisRun run) {
+    private String generateMatrixWithLlm(AnalystContext context, List<AnalysisClaim> claims) {
         String prompt = """
                 你是竞品分析工作流中的矩阵分析 Agent。请单独生成竞品横向矩阵 Markdown。
+                你必须基于上一步 Analyst Claims 展开，不要提出和 Claims 冲突的新判断。
                 输出必须是 JSON 对象，不要 Markdown 代码块，不要解释。
 
                 JSON 结构：
@@ -196,6 +219,7 @@ public class AnalystNode implements AgentNode {
                 2. 列必须贴合用户关注维度，至少包含竞品、核心定位、关键能力、短板/风险、证据。
                 3. 证据列只能使用已知 citation，如 [S1]；证据不足写“证据不足，待验证”。
                 4. 不要编造价格、客户、市场份额或证据外事实。
+                5. 必须尽量复用“结构化 Claims”中的判断、置信度和 evidenceIds。
 
                 分析需求：
                 %s
@@ -203,12 +227,16 @@ public class AnalystNode implements AgentNode {
                 结构化竞品画像：
                 %s
 
-                证据片段：
+                结构化 Claims：
+                %s
+
+                证据索引：
                 %s
                 """.formatted(
-                requirementSummary(run),
-                compactProfileBlock(run),
-                compactEvidenceBlock(run)
+                context.requirementSummary(),
+                context.profileBlock(),
+                claimsBlock(claims),
+                context.evidenceIndex()
         );
         String raw = llmClient.complete(new ChatRequest(
                 List.of(
@@ -220,9 +248,10 @@ public class AnalystNode implements AgentNode {
         return parseMarkdownField(raw, "matrixMarkdown");
     }
 
-    private String generateSwotWithLlm(AnalysisRun run) {
+    private String generateSwotWithLlm(AnalystContext context, List<AnalysisClaim> claims) {
         String prompt = """
                 你是竞品分析工作流中的 SWOT 分析 Agent。请单独生成 SWOT Markdown。
+                你必须基于上一步 Analyst Claims 展开，不要提出和 Claims 冲突的新判断。
                 输出必须是 JSON 对象，不要 Markdown 代码块，不要解释。
 
                 JSON 结构：
@@ -233,6 +262,7 @@ public class AnalystNode implements AgentNode {
                 2. 每行结论不超过 120 字，并绑定证据 citation；证据不足写“证据不足，待验证”。
                 3. 机会和威胁必须面向用户输出目标，不要泛泛而谈。
                 4. 不要编造价格、客户、市场份额或证据外事实。
+                5. 优先从“结构化 Claims”的 STRENGTH、WEAKNESS、OPPORTUNITY、RISK、RECOMMENDATION 中归纳。
 
                 分析需求：
                 %s
@@ -240,12 +270,16 @@ public class AnalystNode implements AgentNode {
                 结构化竞品画像：
                 %s
 
-                证据片段：
+                结构化 Claims：
+                %s
+
+                证据缺口与一手洞察：
                 %s
                 """.formatted(
-                requirementSummary(run),
-                compactProfileBlock(run),
-                compactEvidenceBlock(run)
+                context.requirementSummary(),
+                context.profileBlock(),
+                claimsBlock(claims),
+                context.researchContext()
         );
         String raw = llmClient.complete(new ChatRequest(
                 List.of(
@@ -280,7 +314,7 @@ public class AnalystNode implements AgentNode {
                         result.succeeded() ? "" : " (" + result.errorMessage() + ")"
                 ))
                 .collect(Collectors.joining("\n"));
-        AgentTraceContext.recordOutputSummary("Parallel Analyst LLM subtasks:\n" + summary);
+        AgentTraceContext.recordOutputSummary("Staged Analyst LLM subtasks:\n" + summary);
     }
 
     private AnalysisDraft parseAnalysisDraft(String raw, AnalysisRun run) {
@@ -335,9 +369,7 @@ public class AnalystNode implements AgentNode {
         // evidenceIds 是 claim 进入 Writer/Reviewer 的硬约束，只允许已知 citation；
         // 模型编造的 [S404] 会被过滤，避免后续报告携带不可追溯引用。
         claim.setEvidenceIds(distinctKnownEvidenceIds(run, draft.evidenceIds));
-        if (claim.getEvidenceIds().isEmpty() && claim.getConfidence() != ConfidenceLevel.LOW) {
-            claim.setConfidence(ConfidenceLevel.LOW);
-        }
+        adjustClaimConfidence(run, claim);
         if (claim.getEvidenceIds().isEmpty() && !containsUncertaintyMarker(claim.getContent())) {
             claim.setContent(claim.getContent() + "（证据不足，待验证）");
         }
@@ -362,8 +394,33 @@ public class AnalystNode implements AgentNode {
             if (!containsUncertaintyMarker(claim.getContent())) {
                 claim.setContent(claim.getContent() + "（证据不足，待验证）");
             }
+            return claim;
         }
+        adjustClaimConfidence(run, claim);
         return claim;
+    }
+
+    private void adjustClaimConfidence(AnalysisRun run, AnalysisClaim claim) {
+        if (claim.getEvidenceIds().isEmpty()) {
+            claim.setConfidence(ConfidenceLevel.LOW);
+            return;
+        }
+        if (containsUncertaintyMarker(claim.getContent())) {
+            claim.setConfidence(ConfidenceLevel.LOW);
+            return;
+        }
+        Map<String, EvidenceSource> sources = sourceByCitationKey(run);
+        int strongestEvidence = claim.getEvidenceIds().stream()
+                .map(sources::get)
+                .mapToInt(this::evidenceConfidenceScore)
+                .max()
+                .orElse(0);
+        if (claim.getConfidence() == ConfidenceLevel.HIGH && strongestEvidence < 3) {
+            claim.setConfidence(ConfidenceLevel.MEDIUM);
+        }
+        if (claim.getConfidence() == ConfidenceLevel.MEDIUM && strongestEvidence < 2) {
+            claim.setConfidence(ConfidenceLevel.LOW);
+        }
     }
 
     private String sanitizeCitationText(AnalysisRun run, String text) {
@@ -414,6 +471,16 @@ public class AnalystNode implements AgentNode {
         return run.getEvidenceSources().stream()
                 .map(EvidenceSource::getCitationKey)
                 .collect(Collectors.toCollection(LinkedHashSet::new));
+    }
+
+    private Map<String, EvidenceSource> sourceByCitationKey(AnalysisRun run) {
+        return run.getEvidenceSources().stream()
+                .filter(source -> hasText(source.getCitationKey()))
+                .collect(Collectors.toMap(
+                        EvidenceSource::getCitationKey,
+                        source -> source,
+                        (first, ignored) -> first
+                ));
     }
 
     private List<String> distinctKnownEvidenceIds(AnalysisRun run, List<String> evidenceIds) {
@@ -490,26 +557,169 @@ public class AnalystNode implements AgentNode {
         );
     }
 
-    private String profileBlock(AnalysisRun run) {
-        return run.getCompetitorProfiles().stream()
-                .map(profile -> """
-                        - 产品：%s
-                          定位：%s
-                          目标用户：%s
-                          优势：%s
-                          弱势：%s
-                          定价：%s
-                          证据：%s
-                        """.formatted(
-                        profile.getProductName(),
-                        profile.getPositioning(),
-                        profile.getTargetUsers(),
-                        profile.getStrengths(),
-                        profile.getWeaknesses(),
-                        pricingSummary(profile),
-                        profile.getEvidenceIds()
+    private AnalystContext analystContext(AnalysisRun run) {
+        return new AnalystContext(
+                run,
+                requirementSummary(run),
+                compactProfileBlock(run),
+                evidenceIndexBlock(run),
+                researchContextBlock(run)
+        );
+    }
+
+    private String claimsBlock(List<AnalysisClaim> claims) {
+        if (claims == null || claims.isEmpty()) {
+            return "暂无结构化 Claims。";
+        }
+        return claims.stream()
+                .map(claim -> "- id=%s type=%s confidence=%s competitors=%s evidence=%s content=%s".formatted(
+                        claim.getId(),
+                        claim.getType(),
+                        claim.getConfidence(),
+                        claim.getCompetitorNames(),
+                        claim.getEvidenceIds(),
+                        claim.getContent()
                 ))
                 .collect(Collectors.joining("\n"));
+    }
+
+    private String evidenceIndexBlock(AnalysisRun run) {
+        List<EvidenceSource> sources = selectedEvidenceSources(run);
+        if (sources.isEmpty()) {
+            return "暂无可引用证据。";
+        }
+        return sources.stream()
+                .map(source -> "[%s] %s | type=%s | quality=%s | status=%s | tier=%s | %s".formatted(
+                        source.getCitationKey(),
+                        abbreviate(source.getTitle(), 80),
+                        nullToEmpty(source.getSourceType()),
+                        nullToEmpty(source.getSourceQuality()),
+                        nullToEmpty(source.getCollectionStatus()),
+                        evidenceTier(source),
+                        abbreviate(source.getSnippet(), 180)
+                ))
+                .collect(Collectors.joining("\n"));
+    }
+
+    private List<EvidenceSource> selectedEvidenceSources(AnalysisRun run) {
+        List<EvidenceSource> ranked = run.getEvidenceSources().stream()
+                .filter(source -> hasText(source.getCitationKey()))
+                .sorted(Comparator
+                        .comparingInt(this::evidencePromptScore)
+                        .reversed()
+                        .thenComparing(EvidenceSource::getCitationKey, Comparator.nullsLast(String::compareTo)))
+                .toList();
+        if (ranked.size() <= 10) {
+            return ranked;
+        }
+        LinkedHashSet<EvidenceSource> selected = new LinkedHashSet<>();
+        List<String> competitors = run.getRequirement() == null ? List.of() : run.getRequirement().getCompetitors();
+        for (String competitor : competitors) {
+            ranked.stream()
+                    .filter(source -> mentionsCompetitor(source, competitor))
+                    .findFirst()
+                    .ifPresent(selected::add);
+        }
+        ranked.stream()
+                .filter(source -> selected.size() < 10)
+                .forEach(selected::add);
+        return selected.stream().limit(10).toList();
+    }
+
+    private boolean mentionsCompetitor(EvidenceSource source, String competitor) {
+        if (!hasText(competitor)) {
+            return false;
+        }
+        String searchable = "%s %s %s".formatted(
+                nullToEmpty(source.getTitle()),
+                nullToEmpty(source.getUrl()),
+                nullToEmpty(source.getSnippet())
+        ).toLowerCase(Locale.ROOT);
+        return searchable.contains(competitor.toLowerCase(Locale.ROOT));
+    }
+
+    private int evidencePromptScore(EvidenceSource source) {
+        return evidenceConfidenceScore(source) * 100
+                + sourceTypeScore(source) * 10
+                + collectionStatusScore(source);
+    }
+
+    private int evidenceConfidenceScore(EvidenceSource source) {
+        if (source == null) {
+            return 0;
+        }
+        String quality = normalizeUpper(source.getSourceQuality());
+        String status = normalizeUpper(source.getCollectionStatus());
+        String freshness = normalizeUpper(source.getFreshness());
+        if ("UNUSABLE".equals(quality) || "LOW".equals(quality)
+                || "FETCH_FAILED".equals(status) || "BLOCKED_BY_ROBOTS".equals(status)
+                || "SEARCH_RESULT_SNIPPET".equals(freshness)) {
+            return 1;
+        }
+        if ("HIGH".equals(quality)) {
+            return 3;
+        }
+        if (isAuthoritativeSourceType(source) && ("FETCHED".equals(status) || hasText(source.getRawText()))) {
+            return 3;
+        }
+        if ("MEDIUM".equals(quality) || ("FETCHED".equals(status) && hasText(source.getSnippet()))) {
+            return 2;
+        }
+        return hasText(source.getSnippet()) ? 2 : 1;
+    }
+
+    private String evidenceTier(EvidenceSource source) {
+        int score = evidenceConfidenceScore(source);
+        if (score >= 3) {
+            return "strong";
+        }
+        if (score == 2) {
+            return "medium";
+        }
+        return "weak";
+    }
+
+    private boolean isAuthoritativeSourceType(EvidenceSource source) {
+        return Set.of("official_site", "docs", "product_docs", "pricing_page", "release_notes", "technical_blog", "authoritative_media")
+                .contains(normalizeLower(source.getSourceType()));
+    }
+
+    private int sourceTypeScore(EvidenceSource source) {
+        return switch (normalizeLower(source.getSourceType())) {
+            case "docs", "product_docs" -> 6;
+            case "pricing_page" -> 5;
+            case "official_site" -> 4;
+            case "release_notes", "technical_blog" -> 3;
+            case "authoritative_media" -> 2;
+            case "public_review", "public_reviews" -> 1;
+            default -> 0;
+        };
+    }
+
+    private int collectionStatusScore(EvidenceSource source) {
+        return switch (normalizeUpper(source.getCollectionStatus())) {
+            case "FETCHED" -> 3;
+            case "UNKNOWN" -> 1;
+            default -> 0;
+        };
+    }
+
+    private String researchContextBlock(AnalysisRun run) {
+        List<String> gaps = run.getResearchPackage().getMissingEvidenceTypes();
+        String gapText = gaps == null || gaps.isEmpty()
+                ? "暂无关键证据缺口"
+                : String.join("、", gaps);
+        String interviewText = run.getResearchPackage().getInterviewInsights().isEmpty()
+                ? "暂无访谈或一手洞察"
+                : run.getResearchPackage().getInterviewInsights().stream()
+                .map(insight -> "- [%s] role=%s pain=%s concern=%s".formatted(
+                        insight.getEvidenceId(),
+                        insight.getIntervieweeRole(),
+                        insight.getPainPoints(),
+                        insight.getBuyingConcerns()
+                ))
+                .collect(Collectors.joining("\n"));
+        return "证据缺口：" + gapText + "\n一手洞察：\n" + interviewText;
     }
 
     private String compactProfileBlock(AnalysisRun run) {
@@ -522,115 +732,6 @@ public class AnalystNode implements AgentNode {
                         profile.getEvidenceIds()
                 ))
                 .collect(Collectors.joining("\n"));
-    }
-
-    private String evidenceBlock(AnalysisRun run) {
-        String sources = run.getEvidenceSources().stream()
-                .map(source -> "[%s] %s | type=%s | status=%s | snippet=%s".formatted(
-                        source.getCitationKey(),
-                        source.getTitle(),
-                        source.getSourceType(),
-                        source.getCollectionStatus(),
-                        source.getSnippet()
-                ))
-                .collect(Collectors.joining("\n"));
-        String chunks = relevantChunks(run, requirementSummary(run), 8).stream()
-                .map(chunk -> "- [%s/%s] %s".formatted(chunk.getSourceCitationKey(), chunk.getChunkKey(), chunk.getText()))
-                .collect(Collectors.joining("\n"));
-        if (!hasText(chunks)) {
-            return sources;
-        }
-        return sources + "\n\n相关证据切片:\n" + chunks;
-    }
-
-    private String compactEvidenceBlock(AnalysisRun run) {
-        String sources = run.getEvidenceSources().stream()
-                .limit(8)
-                .map(source -> "[%s] %s | type=%s | status=%s | %s".formatted(
-                        source.getCitationKey(),
-                        abbreviate(source.getTitle(), 80),
-                        source.getSourceType(),
-                        source.getCollectionStatus(),
-                        abbreviate(source.getSnippet(), 180)
-                ))
-                .collect(Collectors.joining("\n"));
-        String chunks = relevantChunks(run, requirementSummary(run), 4).stream()
-                .map(chunk -> "- [%s/%s] %s".formatted(
-                        chunk.getSourceCitationKey(),
-                        chunk.getChunkKey(),
-                        abbreviate(chunk.getText(), 180)
-                ))
-                .collect(Collectors.joining("\n"));
-        if (!hasText(chunks)) {
-            return sources;
-        }
-        return sources + "\n相关证据切片:\n" + chunks;
-    }
-
-    private String sourceText(EvidenceSource source) {
-        return ("%s %s %s %s %s").formatted(
-                nullToEmpty(source.getTitle()),
-                nullToEmpty(source.getSourceType()),
-                nullToEmpty(source.getUrl()),
-                nullToEmpty(source.getSnippet()),
-                nullToEmpty(source.getRawText())
-        );
-    }
-
-    private String pricingSummary(CompetitorProfile profile) {
-        if (profile.getPricingModel() == null || !hasText(profile.getPricingModel().getStrategySummary())) {
-            return "定价证据不足";
-        }
-        return profile.getPricingModel().getStrategySummary();
-    }
-
-    private String citationText(List<String> evidenceIds) {
-        if (evidenceIds == null || evidenceIds.isEmpty()) {
-            return "证据不足";
-        }
-        return evidenceIds.stream().map(id -> "[" + id + "]").collect(Collectors.joining(" "));
-    }
-
-    private List<com.aiinsight.model.run.EvidenceChunk> relevantChunks(AnalysisRun run, String query, int limit) {
-        Set<String> queryTerms = terms(query);
-        if (queryTerms.isEmpty()) {
-            return run.getEvidenceChunks().stream().limit(limit).toList();
-        }
-        return run.getEvidenceChunks().stream()
-                .map(chunk -> new ChunkScore(chunk, score(chunk.getTitle() + " " + chunk.getText(), queryTerms)))
-                .filter(scored -> scored.score() > 0)
-                .sorted((left, right) -> Double.compare(right.score(), left.score()))
-                .limit(limit)
-                .map(ChunkScore::chunk)
-                .toList();
-    }
-
-    private double score(String text, Set<String> queryTerms) {
-        String normalized = nullToEmpty(text).toLowerCase(Locale.ROOT);
-        double score = 0;
-        for (String term : queryTerms) {
-            if (normalized.contains(term)) {
-                score += term.length() <= 2 ? 0.5 : 1.0;
-            }
-        }
-        return score;
-    }
-
-    private Set<String> terms(String text) {
-        Set<String> terms = new LinkedHashSet<>();
-        String normalized = nullToEmpty(text).toLowerCase(Locale.ROOT)
-                .replaceAll("[^\\p{IsHan}a-z0-9]+", " ")
-                .trim();
-        for (String part : normalized.split("\\s+")) {
-            if (part.length() >= 2) {
-                terms.add(part);
-            }
-        }
-        String chineseOnly = normalized.replaceAll("[^\\p{IsHan}]", "");
-        for (int i = 0; i < chineseOnly.length() - 1; i++) {
-            terms.add(chineseOnly.substring(i, i + 2));
-        }
-        return terms;
     }
 
     private boolean hasText(String text) {
@@ -646,6 +747,14 @@ public class AnalystNode implements AgentNode {
 
     private String nullToEmpty(String text) {
         return text == null ? "" : text;
+    }
+
+    private String normalizeUpper(String text) {
+        return nullToEmpty(text).trim().toUpperCase(Locale.ROOT);
+    }
+
+    private String normalizeLower(String text) {
+        return nullToEmpty(text).trim().toLowerCase(Locale.ROOT);
     }
 
     private String abbreviate(String value, int maxLength) {
@@ -664,7 +773,13 @@ public class AnalystNode implements AgentNode {
         public List<String> evidenceIds = List.of();
     }
 
-    private record ChunkScore(com.aiinsight.model.run.EvidenceChunk chunk, double score) {
+    private record AnalystContext(
+            AnalysisRun run,
+            String requirementSummary,
+            String profileBlock,
+            String evidenceIndex,
+            String researchContext
+    ) {
     }
 
     private interface LlmSubtask<T> {
