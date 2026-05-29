@@ -62,6 +62,12 @@ public class AnalysisRunController {
         return workflowService.updateRequirement(runId, request);
     }
 
+    @PostMapping("/{runId}/clarify")
+    public AnalysisRun clarifyRequirement(@PathVariable UUID runId,
+                                          @RequestBody UpdateAnalysisRequirementRequest request) {
+        return workflowService.clarifyRequirement(runId, request);
+    }
+
     @PostMapping("/{runId}/start")
     public AnalysisRun start(@PathVariable UUID runId) {
         return workflowService.startExecution(runId);

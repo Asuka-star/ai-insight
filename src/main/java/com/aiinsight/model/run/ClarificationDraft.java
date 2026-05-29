@@ -20,6 +20,7 @@ public class ClarificationDraft {
     private List<String> sourceUrls = new ArrayList<>();
     private String outputGoal;
     private List<String> clarificationQuestions = new ArrayList<>();
+    private List<ClarificationItem> clarificationItems = new ArrayList<>();
     private boolean confirmed;
     private Instant createdAt = Instant.now();
     private Instant confirmedAt;

@@ -11,6 +11,8 @@ import com.aiinsight.model.run.AnalysisArtifact;
 import com.aiinsight.model.run.AnalysisRequirement;
 import com.aiinsight.model.run.AnalysisRun;
 import com.aiinsight.model.run.ClarificationDraft;
+import com.aiinsight.model.run.ClarificationItem;
+import com.aiinsight.model.run.ClarificationOption;
 import com.aiinsight.observability.AgentTraceContext;
 import com.aiinsight.service.fallback.FallbackClarificationDraftFactory;
 import com.fasterxml.jackson.core.JsonProcessingException;
@@ -75,7 +77,7 @@ public class ClarifierNode implements AgentNode {
         return run;
     }
 
-    // Clarifier 是范围澄清阶段唯一允许调用 LLM 的节点；创建草稿仍同步走规则 fallback。
+    // Clarifier 是范围澄清阶段唯一允许调用 LLM 的节点；失败时统一回退到规则草稿。
     private ClarificationDraftResult clarifyScope(AnalysisRequirement requirement) {
         if (!llmClient.isAvailable()) {
             return ClarificationDraftResult.fallback(fallbackClarificationDraftFactory.build(requirement), null);
@@ -108,7 +110,18 @@ public class ClarifierNode implements AgentNode {
                   "sourcePreferences": ["official_site", "pricing_page", "product_docs", "release_notes", "technical_blog", "authoritative_media", "public_reviews"],
                   "sourceUrls": ["只允许复述用户已提供的 URL，不要编造 URL"],
                   "outputGoal": "报告用途",
-                  "clarificationQuestions": ["需要用户确认的问题"]
+                  "clarificationQuestions": ["需要用户确认的问题"],
+                  "clarificationItems": [
+                    {
+                      "field": "industry|competitors|dimensions|sourcePreferences|sourceUrls|outputGoal",
+                      "question": "需要用户确认的问题",
+                      "reason": "为什么要确认",
+                      "required": true,
+                      "options": [
+                        {"label": "选项名称", "description": "选择影响", "values": ["回填值"], "recommended": true}
+                      ]
+                    }
+                  ]
                 }
 
                 约束：
@@ -116,7 +129,8 @@ public class ClarifierNode implements AgentNode {
                 2. 只补全占位或缺失字段，不确定就写入 clarificationQuestions。
                 3. sourceUrls 只能复述用户已提供的 URL，不要编造 URL。
                 4. 默认优先官方、权威和可复核来源，sourcePreferences 只表示重点覆盖类型。
-                5. 输出要短，确保 JSON 完整闭合。
+                5. clarificationItems 要给出可点选的正常选项；如果是单值字段，values 放一个值；如果是列表字段，values 放完整列表。
+                6. 输出要短，确保 JSON 完整闭合。
 
                 原始需求：%s
                 industry=%s
@@ -154,6 +168,7 @@ public class ClarifierNode implements AgentNode {
             draft.setSourceUrls(urlList(root, "sourceUrls"));
             draft.setOutputGoal(text(root, "outputGoal"));
             draft.setClarificationQuestions(textList(root, "clarificationQuestions"));
+            draft.setClarificationItems(clarificationItems(root));
             return draft;
         } catch (JsonProcessingException ex) {
             throw new IllegalArgumentException("LLM 范围确认内容 JSON 解析失败", ex);
@@ -171,6 +186,7 @@ public class ClarifierNode implements AgentNode {
         merged.setSourceUrls(new ArrayList<>(requirement.getSourceUrls()));
         merged.setOutputGoal(firstText(requirement.getOutputGoal(), llmDraft.getOutputGoal(), fallback.getOutputGoal()));
         merged.setClarificationQuestions(mergeQuestions(llmDraft.getClarificationQuestions(), fallback.getClarificationQuestions()));
+        merged.setClarificationItems(mergeItems(llmDraft.getClarificationItems(), fallback.getClarificationItems()));
         return merged;
     }
 
@@ -179,6 +195,26 @@ public class ClarifierNode implements AgentNode {
         addAllText(merged, llmQuestions);
         addAllText(merged, fallbackQuestions);
         return new ArrayList<>(merged);
+    }
+
+    private List<ClarificationItem> mergeItems(List<ClarificationItem> llmItems, List<ClarificationItem> fallbackItems) {
+        LinkedHashSet<String> seen = new LinkedHashSet<>();
+        List<ClarificationItem> merged = new ArrayList<>();
+        addItems(merged, seen, llmItems);
+        addItems(merged, seen, fallbackItems);
+        return merged;
+    }
+
+    private void addItems(List<ClarificationItem> target, LinkedHashSet<String> seen, List<ClarificationItem> items) {
+        for (ClarificationItem item : items == null ? List.<ClarificationItem>of() : items) {
+            if (item == null || !StringUtils.hasText(item.getField()) || !StringUtils.hasText(item.getQuestion())) {
+                continue;
+            }
+            String key = item.getField().trim().toLowerCase() + "::" + item.getQuestion().trim();
+            if (seen.add(key)) {
+                target.add(item);
+            }
+        }
     }
 
     private String firstMeaningfulIndustry(String requirementIndustry, String llmIndustry, String fallbackIndustry) {
@@ -270,6 +306,76 @@ public class ClarifierNode implements AgentNode {
                 .toList();
     }
 
+    private List<ClarificationItem> clarificationItems(JsonNode root) {
+        List<ClarificationItem> items = new ArrayList<>();
+        JsonNode node = root.get("clarificationItems");
+        if (node == null || !node.isArray()) {
+            return items;
+        }
+        node.forEach(itemNode -> {
+            ClarificationItem item = new ClarificationItem();
+            item.setField(text(itemNode, "field"));
+            item.setQuestion(text(itemNode, "question"));
+            item.setReason(text(itemNode, "reason"));
+            item.setRequired(booleanValue(itemNode, "required"));
+            item.setOptions(clarificationOptions(itemNode));
+            item.setSelectedValues(textList(itemNode, "selectedValues"));
+            if (StringUtils.hasText(item.getField()) && StringUtils.hasText(item.getQuestion())) {
+                items.add(item);
+            }
+        });
+        return items;
+    }
+
+    private List<ClarificationOption> clarificationOptions(JsonNode itemNode) {
+        List<ClarificationOption> options = new ArrayList<>();
+        JsonNode node = itemNode.get("options");
+        if (node == null || !node.isArray()) {
+            return options;
+        }
+        node.forEach(optionNode -> {
+            ClarificationOption option = new ClarificationOption();
+            option.setLabel(text(optionNode, "label"));
+            option.setDescription(text(optionNode, "description"));
+            option.setValues(optionValues(optionNode));
+            option.setRecommended(booleanValue(optionNode, "recommended"));
+            if (StringUtils.hasText(option.getLabel())) {
+                options.add(option);
+            }
+        });
+        return options;
+    }
+
+    private List<String> optionValues(JsonNode optionNode) {
+        JsonNode valuesNode = optionNode.get("values");
+        if (valuesNode == null) {
+            valuesNode = optionNode.get("value");
+        }
+        List<String> values = new ArrayList<>();
+        if (valuesNode == null || valuesNode.isNull()) {
+            return values;
+        }
+        if (valuesNode.isArray()) {
+            valuesNode.forEach(valueNode -> {
+                String value = valueNode.asText();
+                if (StringUtils.hasText(value)) {
+                    values.add(value.trim());
+                }
+            });
+            return values;
+        }
+        String value = valuesNode.asText();
+        if (StringUtils.hasText(value)) {
+            values.add(value.trim());
+        }
+        return values;
+    }
+
+    private boolean booleanValue(JsonNode root, String field) {
+        JsonNode node = root.get(field);
+        return node != null && node.asBoolean(false);
+    }
+
     private void addAllText(LinkedHashSet<String> target, List<String> values) {
         values.stream()
                 .filter(StringUtils::hasText)
@@ -324,6 +430,10 @@ public class ClarifierNode implements AgentNode {
 
                 %s
 
+                ## 可选澄清项
+
+                %s
+
                 ## 执行说明
 
                 Clarifier 已将确认后的范围同步为结构化任务输入；下游 Agent 只能围绕该范围采集证据、抽取 Schema、生成分析和报告。
@@ -337,8 +447,29 @@ public class ClarifierNode implements AgentNode {
                         ? "- 暂无新增确认问题。"
                         : draft.getClarificationQuestions().stream()
                         .map(question -> "- " + question)
-                        .collect(Collectors.joining("\n"))
+                        .collect(Collectors.joining("\n")),
+                clarificationItemsMarkdown(draft.getClarificationItems())
         );
+    }
+
+    private String clarificationItemsMarkdown(List<ClarificationItem> items) {
+        if (items == null || items.isEmpty()) {
+            return "- 暂无可选澄清项。";
+        }
+        return items.stream()
+                .map(item -> {
+                    String options = item.getOptions() == null || item.getOptions().isEmpty()
+                            ? "无可选项"
+                            : item.getOptions().stream()
+                            .map(option -> "%s%s：%s".formatted(
+                                    option.isRecommended() ? "推荐：" : "",
+                                    option.getLabel(),
+                                    listText(option.getValues())
+                            ))
+                            .collect(Collectors.joining("；"));
+                    return "- %s：%s（%s）".formatted(item.getField(), item.getQuestion(), options);
+                })
+                .collect(Collectors.joining("\n"));
     }
 
     private String listText(List<String> values) {

@@ -1,5 +1,6 @@
 package com.aiinsight.service;
 
+import com.aiinsight.agent.node.ClarifierNode;
 import com.aiinsight.dto.AddAnalysisContextRequest;
 import com.aiinsight.dto.AddUserEvidenceRequest;
 import com.aiinsight.dto.AnalysisRunMetrics;
@@ -25,7 +26,9 @@ import com.aiinsight.model.run.EvidenceSource;
 import com.aiinsight.model.run.UserProvidedEvidence;
 import com.aiinsight.model.schema.CompetitorProfile;
 import com.aiinsight.repository.AnalysisRunRepository;
+import com.aiinsight.service.fallback.FallbackClarificationDraftFactory;
 import com.aiinsight.workflow.AnalysisLangGraphWorkflow;
+import com.aiinsight.workflow.WorkflowNodeExecutor;
 import org.springframework.core.task.AsyncTaskExecutor;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
@@ -48,6 +51,9 @@ public class AnalysisWorkflowService {
     private final AnalysisEventBroker eventBroker;
     private final AsyncTaskExecutor analysisTaskExecutor;
     private final AnalysisLangGraphWorkflow graphWorkflow;
+    private final WorkflowNodeExecutor nodeExecutor;
+    private final ClarifierNode clarifierNode;
+    private final FallbackClarificationDraftFactory fallbackClarificationDraftFactory;
     private final EvidenceRetrievalService evidenceRetrievalService;
     private final SourceCollectionService sourceCollectionService;
     private final EvidenceChunkService evidenceChunkService;
@@ -57,6 +63,9 @@ public class AnalysisWorkflowService {
             AnalysisEventBroker eventBroker,
             AsyncTaskExecutor analysisTaskExecutor,
             AnalysisLangGraphWorkflow graphWorkflow,
+            WorkflowNodeExecutor nodeExecutor,
+            ClarifierNode clarifierNode,
+            FallbackClarificationDraftFactory fallbackClarificationDraftFactory,
             EvidenceRetrievalService evidenceRetrievalService,
             SourceCollectionService sourceCollectionService,
             EvidenceChunkService evidenceChunkService) {
@@ -65,6 +74,9 @@ public class AnalysisWorkflowService {
         this.eventBroker = eventBroker;
         this.analysisTaskExecutor = analysisTaskExecutor;
         this.graphWorkflow = graphWorkflow;
+        this.nodeExecutor = nodeExecutor;
+        this.clarifierNode = clarifierNode;
+        this.fallbackClarificationDraftFactory = fallbackClarificationDraftFactory;
         this.evidenceRetrievalService = evidenceRetrievalService;
         this.sourceCollectionService = sourceCollectionService;
         this.evidenceChunkService = evidenceChunkService;
@@ -72,11 +84,12 @@ public class AnalysisWorkflowService {
 
     public AnalysisRun createDraft(CreateAnalysisRunRequest request) {
         AnalysisRun run = new AnalysisRun(normalizer.normalize(request));
-        // 创建阶段只生成可编辑草稿，不立即跑 Agent；前端会先让用户确认范围，避免“一句话任务”直接进入长流程。
+        // Clarifier 作为主流程前置 Agent 单独运行：保留回放记录，但不进入长耗时分析 DAG。
         run.setStatus(AnalysisStatus.AWAITING_CONFIRMATION);
         run.setClarificationDraft(buildClarificationDraft(run.getRequirement()));
         repository.save(run);
         eventBroker.publish(run, "run_created", "分析任务已创建");
+        run = nodeExecutor.executeNode(run.getId(), clarifierNode, "preflight clarification");
         eventBroker.publish(run, "clarification_ready", "澄清草稿已生成");
         return run;
     }
@@ -171,6 +184,25 @@ public class AnalysisWorkflowService {
         return run;
     }
 
+    public AnalysisRun clarifyRequirement(UUID runId, UpdateAnalysisRequirementRequest request) {
+        AnalysisRun run = get(runId);
+        ensureRequirementEditable(run);
+        AnalysisRequirement requirement = run.getRequirement();
+        if (requirement == null) {
+            requirement = new AnalysisRequirement();
+            run.setRequirement(requirement);
+        }
+        applyRequirementUpdate(requirement, request);
+
+        run.setClarificationDraft(buildClarificationDraft(requirement));
+        run.setStatus(AnalysisStatus.AWAITING_CONFIRMATION);
+        repository.save(run);
+        eventBroker.publish(run, "clarification_requested", "范围重新澄清已请求");
+        run = nodeExecutor.executeNode(run.getId(), clarifierNode, "preflight clarification rerun");
+        eventBroker.publish(run, "clarification_ready", "澄清草稿已更新");
+        return run;
+    }
+
     public AnalysisRun startExecution(UUID runId) {
         AnalysisRun run = get(runId);
         ensureStartable(run);
@@ -236,9 +268,7 @@ public class AnalysisWorkflowService {
 
     public AnalysisRun rerunAgent(UUID runId, AgentName agentName) {
         AnalysisRun current = get(runId);
-        if (current.getStatus() == AnalysisStatus.CANCELLED) {
-            throw new InvalidRunStateException(runId, "cancelled run cannot rerun agents");
-        }
+        ensureAgentRerunnable(current);
         AnalysisRun run = graphWorkflow.rerunAgent(runId, agentName);
         eventBroker.publish(run, "agent_rerun_completed", agentName + " rerun completed");
         return run;
@@ -363,30 +393,23 @@ public class AnalysisWorkflowService {
         }
     }
 
+    private void ensureAgentRerunnable(AnalysisRun run) {
+        if (run.getStatus() == AnalysisStatus.RUNNING || run.getStatus() == AnalysisStatus.REVIEWING
+                || run.getStatus() == AnalysisStatus.REVISING) {
+            throw new InvalidRunStateException(run.getId(), "agent cannot be rerun while workflow is " + run.getStatus());
+        }
+        if (run.getStatus() == AnalysisStatus.CANCELLED) {
+            throw new InvalidRunStateException(run.getId(), "cancelled run cannot rerun agents");
+        }
+    }
+
     private boolean isTerminal(AnalysisStatus status) {
         return status == AnalysisStatus.SUCCEEDED || status == AnalysisStatus.FAILED
                 || status == AnalysisStatus.CANCELLED;
     }
 
     private ClarificationDraft buildClarificationDraft(AnalysisRequirement requirement) {
-        ClarificationDraft draft = new ClarificationDraft(requirement);
-        draft.getClarificationQuestions().addAll(clarificationQuestions(requirement));
-        return draft;
-    }
-
-    // 这些问题是前端范围确认表单的确定性提示，不是 LLM 生成结果。
-    private List<String> clarificationQuestions(AnalysisRequirement requirement) {
-        List<String> questions = new ArrayList<>();
-        if (requirement.getCompetitors().size() < 3) {
-            questions.add("是否需要加入 Confluence、Airtable 等标杆产品作为对照？");
-        }
-        if (requirement.getSourceUrls().isEmpty()) {
-            questions.add("是否有官网、价格页、产品文档、公开评价或访谈记录可以作为资料来源？");
-        }
-        if (!StringUtils.hasText(requirement.getOutputGoal())) {
-            questions.add("这份报告主要用于支持什么决策：产品评审、规划立项，还是向上汇报？");
-        }
-        return questions;
+        return fallbackClarificationDraftFactory.build(requirement);
     }
 
     private void applyRequirementUpdate(AnalysisRequirement requirement, UpdateAnalysisRequirementRequest request) {

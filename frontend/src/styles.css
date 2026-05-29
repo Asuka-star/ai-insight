@@ -459,6 +459,84 @@ h3 {
   font-size: 13px;
 }
 
+.clarification-items {
+  display: grid;
+  gap: 8px;
+}
+
+.clarification-item {
+  display: grid;
+  gap: 8px;
+  border: 1px solid rgba(40, 95, 154, 0.2);
+  border-radius: 8px;
+  background: #f4f8fc;
+  padding: 10px;
+}
+
+.clarification-item-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.clarification-item-header strong {
+  color: var(--text);
+  font-size: 13px;
+}
+
+.clarification-item-header span {
+  border: 1px solid rgba(178, 58, 52, 0.25);
+  border-radius: 999px;
+  padding: 2px 7px;
+  background: #fff1ef;
+  color: var(--red);
+  font-size: 11px;
+  font-weight: 850;
+}
+
+.clarification-item p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.clarification-options {
+  display: grid;
+  gap: 6px;
+}
+
+.clarification-option {
+  display: grid;
+  gap: 3px;
+  width: 100%;
+  min-height: 38px;
+  border-color: var(--line);
+  background: #ffffff;
+  text-align: left;
+}
+
+.clarification-option.recommended {
+  border-color: rgba(24, 114, 77, 0.35);
+  background: #f0faf4;
+}
+
+.clarification-option span {
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.clarification-option small,
+.clarification-option em {
+  color: var(--muted);
+  font-size: 11px;
+  font-style: normal;
+  font-weight: 650;
+  line-height: 1.35;
+}
+
 .scope-actions {
   display: grid;
   grid-template-columns: 1fr;
@@ -724,6 +802,11 @@ h3 {
 .react-flow__edge.feedback-edge path {
   stroke: var(--amber);
   stroke-dasharray: 7 5;
+}
+
+.react-flow__edge.preflight-edge path {
+  stroke: #8d9b94;
+  stroke-dasharray: 5 6;
 }
 
 .react-flow__edge-textbg {

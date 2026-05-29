@@ -35,7 +35,23 @@ class ClarifierNodeTest {
                           "sourcePreferences": ["official_site", "pricing_page"],
                           "sourceUrls": [],
                           "outputGoal": "支持销售产品规划",
-                          "clarificationQuestions": ["是否需要加入 Zoho CRM？"]
+                          "clarificationQuestions": ["是否需要加入 Zoho CRM？"],
+                          "clarificationItems": [
+                            {
+                              "field": "competitors",
+                              "question": "是否需要加入更多 CRM 标杆？",
+                              "reason": "补充标杆可以提升矩阵对比价值",
+                              "required": false,
+                              "options": [
+                                {
+                                  "label": "加入 Zoho CRM",
+                                  "description": "覆盖中小企业 CRM 参照",
+                                  "values": ["Salesforce", "HubSpot", "Zoho CRM"],
+                                  "recommended": true
+                                }
+                              ]
+                            }
+                          ]
                         }
                         """;
             }
@@ -56,6 +72,18 @@ class ClarifierNodeTest {
         assertThat(run.getRequirement().getIndustry()).isEqualTo("企业服务 CRM");
         assertThat(run.getRequirement().getCompetitors()).containsExactly("Salesforce", "HubSpot");
         assertThat(run.getClarificationDraft().getClarificationQuestions()).contains("是否需要加入 Zoho CRM？");
+        assertThat(run.getClarificationDraft().getClarificationItems())
+                .filteredOn(item -> "competitors".equals(item.getField())
+                        && "是否需要加入更多 CRM 标杆？".equals(item.getQuestion()))
+                .singleElement()
+                .satisfies(item -> {
+                    assertThat(item.getField()).isEqualTo("competitors");
+                    assertThat(item.getOptions()).singleElement().satisfies(option -> {
+                        assertThat(option.getLabel()).isEqualTo("加入 Zoho CRM");
+                        assertThat(option.getValues()).containsExactly("Salesforce", "HubSpot", "Zoho CRM");
+                        assertThat(option.isRecommended()).isTrue();
+                    });
+                });
     }
 
     @Test
@@ -87,6 +115,11 @@ class ClarifierNodeTest {
         assertThat(run.getClarificationDraft().getCompetitors()).containsExactly("Notion");
         assertThat(run.getClarificationDraft().getClarificationQuestions())
                 .contains("是否需要加入 Confluence、Airtable 等标杆产品作为对照？");
+        assertThat(run.getClarificationDraft().getClarificationItems())
+                .anySatisfy(item -> {
+                    assertThat(item.getField()).isEqualTo("competitors");
+                    assertThat(item.getOptions()).isNotEmpty();
+                });
     }
 
 }

@@ -74,6 +74,9 @@ public class AnalysisLangGraphWorkflow {
         try {
             StateGraph<AnalysisGraphState> stateGraph = new StateGraph<>(AnalysisGraphState::new);
             for (AgentNode node : nodesByName.values()) {
+                if (node.name() == AgentName.CLARIFIER) {
+                    continue;
+                }
                 // 每个 Agent 节点只关心 AnalysisRun 的业务变更；执行生命周期、Trace、SSE 事件
                 // 统一交给 WorkflowNodeExecutor，避免节点内混入流程控制细节。
                 stateGraph.addNode(node.name().name(), AsyncNodeAction.node_async(state -> {
@@ -83,8 +86,7 @@ public class AnalysisLangGraphWorkflow {
             }
             stateGraph.addNode(REVIEW_GATE, AsyncNodeAction.node_async(state -> routeFromReview(state)));
 
-            stateGraph.addEdge(GraphDefinition.START, AgentName.CLARIFIER.name());
-            stateGraph.addEdge(AgentName.CLARIFIER.name(), AgentName.RESEARCHER.name());
+            stateGraph.addEdge(GraphDefinition.START, AgentName.RESEARCHER.name());
             stateGraph.addEdge(AgentName.RESEARCHER.name(), AgentName.EXTRACTOR.name());
             stateGraph.addEdge(AgentName.EXTRACTOR.name(), AgentName.ANALYST.name());
             stateGraph.addEdge(AgentName.ANALYST.name(), AgentName.WRITER.name());

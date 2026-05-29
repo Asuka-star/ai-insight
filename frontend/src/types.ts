@@ -92,6 +92,22 @@ export interface UpdateAnalysisRequirementRequest {
   outputGoal?: string;
 }
 
+export interface ClarificationOption {
+  label: string;
+  description?: string;
+  values: string[];
+  recommended?: boolean;
+}
+
+export interface ClarificationItem {
+  field: "industry" | "competitors" | "dimensions" | "sourcePreferences" | "sourceUrls" | "outputGoal" | string;
+  question: string;
+  reason?: string;
+  required?: boolean;
+  options: ClarificationOption[];
+  selectedValues?: string[];
+}
+
 export interface ClarificationDraft {
   industry?: string;
   competitors: string[];
@@ -100,6 +116,7 @@ export interface ClarificationDraft {
   sourceUrls?: string[];
   outputGoal?: string;
   clarificationQuestions: string[];
+  clarificationItems?: ClarificationItem[];
   confirmed: boolean;
 }
 

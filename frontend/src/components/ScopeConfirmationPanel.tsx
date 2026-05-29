@@ -1,5 +1,5 @@
-import { CheckCircle2, ClipboardCheck, PlayCircle } from "lucide-react";
-import type { AnalysisRun } from "../types";
+import { CheckCircle2, ClipboardCheck, PlayCircle, RefreshCw } from "lucide-react";
+import type { AnalysisRun, ClarificationItem, ClarificationOption } from "../types";
 import { SOURCE_OPTIONS } from "../constants";
 import { displayRunPhase, resolveRunPhase } from "../utils";
 
@@ -18,7 +18,9 @@ interface ScopeConfirmationPanelProps {
   onOutputGoalChange: (value: string) => void;
   onSourcesChange: (value: string[]) => void;
   onSourceUrlsChange: (value: string) => void;
+  onApplyClarificationOption: (field: string, values: string[]) => void;
   onCreate: () => void;
+  onReclarify: () => void;
   onConfirm: () => void;
   onStart: () => void;
   creating: boolean;
@@ -40,7 +42,9 @@ export function ScopeConfirmationPanel({
   onOutputGoalChange,
   onSourcesChange,
   onSourceUrlsChange,
+  onApplyClarificationOption,
   onCreate,
+  onReclarify,
   onConfirm,
   onStart,
   creating,
@@ -49,11 +53,13 @@ export function ScopeConfirmationPanel({
   const phase = resolveRunPhase(run);
   const draft = run?.clarificationDraft;
   const questions = draft?.clarificationQuestions ?? [];
+  const clarificationItems = draft?.clarificationItems ?? [];
   const isConfirmed = Boolean(draft?.confirmed || localConfirmed);
   const phaseText = String(phase);
   const hasScopeInput = [industry, competitors, dimensions, outputGoal, sourceUrls].some((value) => value.trim());
   const canCreate = !run && !busy && !creating && hasScopeInput;
   const canConfirm = Boolean(run) && !busy && ["DRAFT", "AWAITING_CONFIRMATION", "PENDING"].includes(phaseText);
+  const canReclarify = Boolean(run) && !busy && ["DRAFT", "AWAITING_CONFIRMATION", "PENDING"].includes(phaseText);
   const canStart = Boolean(run) && !busy && isConfirmed && ["PENDING", "NEEDS_USER_INPUT"].includes(phaseText);
 
   return (
@@ -134,6 +140,18 @@ export function ScopeConfirmationPanel({
         </div>
       )}
 
+      {clarificationItems.length ? (
+        <div className="clarification-items">
+          {clarificationItems.map((item) => (
+            <ClarificationItemCard
+              item={item}
+              key={`${item.field}-${item.question}`}
+              onApply={onApplyClarificationOption}
+            />
+          ))}
+        </div>
+      ) : null}
+
       <div className="scope-actions">
         {!run ? (
           <button className="primary-button" type="button" onClick={onCreate} disabled={!canCreate}>
@@ -141,6 +159,9 @@ export function ScopeConfirmationPanel({
           </button>
         ) : (
           <>
+            <button type="button" onClick={onReclarify} disabled={!canReclarify}>
+              <RefreshCw size={15} /> 重新澄清
+            </button>
             <button type="button" onClick={onConfirm} disabled={!canConfirm}>
               <CheckCircle2 size={15} /> {isConfirmed ? "已确认范围" : "确认范围"}
             </button>
@@ -155,5 +176,55 @@ export function ScopeConfirmationPanel({
         <p className="scope-hint"><ClipboardCheck size={14} /> 直接填写范围信息，生成确认内容后再启动分析。</p>
       ) : null}
     </section>
+  );
+}
+
+function ClarificationItemCard({
+  item,
+  onApply
+}: {
+  item: ClarificationItem;
+  onApply: (field: string, values: string[]) => void;
+}) {
+  return (
+    <div className="clarification-item">
+      <div className="clarification-item-header">
+        <strong>{item.question}</strong>
+        {item.required ? <span>必选</span> : null}
+      </div>
+      {item.reason ? <p>{item.reason}</p> : null}
+      <div className="clarification-options">
+        {item.options.map((option) => (
+          <ClarificationOptionButton
+            field={item.field}
+            option={option}
+            key={`${option.label}-${option.values.join("|")}`}
+            onApply={onApply}
+          />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function ClarificationOptionButton({
+  field,
+  option,
+  onApply
+}: {
+  field: string;
+  option: ClarificationOption;
+  onApply: (field: string, values: string[]) => void;
+}) {
+  return (
+    <button
+      className={option.recommended ? "clarification-option recommended" : "clarification-option"}
+      type="button"
+      onClick={() => onApply(field, option.values ?? [])}
+    >
+      <span>{option.label}</span>
+      {option.description ? <small>{option.description}</small> : null}
+      {option.values?.length ? <em>{option.values.join("、")}</em> : null}
+    </button>
   );
 }

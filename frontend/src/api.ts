@@ -41,6 +41,14 @@ export async function updateRequirement(runId: string, payload: UpdateAnalysisRe
   });
 }
 
+export async function clarifyRequirement(runId: string, payload: UpdateAnalysisRequirementRequest): Promise<AnalysisRun> {
+  return requestJson(`/api/analysis-runs/${runId}/clarify`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload)
+  });
+}
+
 export async function startAnalysis(runId: string): Promise<AnalysisRun> {
   return requestJson(`/api/analysis-runs/${runId}/start`, {
     method: "POST"

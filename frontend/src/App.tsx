@@ -16,7 +16,7 @@ import {
   UploadCloud
 } from "lucide-react";
 import type { AnalysisContextMessage, AgentName, AnalysisArtifact, AnalysisRun, AnalysisRunMetrics, AnalysisRunSummary, ContextIntent, ReviewFinding, RunEvent } from "./types";
-import { addContext, addEvidence, createRun, getRun, getRunMetrics, listRunSummaries, rerunAgent, startAnalysis, updateRequirement } from "./api";
+import { addContext, addEvidence, clarifyRequirement, createRun, getRun, getRunMetrics, listRunSummaries, rerunAgent, startAnalysis, updateRequirement } from "./api";
 import { AGENTS, AGENT_LABELS, ARTIFACT_LABELS, SOURCE_OPTIONS } from "./constants";
 import {
   calculateRunMetrics,
@@ -460,6 +460,48 @@ export function App() {
     }
   }
 
+  function handleApplyClarificationOption(field: string, values: string[]) {
+    const normalizedValues = values.filter((value) => value.trim());
+    if (field === "industry") {
+      setIndustry(normalizedValues[0] ?? "");
+    } else if (field === "competitors") {
+      setCompetitors(normalizedValues.join("、"));
+    } else if (field === "dimensions") {
+      setDimensions(normalizedValues.join("、"));
+    } else if (field === "sourcePreferences") {
+      setSources(normalizedValues);
+    } else if (field === "sourceUrls") {
+      setSourceUrls(normalizedValues.join("\n"));
+    } else if (field === "outputGoal") {
+      setOutputGoal(normalizedValues[0] ?? "");
+    }
+    setLocalScopeConfirmed(false);
+    setEventMessage("已应用澄清选项，请确认范围");
+  }
+
+  async function handleReclarifyScope() {
+    if (!run) return;
+    setIsScopeBusy(true);
+    setEventMessage("正在重新澄清范围");
+    try {
+      const nextRun = await clarifyRequirement(run.id, {
+        industry,
+        competitors: splitList(competitors),
+        dimensions: splitList(dimensions),
+        sourcePreferences: sources,
+        sourceUrls: splitLines(sourceUrls),
+        outputGoal
+      });
+      setRun(nextRun);
+      setLocalScopeConfirmed(Boolean(nextRun.clarificationDraft?.confirmed));
+      setEventMessage("范围已重新澄清");
+    } catch (error) {
+      setEventMessage(error instanceof Error ? `重新澄清失败：${error.message}` : "重新澄清失败");
+    } finally {
+      setIsScopeBusy(false);
+    }
+  }
+
   async function handleStartAnalysis() {
     if (!run) return;
     setIsScopeBusy(true);
@@ -530,10 +572,15 @@ export function App() {
   }
 
   async function handleRerun(agentName: AgentName) {
-    if (!run) return;
+    if (!run || runMutationDisabled) return;
     setEventMessage(`正在重跑 ${AGENT_LABELS[agentName]}`);
-    const nextRun = await rerunAgent(run.id, agentName);
-    setRun(nextRun);
+    try {
+      const nextRun = await rerunAgent(run.id, agentName);
+      setRun(nextRun);
+      setEventMessage(`${AGENT_LABELS[agentName]} 已重跑`);
+    } catch (error) {
+      setEventMessage(error instanceof Error ? `重跑失败：${error.message}` : "重跑失败");
+    }
   }
 
   function handleLocateFinding(finding: ReviewFinding) {
@@ -574,6 +621,8 @@ export function App() {
     mediumFindingCount: run?.reviewFindings.filter((finding) => finding.severity === "MEDIUM").length ?? 0,
     lowFindingCount: run?.reviewFindings.filter((finding) => finding.severity === "LOW").length ?? 0
   };
+  const phase = String(resolveRunPhase(run));
+  const runMutationDisabled = !run || ["RUNNING", "REVIEWING", "REVISING", "CANCELLED"].includes(phase);
   const metricCards = [
     { label: "Agent 步骤", value: runMetrics.agentStepCount, icon: Activity },
     { label: "证据来源", value: runMetrics.evidenceCount, icon: Search },
@@ -637,7 +686,9 @@ export function App() {
             onOutputGoalChange={setOutputGoal}
             onSourcesChange={setSources}
             onSourceUrlsChange={setSourceUrls}
+            onApplyClarificationOption={handleApplyClarificationOption}
             onCreate={handleCreateRun}
+            onReclarify={handleReclarifyScope}
             onConfirm={handleConfirmRequirement}
             onStart={handleStartAnalysis}
             creating={isCreating}
@@ -649,7 +700,7 @@ export function App() {
             value={contextText}
             intent={contextIntent}
             targetAgent={contextTargetAgent}
-            disabled={!run}
+            disabled={runMutationDisabled}
             onValueChange={setContextText}
             onIntentChange={setContextIntent}
             onTargetAgentChange={setContextTargetAgent}
@@ -696,7 +747,7 @@ export function App() {
                 rows={4}
               />
             </label>
-            <button className="primary-button" type="button" onClick={handleAddEvidence} disabled={!run || !evidenceTitle.trim() || !evidenceContent.trim()}>
+            <button className="primary-button" type="button" onClick={handleAddEvidence} disabled={runMutationDisabled || !evidenceTitle.trim() || !evidenceContent.trim()}>
               <UploadCloud size={15} /> 加入证据链
             </button>
           </section>
@@ -828,7 +879,7 @@ export function App() {
             <AgentTimeline run={run} selectedAgent={selectedAgent} onSelectAgent={setSelectedAgent} />
             <div className="rerun-grid">
               {AGENTS.map((agent) => (
-                <button key={agent} type="button" onClick={() => handleRerun(agent)} disabled={!run}>
+                <button key={agent} type="button" onClick={() => handleRerun(agent)} disabled={runMutationDisabled}>
                   <RotateCcw size={14} /> {AGENT_LABELS[agent]}
                 </button>
               ))}
@@ -846,7 +897,7 @@ export function App() {
             decision={run?.reviewDecision}
             onRerunTarget={handleRerun}
             onLocateFinding={handleLocateFinding}
-            disabled={!run}
+            disabled={runMutationDisabled}
           />
 
           <section className="panel">

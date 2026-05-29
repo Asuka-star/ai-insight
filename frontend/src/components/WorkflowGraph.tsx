@@ -39,7 +39,7 @@ export function WorkflowGraph({ run, onSelectAgent }: WorkflowGraphProps) {
   });
 
   const edges: Edge[] = [
-    edge("CLARIFIER", "RESEARCHER"),
+    edge("CLARIFIER", "RESEARCHER", "预检", "preflight"),
     edge("RESEARCHER", "EXTRACTOR"),
     edge("EXTRACTOR", "ANALYST"),
     edge("ANALYST", "WRITER"),
@@ -89,7 +89,7 @@ function graphPosition(index: number) {
   };
 }
 
-function edge(source: AgentName, target: AgentName, label?: string, kind?: "feedback"): Edge {
+function edge(source: AgentName, target: AgentName, label?: string, kind?: "feedback" | "preflight"): Edge {
   return {
     id: `${source}-${target}-${label ?? "next"}`,
     source,
@@ -98,6 +98,6 @@ function edge(source: AgentName, target: AgentName, label?: string, kind?: "feed
     animated: kind === "feedback",
     type: "smoothstep",
     markerEnd: { type: MarkerType.ArrowClosed },
-    className: kind === "feedback" ? "feedback-edge" : ""
+    className: kind === "feedback" ? "feedback-edge" : kind === "preflight" ? "preflight-edge" : ""
   };
 }

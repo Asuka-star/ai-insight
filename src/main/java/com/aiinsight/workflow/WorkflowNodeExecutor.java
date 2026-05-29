@@ -178,7 +178,7 @@ public class WorkflowNodeExecutor {
         ResearchPackage researchPackage = run.getResearchPackage();
         ResearchPlan researchPlan = researchPackage == null ? null : researchPackage.getResearchPlan();
         return switch (node.name()) {
-            case CLARIFIER -> "范围已确认：行业=%s，竞品=%s，分析维度=%s，指定URL=%d".formatted(
+            case CLARIFIER -> "范围已澄清：行业=%s，竞品=%s，分析维度=%s，指定URL=%d".formatted(
                     textOrDefault(run.getClarificationDraft().getIndustry(), "未指定"),
                     listPreview(run.getClarificationDraft().getCompetitors(), 5),
                     listPreview(run.getClarificationDraft().getDimensions(), 4),

@@ -73,10 +73,17 @@ class AnalysisWorkflowServiceTest {
         var draft = service.createDraft(request);
 
         assertThat(draft.getStatus()).isEqualTo(AnalysisStatus.AWAITING_CONFIRMATION);
-        assertThat(draft.getSteps()).isEmpty();
+        assertThat(draft.getSteps())
+                .hasSize(1)
+                .first()
+                .satisfies(step -> {
+                    assertThat(step.getAgentName()).isEqualTo(AgentName.CLARIFIER);
+                    assertThat(step.getStatus()).isEqualTo(StepStatus.SUCCEEDED);
+                });
         assertThat(draft.getClarificationDraft()).isNotNull();
         assertThat(draft.getClarificationDraft().isConfirmed()).isFalse();
         assertThat(draft.getClarificationDraft().getClarificationQuestions()).isNotEmpty();
+        assertThat(draft.getClarificationDraft().getClarificationItems()).isNotEmpty();
 
         UpdateAnalysisRequirementRequest update = new UpdateAnalysisRequirementRequest();
         update.setCompetitors(List.of("Notion", "Confluence"));
@@ -108,6 +115,30 @@ class AnalysisWorkflowServiceTest {
 
         assertThat(finished.getStatus()).isEqualTo(AnalysisStatus.SUCCEEDED);
         assertThat(finished.getSteps()).isNotEmpty();
+    }
+
+    @Test
+    void clarifyRequirementRerunsPreflightClarifierWithoutConfirmingScope() {
+        AnalysisWorkflowService service = newService();
+        CreateAnalysisRunRequest request = new CreateAnalysisRunRequest();
+        request.setPrompt("Analyze Notion.");
+        var draft = service.createDraft(request);
+
+        UpdateAnalysisRequirementRequest update = new UpdateAnalysisRequirementRequest();
+        update.setCompetitors(List.of("Notion", "Confluence"));
+        update.setDimensions(List.of("AI 搜索", "权限治理"));
+        update.setOutputGoal("产品规划");
+        var clarified = service.clarifyRequirement(draft.getId(), update);
+
+        assertThat(clarified.getStatus()).isEqualTo(AnalysisStatus.AWAITING_CONFIRMATION);
+        assertThat(clarified.getRequirement().getCompetitors()).containsExactly("Notion", "Confluence");
+        assertThat(clarified.getClarificationDraft().isConfirmed()).isFalse();
+        assertThat(clarified.getSteps())
+                .extracting(step -> step.getAgentName())
+                .containsExactly(AgentName.CLARIFIER, AgentName.CLARIFIER);
+        assertThat(clarified.getArtifacts())
+                .filteredOn(artifact -> artifact.getType() == ArtifactType.CLARIFICATION_BRIEF)
+                .hasSize(2);
     }
 
     @Test
@@ -162,7 +193,7 @@ class AnalysisWorkflowServiceTest {
                     assertThat(step.getOutputSummary()).doesNotContain("produced updated run state");
                 });
         assertThat(finished.getSteps().get(0).getInputSummary()).contains("澄清原始需求");
-        assertThat(finished.getSteps().get(0).getOutputSummary()).contains("范围已确认");
+        assertThat(finished.getSteps().get(0).getOutputSummary()).contains("范围已澄清");
         assertThat(finished.getSteps())
                 .filteredOn(step -> step.getAgentName() == AgentName.RESEARCHER)
                 .first()
@@ -191,7 +222,9 @@ class AnalysisWorkflowServiceTest {
         assertThatThrownBy(() -> service.startExecution(run.getId()))
                 .isInstanceOf(InvalidRunStateException.class)
                 .hasMessageContaining("workflow is already running");
-        assertThat(service.get(run.getId()).getSteps()).isEmpty();
+        assertThat(service.get(run.getId()).getSteps())
+                .extracting(step -> step.getAgentName())
+                .containsExactly(AgentName.CLARIFIER);
     }
 
     @Test
@@ -329,6 +362,10 @@ class AnalysisWorkflowServiceTest {
         assertThat(finished.getStatus()).isEqualTo(AnalysisStatus.SUCCEEDED);
         assertThat(finished.getSteps()).hasSizeGreaterThanOrEqualTo(6);
         assertThat(finished.getSteps().get(0).getAgentName()).isEqualTo(AgentName.CLARIFIER);
+        assertThat(finished.getSteps().stream()
+                .filter(step -> step.getAgentName() == AgentName.CLARIFIER)
+                .count()).isEqualTo(1);
+        assertThat(finished.getSteps().get(1).getAgentName()).isEqualTo(AgentName.RESEARCHER);
         assertThat(finished.getArtifacts())
                 .filteredOn(artifact -> artifact.getType() == ArtifactType.CLARIFICATION_BRIEF)
                 .isNotEmpty();
@@ -1284,6 +1321,21 @@ class AnalysisWorkflowServiceTest {
     }
 
     @Test
+    void rerunAgentIsBlockedWhileWorkflowIsRunning() {
+        AnalysisWorkflowService service = newService(new TaskExecutorAdapter(command -> {
+        }));
+        CreateAnalysisRunRequest request = new CreateAnalysisRunRequest();
+        request.setPrompt("Analyze Notion and Confluence.");
+
+        AnalysisRun run = service.start(request);
+
+        assertThat(run.getStatus()).isEqualTo(AnalysisStatus.RUNNING);
+        assertThatThrownBy(() -> service.rerunAgent(run.getId(), AgentName.WRITER))
+                .isInstanceOf(InvalidRunStateException.class)
+                .hasMessageContaining("agent cannot be rerun while workflow is RUNNING");
+    }
+
+    @Test
     void reviewerFindingsCarryArtifactAndClaimLocation() {
         LlmClient noopLlmClient = new LlmClient() {
             @Override
@@ -1869,9 +1921,10 @@ class AnalysisWorkflowServiceTest {
         WorkflowNodeExecutor nodeExecutor = new WorkflowNodeExecutor(repository, eventBroker);
         SourceCollectionService sourceCollectionService = new SourceCollectionService(fetchUsefulPages(), fakeSearchProvider());
         FallbackClarificationDraftFactory fallbackClarificationDraftFactory = new FallbackClarificationDraftFactory();
+        ClarifierNode clarifierNode = new ClarifierNode(noopLlmClient, new ObjectMapper(), fallbackClarificationDraftFactory);
         AnalysisLangGraphWorkflow graphWorkflow = new AnalysisLangGraphWorkflow(
                 List.of(
-                        new ClarifierNode(noopLlmClient, new ObjectMapper(), fallbackClarificationDraftFactory),
+                        clarifierNode,
                         new RevisionNode(),
                         new WriterNode(noopLlmClient, new FallbackReportDraftFactory()),
                         new ReviewerNode(new CitationCoverageEvaluator(), noopLlmClient, new FallbackReviewReportFactory()),
@@ -1889,6 +1942,9 @@ class AnalysisWorkflowServiceTest {
                 eventBroker,
                 taskExecutor,
                 graphWorkflow,
+                nodeExecutor,
+                clarifierNode,
+                fallbackClarificationDraftFactory,
                 new EvidenceRetrievalService(),
                 sourceCollectionService,
                 new EvidenceChunkService()
