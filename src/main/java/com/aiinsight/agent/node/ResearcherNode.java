@@ -150,13 +150,13 @@ public class ResearcherNode implements AgentNode {
     }
 
     private ResearchPlan buildResearchPlan(AnalysisRun run, boolean recollecting) {
-        if (recollecting && isUsableResearchPlan(run.getResearchPackage().getResearchPlan())) {
+        if (recollecting) {
             ResearchPlan existingPlan = run.getResearchPackage().getResearchPlan();
-            existingPlan.setEvidenceGaps(new ArrayList<>(run.getResearchPackage().getMissingEvidenceTypes()));
-            if (!run.getResearchPackage().getActualSearchQueries().isEmpty()) {
-                existingPlan.setSearchQueries(new ArrayList<>(run.getResearchPackage().getActualSearchQueries()));
+            if (existingPlan != null && hasText(existingPlan.getObjective())) {
+                return refreshRecollectionPlan(existingPlan, run);
             }
-            return existingPlan;
+            ResearchPlan fallback = fallbackResearchPlanFactory.build(run);
+            return refreshRecollectionPlan(fallback, run);
         }
         ResearchPlan fallback = fallbackResearchPlanFactory.build(run);
         if (!llmClient.isAvailable()) {
@@ -182,6 +182,14 @@ public class ResearcherNode implements AgentNode {
             AgentTraceContext.recordFallback("deterministic-research-plan-fallback", researchPlanMarkdown(fallback, List.of()));
             return fallback;
         }
+    }
+
+    private ResearchPlan refreshRecollectionPlan(ResearchPlan plan, AnalysisRun run) {
+        plan.setEvidenceGaps(new ArrayList<>(run.getResearchPackage().getMissingEvidenceTypes()));
+        if (!run.getResearchPackage().getActualSearchQueries().isEmpty()) {
+            plan.setSearchQueries(new ArrayList<>(run.getResearchPackage().getActualSearchQueries()));
+        }
+        return mergeResearchPlan(plan, fallbackResearchPlanFactory.build(run));
     }
 
     private boolean isUsableResearchPlan(ResearchPlan plan) {

@@ -506,6 +506,61 @@ class SourceCollectionServiceTest {
     }
 
     @Test
+    void recollectionOnlySearchesRepairFocusedCompetitorForPlannedBatches() {
+        List<String> queries = new ArrayList<>();
+        SourceCollectionService service = new SourceCollectionService(fetchUsefulPages(), recordingSearchProvider(queries));
+        AnalysisRun run = new AnalysisRun(new AnalysisRequirement(
+                "Analyze Alpha and Beta",
+                "AI tools",
+                List.of("Alpha", "Beta"),
+                List.of("pricing"),
+                List.of("official_site"),
+                List.of()
+        ));
+        run.getReviewDecision().setAction(ReviewAction.RECOLLECT_EVIDENCE);
+        run.getReviewDecision().setTargetAgent(AgentName.RESEARCHER);
+        ReviewRepairTask task = new ReviewRepairTask();
+        task.setTargetAgent(AgentName.RESEARCHER);
+        task.setInstruction("补充 Alpha 官方定价证据。");
+        run.getReviewDecision().getRepairTasks().add(task);
+        List<SearchQueryPlanner.SearchQueryBatch> plannedBatches = List.of(
+                new SearchQueryPlanner.SearchQueryBatch("Alpha", List.of("Alpha pricing official docs")),
+                new SearchQueryPlanner.SearchQueryBatch("Beta", List.of("Beta pricing official docs"))
+        );
+
+        service.collect(run, true, plannedBatches);
+
+        assertThat(queries).containsExactly("Alpha pricing official docs");
+    }
+
+    @Test
+    void recollectionFocusAlsoAppliesToRulePlannedBatches() {
+        List<String> queries = new ArrayList<>();
+        SourceCollectionService service = new SourceCollectionService(fetchUsefulPages(), recordingSearchProvider(queries));
+        AnalysisRun run = new AnalysisRun(new AnalysisRequirement(
+                "Analyze Alpha and Beta",
+                "AI tools",
+                List.of("Alpha", "Beta"),
+                List.of("pricing"),
+                List.of("official_site"),
+                List.of()
+        ));
+        run.getReviewDecision().setAction(ReviewAction.RECOLLECT_EVIDENCE);
+        run.getReviewDecision().setTargetAgent(AgentName.RESEARCHER);
+        run.getReviewDecision().setRequiredEvidenceTypes(List.of("pricing_page"));
+        ReviewRepairTask task = new ReviewRepairTask();
+        task.setTargetAgent(AgentName.RESEARCHER);
+        task.setInstruction("补充 Alpha 官方定价证据。");
+        run.getReviewDecision().getRepairTasks().add(task);
+
+        service.collect(run, true);
+
+        assertThat(queries).isNotEmpty();
+        assertThat(queries).allMatch(query -> query.contains("Alpha"));
+        assertThat(queries).noneMatch(query -> query.contains("Beta"));
+    }
+
+    @Test
     void plansSearchQueriesFromDomainAndDimensionsWithoutFixedAiCollaborationForNonAiTopics() {
         List<String> queries = new ArrayList<>();
         SourceCollectionService service = new SourceCollectionService(fetchAlwaysFails(), recordingSearchProvider(queries));

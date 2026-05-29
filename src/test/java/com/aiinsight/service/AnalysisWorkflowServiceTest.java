@@ -1063,6 +1063,65 @@ class AnalysisWorkflowServiceTest {
     }
 
     @Test
+    void researcherSkipsResearchPlanLlmDuringRecollectionEvenWhenExistingPlanIsIncomplete() {
+        AtomicInteger llmCalls = new AtomicInteger();
+        LlmClient queryPlannerLlm = new LlmClient() {
+            @Override
+            public boolean isAvailable() {
+                return true;
+            }
+
+            @Override
+            public String complete(com.aiinsight.llm.ChatRequest request) {
+                llmCalls.incrementAndGet();
+                assertThat(request.getMessages().get(1).getContent()).contains("本轮真正用于搜索的 query batch");
+                return """
+                        {
+                          "batches": [
+                            {
+                              "competitor": "Cursor",
+                              "queries": [
+                                {
+                                  "query": "Cursor pricing official documentation",
+                                  "evidenceType": "pricing_page",
+                                  "purpose": "补充官方定价证据",
+                                  "priority": "HIGH"
+                                }
+                              ]
+                            }
+                          ]
+                        }
+                        """;
+            }
+        };
+        SourceCollectionService sourceCollectionService = new SourceCollectionService(fetchUsefulPages(), fakeSearchProvider());
+        ResearcherNode researcherNode = researcherNode(sourceCollectionService, queryPlannerLlm);
+        AnalysisRun run = new AnalysisRun(new AnalysisRequirement(
+                "分析 Cursor 的定价。",
+                "AI 编程助手",
+                List.of("Cursor"),
+                List.of("定价"),
+                List.of("pricing_page"),
+                List.of()
+        ));
+        ResearchPlan incompletePlan = new ResearchPlan();
+        incompletePlan.setObjective("复用不完整调研计划");
+        run.getResearchPackage().setResearchPlan(incompletePlan);
+        run.getReviewDecision().setAction(ReviewAction.RECOLLECT_EVIDENCE);
+        run.getReviewDecision().setTargetAgent(AgentName.RESEARCHER);
+        run.getReviewDecision().setRequiredEvidenceTypes(List.of("pricing_page"));
+
+        researcherNode.execute(run);
+
+        assertThat(llmCalls).hasValue(1);
+        assertThat(run.getResearchPackage().getResearchPlan()).isSameAs(incompletePlan);
+        assertThat(run.getResearchPackage().getResearchPlan().getQuestionnaire().getQuestions()).isNotEmpty();
+        assertThat(run.getResearchPackage().getResearchPlan().getInterviewGuide().getQuestions()).isNotEmpty();
+        assertThat(run.getResearchPackage().getResearchPlan().getSearchQueries())
+                .containsExactly("Cursor pricing official documentation");
+    }
+
+    @Test
     void extractorUsesCompetitorMatchedEvidenceAndRequestedDimensions() {
         AnalysisRun run = new AnalysisRun(new AnalysisRequirement(
                 "分析 Salesforce 和 HubSpot 在 CRM 销售自动化方向的机会。",

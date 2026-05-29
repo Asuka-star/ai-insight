@@ -234,22 +234,48 @@ public class SourceCollectionService {
     private List<SearchQueryPlanner.SearchQueryBatch> searchBatches(AnalysisRun run,
                                                                     boolean recollecting,
                                                                     List<SearchQueryPlanner.SearchQueryBatch> plannedSearchBatches) {
+        List<SearchQueryPlanner.SearchQueryBatch> batches;
         if (plannedSearchBatches == null || plannedSearchBatches.isEmpty()) {
-            return searchQueryPlanner.planByCompetitor(run, recollecting);
+            batches = searchQueryPlanner.planByCompetitor(run, recollecting);
+        } else if (recollecting) {
+            batches = plannedSearchBatches;
+        } else {
+            List<SearchQueryPlanner.SearchQueryBatch> ruleBatches = searchQueryPlanner.planByCompetitor(run, false);
+            Set<String> plannedCompetitors = plannedSearchBatches.stream()
+                    .map(SearchQueryPlanner.SearchQueryBatch::competitor)
+                    .map(this::normalizeText)
+                    .collect(java.util.stream.Collectors.toCollection(LinkedHashSet::new));
+            List<SearchQueryPlanner.SearchQueryBatch> merged = new ArrayList<>(plannedSearchBatches);
+            ruleBatches.stream()
+                    .filter(batch -> !plannedCompetitors.contains(normalizeText(batch.competitor())))
+                    .forEach(merged::add);
+            batches = merged;
         }
-        if (recollecting) {
-            return plannedSearchBatches;
+        return focusRecollectionBatches(run, recollecting, batches);
+    }
+
+    private List<SearchQueryPlanner.SearchQueryBatch> focusRecollectionBatches(AnalysisRun run,
+                                                                               boolean recollecting,
+                                                                               List<SearchQueryPlanner.SearchQueryBatch> batches) {
+        if (!recollecting || batches.isEmpty()) {
+            return batches;
         }
-        List<SearchQueryPlanner.SearchQueryBatch> ruleBatches = searchQueryPlanner.planByCompetitor(run, false);
-        Set<String> plannedCompetitors = plannedSearchBatches.stream()
-                .map(SearchQueryPlanner.SearchQueryBatch::competitor)
-                .map(this::normalizeText)
-                .collect(java.util.stream.Collectors.toCollection(LinkedHashSet::new));
-        List<SearchQueryPlanner.SearchQueryBatch> merged = new ArrayList<>(plannedSearchBatches);
-        ruleBatches.stream()
-                .filter(batch -> !plannedCompetitors.contains(normalizeText(batch.competitor())))
-                .forEach(merged::add);
-        return merged;
+        Set<String> focusedCompetitors = focusedRepairCompetitors(run);
+        if (focusedCompetitors.isEmpty()) {
+            return batches;
+        }
+        List<SearchQueryPlanner.SearchQueryBatch> focusedBatches = batches.stream()
+                .filter(batch -> focusedCompetitors.contains(normalizeText(batch.competitor())))
+                .toList();
+        if (focusedBatches.isEmpty()) {
+            return batches;
+        }
+        log.info("Focused recollection search batches: runId={}, competitors={}, originalBatches={}, focusedBatches={}",
+                run.getId(),
+                focusedCompetitors,
+                batches.size(),
+                focusedBatches.size());
+        return focusedBatches;
     }
 
     private int searchSourcesPerCompetitor(int competitorCount) {
