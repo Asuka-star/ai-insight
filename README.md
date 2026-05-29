@@ -2,7 +2,7 @@
 
 AI Insight 是面向字节跳动 AI 全栈挑战赛 AI-3 课题的后端原型项目，目标是实现一个**可溯源、可复核、可观测、可重跑**的竞品分析 Agent 协作系统。
 
-项目采用 Spring Boot + React Workbench 推进，已经打通 LangGraph4j 多 Agent 工作流、结构化 Schema、Reviewer 反馈闭环、SSE 运行态、PostgreSQL JSONB 持久化和前端演示工作台。后续增强重点是更细粒度的表结构、语义检索和更丰富的数据源。
+项目采用 Spring Boot + React Workbench 推进，已经打通 LangGraph4j 多 Agent 工作流、结构化 Schema、Reviewer 反馈闭环、SSE 运行态、PostgreSQL JSONB 持久化、历史会话和前端演示工作台。后续增强重点是更细粒度的指标评测、语义检索和更丰富的数据源。
 
 ## 项目定位
 
@@ -18,14 +18,15 @@ AI Insight 是面向字节跳动 AI 全栈挑战赛 AI-3 课题的后端原型�
 
 ```text
 用户输入竞品分析需求
--> 填写范围确认并启动分析流程
+-> Clarifier 生成范围确认草稿
+-> 用户确认范围并启动主流程
 -> Researcher 采集证据
 -> Extractor 抽取竞品知识 Schema
 -> Analyst 生成横向对比和分析结论
 -> Writer 生成报告草稿
 -> Reviewer 检查引用覆盖和证据缺口
-   -> 如需补采，打回 Researcher 并重跑下游 Agent
--> Revision 输出最终报告
+   -> 如需补采、重做分析或修订报告，打回对应 Agent 并重跑下游节点
+-> Finalizer 输出最终封版报告
 ```
 
 当前闭环示例：
@@ -35,6 +36,7 @@ AI Insight 是面向字节跳动 AI 全栈挑战赛 AI-3 课题的后端原型�
 3. Researcher 第二轮补充价格页和用户评价证据。
 4. Extractor、Analyst、Writer、Reviewer 自动重跑。
 5. Writer 补上引用后，Reviewer 最终通过。
+6. Finalizer 保留 Writer 正文，并追加复核状态、定向修复计划和证据限制说明。
 
 ## 核心模块
 
@@ -56,6 +58,14 @@ src/main/java/com/aiinsight
 └── workflow           # LangGraph4j 状态图、图状态和节点执行器
 ```
 
+## 项目文档
+
+- `docs/architecture.md`：系统架构、Agent 协议、DAG 和持久化说明。
+- `docs/development-guide.md`：开发维护入口、关键代码地图、清库和验证命令。
+- `docs/demo-script.md`：答辩演示脚本和讲解顺序。
+- `docs/scoring-map.md`：课题评分点与系统能力映射。
+- `docs/remaining-feature-roadmap.md`：剩余功能和优先级记录。
+
 ## 竞品知识 Schema
 
 当前已落地的关键结构：
@@ -66,7 +76,7 @@ src/main/java/com/aiinsight
 - `PricingModel` / `PricingPlan`：定价策略与套餐信息。
 - `UserPersona`：目标用户画像。
 - `AnalysisClaim`：分析结论原子，包含结论类型、置信度和 evidenceIds。
-- `ReviewDecision`：Reviewer 输出的结构化决策，用于驱动通过、修订或打回采集。
+- `ReviewDecision`：Reviewer 输出的结构化决策，用于驱动通过、修订、重做分析或打回采集。
 - `AgentTrace`：Agent 执行 Trace，记录 stepId、Prompt、模型名、原始模型输出、fallback 状态、耗时、异常和 Token 消耗。
 - `WorkflowTransition`：LangGraph4j 条件边决策记录，用于回放 REVIEW_GATE 的路由选择。
 
@@ -76,6 +86,8 @@ src/main/java/com/aiinsight
 
 - JDK 17
 - Maven 3.9+
+- Node.js 18+
+- Docker Desktop（用于本地 PostgreSQL/Redis）
 
 运行测试：
 
@@ -93,6 +105,14 @@ mvn spring-boot:run
 
 ```text
 http://localhost:8080
+```
+
+启动前端：
+
+```bash
+cd frontend
+npm install
+npm run dev
 ```
 
 ## Spring AI 与小米 LLM 配置
@@ -118,7 +138,7 @@ mvn spring-boot:run
 ```env
 XIAOMI_LLM_API_KEY=your-xiaomi-key
 TAVILY_API_KEY=your-tavily-key
-POSTGRES_URL=jdbc:postgresql://localhost:5432/ai_insight
+POSTGRES_URL=jdbc:postgresql://localhost:5433/ai_insight
 POSTGRES_USER=ai_insight
 POSTGRES_PASSWORD=ai_insight
 ```
@@ -193,16 +213,34 @@ docker compose up -d
 docker compose up -d postgres
 ```
 
-启动后端：
+如果使用仓库自带 `docker-compose.yml`，宿主机端口是 `5433`。启动后端：
 
 ```powershell
-$env:POSTGRES_URL="jdbc:postgresql://localhost:5432/ai_insight"
+$env:POSTGRES_URL="jdbc:postgresql://localhost:5433/ai_insight"
 $env:POSTGRES_USER="ai_insight"
 $env:POSTGRES_PASSWORD="ai_insight"
 mvn spring-boot:run
 ```
 
 当前 PostgreSQL 仓储会自动创建 `analysis_run` 表，并以 `jsonb` 保存完整运行态聚合，同时保留 `status`、`original_prompt`、`created_at`、`updated_at` 等查询字段。保存运行态时还会同步刷新 `analysis_artifact`、`agent_step`、`agent_trace`、`evidence_source`、`evidence_chunk`、`review_finding` 明细表，便于后续做分页查询、审计和指标看板。
+
+清理本地历史会话：
+
+```powershell
+docker exec -it ai-insight-pg psql -U ai_insight -d ai_insight -c "truncate table analysis_run cascade;"
+```
+
+如果使用 compose 默认容器名，也可以改用：
+
+```powershell
+docker compose exec postgres psql -U ai_insight -d ai_insight -c "truncate table analysis_run cascade;"
+```
+
+如需同时清掉网页抓取缓存：
+
+```powershell
+docker exec -it ai-insight-pg psql -U ai_insight -d ai_insight -c "truncate table fetched_page_cache;"
+```
 
 可选后续增强：
 
@@ -222,6 +260,7 @@ mvn spring-boot:run
 当前阶段重点已经完成：
 
 - 多 Agent 顺序协作
+- Clarifier 前置范围确认
 - LangGraph4j DAG 状态图编排
 - REVIEW_GATE 条件边决策追踪
 - 结构化 Schema 状态传递
@@ -229,7 +268,8 @@ mvn spring-boot:run
 - analysis_run PostgreSQL 持久化
 - Researcher 支持用户提供公开 URL 并沉淀为可引用证据
 - EvidenceChunk 证据切片与关键词召回接口
-- Reviewer 自动打回 Researcher 的反馈闭环
+- Reviewer 自动打回 Researcher、Analyst 或 Writer 的反馈闭环
+- Finalizer 最终封版与可信度说明
 - SSE 事件推送
 - 单 Agent 重跑接口
 - 小米 LLM 可选接入

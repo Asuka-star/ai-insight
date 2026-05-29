@@ -243,7 +243,7 @@ START
 - `RECOLLECT_EVIDENCE` -> Researcher。
 - `REWORK_ANALYSIS` -> Analyst。
 - `REVISE_REPORT` -> Writer。
-- `PASS` -> Revision。
+- `PASS` -> Finalizer。
 
 当前为避免演示无限循环，自动打回最多 1 次。
 

@@ -28,6 +28,8 @@ import java.util.stream.Collectors;
 @Component
 @RequiredArgsConstructor
 @Slf4j
+// 统一包住所有 Agent 的执行生命周期。AgentNode 只负责修改 AnalysisRun 业务状态；
+// step、trace、SSE、日志、取消检查和异常落库都集中在这里，方便前端做一致的执行回放。
 public class WorkflowNodeExecutor {
 
     private final AnalysisRunRepository repository;
@@ -42,6 +44,8 @@ public class WorkflowNodeExecutor {
         AgentStep step = new AgentStep(node.name(), node.title());
         step.start(effectiveInputSummary);
         AgentTrace trace = traceStarted(node, step, effectiveInputSummary);
+        // LLM 客户端和 fallback 工厂通过 ThreadLocal 写入 prompt、原始输出和 token 信息；
+        // executeNode 结束时再把这些观测数据合并进当前 step 对应的 AgentTrace。
         AgentTraceContext.start(trace);
         run.getSteps().add(step);
         repository.save(run);

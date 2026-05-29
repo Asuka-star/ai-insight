@@ -316,7 +316,7 @@ POST /api/analysis-runs/{runId}/start
 建议行为：
 
 - 从当前 requirement 启动 DAG。
-- 异步执行 Researcher、Extractor、Analyst、Writer、Reviewer、Revision。
+- 异步执行 Researcher、Extractor、Analyst、Writer、Reviewer、Finalizer。
 - 前端通过 SSE 订阅进度。
 
 #### 补充上下文

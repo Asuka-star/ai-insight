@@ -151,7 +151,7 @@ https://www.atlassian.com/software/confluence/pricing
 讲解要点：
 
 - 后端使用 LangGraph4j 编排 DAG。
-- 主流程节点顺序为 Researcher、Extractor、Analyst、Writer、Reviewer、Revision。
+- 主流程节点顺序为 Researcher、Extractor、Analyst、Writer、Reviewer、Finalizer。
 - Reviewer 后面有条件边 `REVIEW_GATE`，可按 `ReviewDecision` 打回 Researcher、Analyst 或 Writer。
 
 观察点：

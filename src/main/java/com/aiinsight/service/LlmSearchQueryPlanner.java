@@ -31,6 +31,8 @@ import java.util.stream.Collectors;
 @Component
 @RequiredArgsConstructor
 @Slf4j
+// Query 规划只决定“搜什么”，不决定“相信什么”。后续 SourceCollectionService 仍会按
+// robots、抓取质量和去重规则筛选证据，避免把 LLM 生成的搜索词误当成事实来源。
 public class LlmSearchQueryPlanner {
 
     private static final int MAX_QUERIES_PER_COMPETITOR = 6;
@@ -130,6 +132,7 @@ public class LlmSearchQueryPlanner {
             JsonNode batchesNode = root.has("batches") ? root.get("batches") : root;
             List<QueryBatchDraft> drafts = objectMapper.convertValue(batchesNode, new TypeReference<>() {
             });
+            // 只接受用户范围中已经确认的竞品名，避免模型额外扩展竞品导致下游矩阵口径漂移。
             Map<String, String> competitorByNormalizedName = run.getRequirement().getCompetitors().stream()
                     .filter(StringUtils::hasText)
                     .collect(Collectors.toMap(
@@ -167,6 +170,7 @@ public class LlmSearchQueryPlanner {
                 .filter(draft -> draft != null && StringUtils.hasText(draft.query))
                 .filter(draft -> !StringUtils.hasText(draft.evidenceType)
                         || ALLOWED_EVIDENCE_TYPES.contains(normalize(draft.evidenceType)))
+                // 搜索词必须带竞品名，避免“pricing”“reviews”这类泛词召回到无关产品。
                 .map(draft -> ensureCompetitorInQuery(competitor, draft.query))
                 .map(query -> query.replaceAll("\\s+", " ").trim())
                 .filter(query -> query.length() <= MAX_QUERY_LENGTH)
@@ -188,6 +192,8 @@ public class LlmSearchQueryPlanner {
                 || run.getReviewDecision().getTargetAgent() != AgentName.RESEARCHER) {
             return "无";
         }
+        // 复核补采时把 ReviewDecision 的结构化 repairTasks 原样喂给 Query Planner，
+        // 让新一轮搜索围绕缺口收敛，而不是重新做一次宽泛行业调研。
         String requiredTypes = String.join("、", run.getReviewDecision().getRequiredEvidenceTypes());
         String tasks = run.getReviewDecision().getRepairTasks().stream()
                 .filter(task -> task.getTargetAgent() == AgentName.RESEARCHER)

@@ -327,6 +327,8 @@ public class SourceCollectionService {
         if (!recollecting || run.getReviewDecision() == null || run.getReviewDecision().getRepairTasks().isEmpty()) {
             return baseSourcesPerCompetitor;
         }
+        // Reviewer 打回后不平均加大所有竞品的搜索量，而是优先给 repairTasks 中被点名的竞品
+        // 多留抓取名额；其他竞品保留少量兜底，避免完全错过新的公开资料。
         Set<String> focusedCompetitors = focusedRepairCompetitors(run);
         if (focusedCompetitors.isEmpty()) {
             return baseSourcesPerCompetitor;
@@ -338,6 +340,8 @@ public class SourceCollectionService {
     }
 
     private Set<String> focusedRepairCompetitors(AnalysisRun run) {
+        // repairTasks 里可能只记录 claim/category/recommendation，这里用文本回扫竞品名，
+        // 把“哪几个竞品需要补证据”从 Reviewer 输出中提取出来。
         String repairText = run.getReviewDecision().getRepairTasks().stream()
                 .map(task -> "%s %s %s %s".formatted(
                         task.getInstruction(),
