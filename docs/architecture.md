@@ -207,11 +207,13 @@ Agent 直接读取并更新 `AnalysisRun`：
 - `RECOLLECT_EVIDENCE`
 - `ASK_USER`
 
-### 5.7 REVISION
+### 5.7 FINALIZER
 
 职责：
 
-- 根据质检结果生成最终报告。
+- 最终封版，不重写 Writer 生成的报告正文。
+- 把 Reviewer 的复核状态、定向修复计划和证据限制追加到最终报告。
+- 保留 HIGH 级风险和待补证据提示，避免把未解决问题包装成已验证结论。
 
 输出：
 
@@ -232,7 +234,7 @@ START
    -> RESEARCHER  when route = recollect
    -> ANALYST     when route = reanalyze
    -> WRITER      when route = revise
-   -> REVISION    when route = finish
+   -> FINALIZER   when route = finish
 -> END
 ```
 

@@ -30,7 +30,7 @@
 - `ANALYST`：生成竞品矩阵和结构化 `AnalysisClaim`。
 - `WRITER`：生成带 citation 的报告草稿。
 - `REVIEWER`：检查引用覆盖，生成 `ReviewFinding` 和 `ReviewDecision`。
-- `REVISION`：根据复核结果生成最终报告。
+- `FINALIZER`：最终封版，保留 Writer 正文并追加复核状态、修复计划和证据限制。
 
 ### 2.3 前端工作台
 

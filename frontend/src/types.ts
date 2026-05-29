@@ -17,7 +17,7 @@ export type AgentName =
   | "ANALYST"
   | "WRITER"
   | "REVIEWER"
-  | "REVISION";
+  | "FINALIZER";
 
 export type ArtifactType =
   | "CLARIFICATION_BRIEF"
@@ -28,7 +28,7 @@ export type ArtifactType =
   | "SWOT_ANALYSIS"
   | "REPORT_DRAFT"
   | "REVIEW_FINDINGS"
-  | "REPORT_REVISION"
+  | "FINALIZATION_NOTE"
   | "FINAL_REPORT";
 
 export interface CreateAnalysisRunRequest {

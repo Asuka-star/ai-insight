@@ -40,7 +40,7 @@ START
    -> RESEARCHER  when route = recollect
    -> ANALYST     when route = reanalyze
    -> WRITER      when route = revise
-   -> REVISION    when route = finish
+   -> FINALIZER   when route = finish
 -> END
 ```
 

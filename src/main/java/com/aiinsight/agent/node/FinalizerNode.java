@@ -1,28 +1,26 @@
 package com.aiinsight.agent.node;
 
+import com.aiinsight.agent.AgentNode;
 import com.aiinsight.model.enums.AgentName;
+import com.aiinsight.model.enums.ArtifactType;
 import com.aiinsight.model.enums.ReviewSeverity;
 import com.aiinsight.model.run.AnalysisArtifact;
 import com.aiinsight.model.run.AnalysisRun;
-import com.aiinsight.model.enums.ArtifactType;
-import com.aiinsight.agent.AgentNode;
 import org.springframework.stereotype.Component;
 
 import java.util.List;
 
 @Component
-// Revision 表示“根据质检结果修订”的动作。
-// 之后接 DAG 时，它会成为 Reviewer 打回 Writer 后的一个条件节点。
-public class RevisionNode implements AgentNode {
+public class FinalizerNode implements AgentNode {
 
     @Override
     public AgentName name() {
-        return AgentName.REVISION;
+        return AgentName.FINALIZER;
     }
 
     @Override
     public String title() {
-        return "根据复核结果修订报告";
+        return "生成最终封版报告";
     }
 
     @Override
@@ -31,15 +29,16 @@ public class RevisionNode implements AgentNode {
         if (draft == null) {
             return run;
         }
-        // Revision 是自动流程的收口节点：它不重新采集事实，只把 Reviewer 的整体决策
-        // 和证据限制写回最终报告；详细 findings 留在 REVIEW_FINDINGS 产物中。
-        AnalysisArtifact revised = new AnalysisArtifact(
+
+        // Finalizer 是自动流程的收口节点：不重新采集事实、不重写 Writer 正文。
+        // 它只把 Reviewer 的整体决策和证据限制写回最终报告；详细 findings 留在 REVIEW_FINDINGS 产物中。
+        AnalysisArtifact finalReport = new AnalysisArtifact(
                 ArtifactType.FINAL_REPORT,
-                "可溯源竞品分析报告",
+                "可溯源竞品分析报告（最终封版）",
                 draft.getContent() + finalReportReviewNote(run),
                 draft.getCitationKeys()
         );
-        run.addArtifact(revised);
+        run.addArtifact(finalReport);
         run.getRecommendedActions().add(recommendedAction(run));
         return run;
     }
@@ -48,7 +47,6 @@ public class RevisionNode implements AgentNode {
         return """
 
                 ## 复核状态
-
                 %s
 
                 ## 定向修复计划
@@ -95,7 +93,7 @@ public class RevisionNode implements AgentNode {
         String tasks = run.getReviewDecision().getRepairTasks().isEmpty()
                 ? "暂无结构化修复任务。"
                 : run.getReviewDecision().getRepairTasks().stream()
-                .map(task -> "- `%s` -> %s；claim=%s；citation=%s；验收=%s".formatted(
+                .map(task -> "- `%s` -> %s；claim=%s；citation=%s；验收：%s".formatted(
                         task.getAction(),
                         task.getTargetAgent(),
                         textOrDefault(task.getClaimId(), "-"),
@@ -107,8 +105,6 @@ public class RevisionNode implements AgentNode {
     }
 
     private String evidenceLimitations(AnalysisRun run) {
-        // 最终报告保留 requiredEvidenceTypes 和 affectedClaimIds，
-        // 这样答辩或人工复核时能直接说明“下一步该补什么、看哪条 claim”。
         List<String> requiredEvidenceTypes = run.getReviewDecision().getRequiredEvidenceTypes();
         List<String> affectedClaimIds = run.getReviewDecision().getAffectedClaimIds();
         String evidence = requiredEvidenceTypes == null || requiredEvidenceTypes.isEmpty()

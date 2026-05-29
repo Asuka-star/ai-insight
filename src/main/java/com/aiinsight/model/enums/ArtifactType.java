@@ -9,6 +9,6 @@ public enum ArtifactType {
     SWOT_ANALYSIS,
     REPORT_DRAFT,
     REVIEW_FINDINGS,
-    REPORT_REVISION,
+    FINALIZATION_NOTE,
     FINAL_REPORT
 }

@@ -6,7 +6,7 @@ import com.aiinsight.agent.node.ClarifierNode;
 import com.aiinsight.agent.node.ExtractorNode;
 import com.aiinsight.agent.node.ResearcherNode;
 import com.aiinsight.agent.node.ReviewerNode;
-import com.aiinsight.agent.node.RevisionNode;
+import com.aiinsight.agent.node.FinalizerNode;
 import com.aiinsight.agent.node.WriterNode;
 import com.aiinsight.dto.AddAnalysisContextRequest;
 import com.aiinsight.dto.AddUserEvidenceRequest;
@@ -399,7 +399,7 @@ class AnalysisWorkflowServiceTest {
                 });
         assertThat(finished.getWorkflowTransitions()).isNotEmpty();
         assertThat(finished.getWorkflowTransitions().get(finished.getWorkflowTransitions().size() - 1).getRoute()).isEqualTo("finish");
-        assertThat(finished.getWorkflowTransitions().get(finished.getWorkflowTransitions().size() - 1).getTargetNode()).isEqualTo(AgentName.REVISION.name());
+        assertThat(finished.getWorkflowTransitions().get(finished.getWorkflowTransitions().size() - 1).getTargetNode()).isEqualTo(AgentName.FINALIZER.name());
         assertThat(finished.getSteps())
                 .filteredOn(step -> step.getAgentName() == AgentName.RESEARCHER)
                 .isNotEmpty();
@@ -1891,7 +1891,7 @@ class AnalysisWorkflowServiceTest {
     }
 
     @Test
-    void revisionKeepsFinalReportCleanAndLeavesFindingsInReviewArtifact() {
+    void finalizerKeepsFinalReportCleanAndLeavesFindingsInReviewArtifact() {
         AnalysisRun run = new AnalysisRun();
         run.addArtifact(new AnalysisArtifact(
                 ArtifactType.REPORT_DRAFT,
@@ -1923,7 +1923,7 @@ class AnalysisWorkflowServiceTest {
                 "Analyst 优先修复 affectedClaimIds 指向的结构化结论，避免重写无关 claims。"
         ));
 
-        new RevisionNode().execute(run);
+        new FinalizerNode().execute(run);
 
         assertThat(run.getArtifacts())
                 .filteredOn(artifact -> artifact.getType() == ArtifactType.FINAL_REPORT)
@@ -1984,7 +1984,7 @@ class AnalysisWorkflowServiceTest {
         AnalysisLangGraphWorkflow graphWorkflow = new AnalysisLangGraphWorkflow(
                 List.of(
                         clarifierNode,
-                        new RevisionNode(),
+                        new FinalizerNode(),
                         new WriterNode(noopLlmClient, new FallbackReportDraftFactory()),
                         new ReviewerNode(new CitationCoverageEvaluator(), noopLlmClient, new FallbackReviewReportFactory()),
                         new AnalystNode(noopLlmClient, new ObjectMapper(), new FallbackAnalysisDraftFactory()),

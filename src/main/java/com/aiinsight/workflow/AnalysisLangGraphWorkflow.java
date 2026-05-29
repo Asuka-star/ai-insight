@@ -100,10 +100,10 @@ public class AnalysisLangGraphWorkflow {
                             ROUTE_RECOLLECT, AgentName.RESEARCHER.name(),
                             ROUTE_REANALYZE, AgentName.ANALYST.name(),
                             ROUTE_REVISE, AgentName.WRITER.name(),
-                            ROUTE_FINISH, AgentName.REVISION.name()
+                            ROUTE_FINISH, AgentName.FINALIZER.name()
                     )
             );
-            stateGraph.addEdge(AgentName.REVISION.name(), GraphDefinition.END);
+            stateGraph.addEdge(AgentName.FINALIZER.name(), GraphDefinition.END);
             return stateGraph.compile();
         } catch (Exception ex) {
             throw new IllegalStateException("Failed to build LangGraph4j analysis workflow", ex);
@@ -176,7 +176,7 @@ public class AnalysisLangGraphWorkflow {
         if (ROUTE_REVISE.equals(route)) {
             return AgentName.WRITER.name();
         }
-        return AgentName.REVISION.name();
+        return AgentName.FINALIZER.name();
     }
 
     private String inputSummary(AnalysisGraphState state) {

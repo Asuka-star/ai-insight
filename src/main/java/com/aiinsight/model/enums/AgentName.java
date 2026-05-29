@@ -7,5 +7,5 @@ public enum AgentName {
     ANALYST,
     WRITER,
     REVIEWER,
-    REVISION
+    FINALIZER
 }
