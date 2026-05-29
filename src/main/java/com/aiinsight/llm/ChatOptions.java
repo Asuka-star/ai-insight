@@ -26,6 +26,10 @@ public class ChatOptions {
         return new ChatOptions(0.2, 1600);
     }
 
+    public static ChatOptions searchQueryPlanner() {
+        return new ChatOptions(0.2, 900);
+    }
+
     public static ChatOptions extractor() {
         return new ChatOptions(0.2, 2500);
     }

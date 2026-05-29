@@ -32,6 +32,11 @@ import com.aiinsight.model.run.EvidenceSource;
 import com.aiinsight.model.review.ReviewFinding;
 import com.aiinsight.model.schema.AnalysisClaim;
 import com.aiinsight.model.schema.CompetitorProfile;
+import com.aiinsight.model.schema.InterviewGuide;
+import com.aiinsight.model.schema.Questionnaire;
+import com.aiinsight.model.schema.ResearchPlan;
+import com.aiinsight.model.schema.ResearchTask;
+import com.aiinsight.model.schema.SurveyQuestion;
 import com.aiinsight.repository.AnalysisRunRepository;
 import com.aiinsight.service.fallback.FallbackAnalysisDraftFactory;
 import com.aiinsight.service.fallback.FallbackClarificationDraftFactory;
@@ -52,6 +57,7 @@ import java.util.UUID;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -960,6 +966,66 @@ class AnalysisWorkflowServiceTest {
     }
 
     @Test
+    void researcherReusesExistingResearchPlanDuringRecollection() {
+        AtomicInteger llmCalls = new AtomicInteger();
+        LlmClient queryOnlyLlm = new LlmClient() {
+            @Override
+            public boolean isAvailable() {
+                return true;
+            }
+
+            @Override
+            public String complete(com.aiinsight.llm.ChatRequest request) {
+                llmCalls.incrementAndGet();
+                assertThat(request.getMessages().get(1).getContent()).contains("本轮真正用于搜索的 query batch");
+                return """
+                        {
+                          "batches": [
+                            {
+                              "competitor": "Cursor",
+                              "queries": [
+                                {
+                                  "query": "Cursor pricing official documentation",
+                                  "evidenceType": "pricing_page",
+                                  "purpose": "补充官方定价证据",
+                                  "priority": "HIGH"
+                                }
+                              ]
+                            }
+                          ]
+                        }
+                        """;
+            }
+        };
+        SourceCollectionService sourceCollectionService = new SourceCollectionService(fetchUsefulPages(), fakeSearchProvider());
+        ResearcherNode researcherNode = researcherNode(sourceCollectionService, queryOnlyLlm);
+        AnalysisRun run = new AnalysisRun(new AnalysisRequirement(
+                "分析 Cursor 的定价和团队能力。",
+                "AI 编程助手",
+                List.of("Cursor"),
+                List.of("定价"),
+                List.of("pricing_page"),
+                List.of()
+        ));
+        ResearchPlan existingPlan = usableResearchPlan();
+        run.getResearchPackage().setResearchPlan(existingPlan);
+        run.getReviewDecision().setAction(ReviewAction.RECOLLECT_EVIDENCE);
+        run.getReviewDecision().setTargetAgent(AgentName.RESEARCHER);
+        run.getReviewDecision().setRequiredEvidenceTypes(List.of("pricing_page"));
+
+        researcherNode.execute(run);
+
+        assertThat(llmCalls).hasValue(1);
+        assertThat(run.getResearchPackage().getResearchPlan()).isSameAs(existingPlan);
+        assertThat(run.getResearchPackage().getResearchPlan().getQuestionnaire().getTitle())
+                .isEqualTo("既有问卷");
+        assertThat(run.getResearchPackage().getResearchPlan().getSearchQueries())
+                .containsExactly("Cursor pricing official documentation");
+        assertThat(run.getResearchPackage().getActualSearchQueries())
+                .containsExactly("Cursor pricing official documentation");
+    }
+
+    @Test
     void extractorUsesCompetitorMatchedEvidenceAndRequestedDimensions() {
         AnalysisRun run = new AnalysisRun(new AnalysisRequirement(
                 "分析 Salesforce 和 HubSpot 在 CRM 销售自动化方向的机会。",
@@ -1403,7 +1469,7 @@ class AnalysisWorkflowServiceTest {
 
         new ReviewerNode(new CitationCoverageEvaluator(), reviewerLlm, new FallbackReviewReportFactory()).execute(run);
 
-        assertThat(promptCapture.toString()).contains("只输出可解析 JSON", "结构化 Claims:", "C-LLM-1");
+        assertThat(promptCapture.toString()).contains("只输出可解析 JSON", "Claim 与证据:", "C-LLM-1");
         assertThat(run.getReviewFindings())
                 .anySatisfy(finding -> {
                     assertThat(finding.getCategory()).isEqualTo("llm_overclaim");
@@ -1925,10 +1991,37 @@ class AnalysisWorkflowServiceTest {
                 sourceCollectionService,
                 new EvidenceChunkService(),
                 llmClient,
+                new LlmSearchQueryPlanner(llmClient, new ObjectMapper()),
                 new ObjectMapper(),
                 new FallbackResearchPlanFactory(),
                 new InterviewInsightExtractor()
         );
+    }
+
+    private ResearchPlan usableResearchPlan() {
+        ResearchPlan plan = new ResearchPlan();
+        plan.setObjective("复用既有调研计划");
+        plan.getEvidenceGaps().add("pricing_page");
+        plan.getSearchQueries().add("旧 query");
+        plan.getPublicSourceTasks().add(new ResearchTask(
+                "pricing_page",
+                "Cursor 定价页",
+                "补充官方定价证据",
+                "needs_collection"
+        ));
+        Questionnaire questionnaire = new Questionnaire();
+        questionnaire.setTitle("既有问卷");
+        questionnaire.setTargetRespondents("评估过 Cursor 的开发者");
+        questionnaire.getQuestions().add(new SurveyQuestion("定价", "价格是否清晰？", List.of("清晰", "不清晰")));
+        questionnaire.getQuestions().add(new SurveyQuestion("团队", "团队协作是否有帮助？", List.of("有", "没有")));
+        questionnaire.getQuestions().add(new SurveyQuestion("采购", "采购顾虑是什么？", List.of("价格", "安全")));
+        plan.setQuestionnaire(questionnaire);
+        InterviewGuide guide = new InterviewGuide();
+        guide.setTitle("既有访谈");
+        guide.setTargetRoles(List.of("开发者"));
+        guide.setQuestions(List.of("如何使用 Cursor？", "定价是否影响采购？", "团队协作如何？"));
+        plan.setInterviewGuide(guide);
+        return plan;
     }
 
     private static class TestAnalysisRunRepository implements AnalysisRunRepository {

@@ -59,6 +59,13 @@ public class SourceCollectionService {
     }
 
     public List<EvidenceSource> collect(AnalysisRun run, boolean recollecting) {
+        return collect(run, recollecting, List.of());
+    }
+
+    public List<EvidenceSource> collect(AnalysisRun run,
+                                        boolean recollecting,
+                                        List<SearchQueryPlanner.SearchQueryBatch> plannedSearchBatches) {
+        run.getResearchPackage().setActualSearchQueries(List.of());
         List<EvidenceSource> sources = new ArrayList<>(run.getEvidenceSources());
         Set<String> seenUrls = new LinkedHashSet<>();
         sources.stream()
@@ -88,7 +95,7 @@ public class SourceCollectionService {
             }
         }
 
-        appendSearchEvidence(run, sources, index, recollecting);
+        appendSearchEvidence(run, sources, index, recollecting, plannedSearchBatches);
         return sources;
     }
 
@@ -150,14 +157,19 @@ public class SourceCollectionService {
         return "";
     }
 
-    private void appendSearchEvidence(AnalysisRun run, List<EvidenceSource> sources, int index, boolean recollecting) {
-        List<SearchQueryPlanner.SearchQueryBatch> batches = searchQueryPlanner.planByCompetitor(run, recollecting);
+    private void appendSearchEvidence(AnalysisRun run,
+                                      List<EvidenceSource> sources,
+                                      int index,
+                                      boolean recollecting,
+                                      List<SearchQueryPlanner.SearchQueryBatch> plannedSearchBatches) {
+        List<SearchQueryPlanner.SearchQueryBatch> batches = searchBatches(run, recollecting, plannedSearchBatches);
         if (batches.isEmpty()) {
             return;
         }
         List<String> queries = batches.stream()
                 .flatMap(batch -> batch.queries().stream())
                 .toList();
+        run.getResearchPackage().setActualSearchQueries(queries);
         if (!searchProvider.isAvailable()) {
             log.warn("Source collection search fallback required: runId={}, reason=search_provider_unavailable, queries={}",
                     run.getId(),
@@ -175,7 +187,7 @@ public class SourceCollectionService {
 
         int sourcesPerCompetitor = searchSourcesPerCompetitor(batches.size());
         int maxSearchSources = maxSearchSources(batches.size(), sourcesPerCompetitor);
-        List<SearchBatchResult> batchResults = collectSearchBatches(run, batches, seenUrls, sourcesPerCompetitor);
+        List<SearchBatchResult> batchResults = collectSearchBatches(run, batches, seenUrls, sourcesPerCompetitor, recollecting);
         batchResults.stream()
                 .flatMap(result -> result.failures().stream())
                 .forEach(run.getRecommendedActions()::add);
@@ -219,6 +231,27 @@ public class SourceCollectionService {
         }
     }
 
+    private List<SearchQueryPlanner.SearchQueryBatch> searchBatches(AnalysisRun run,
+                                                                    boolean recollecting,
+                                                                    List<SearchQueryPlanner.SearchQueryBatch> plannedSearchBatches) {
+        if (plannedSearchBatches == null || plannedSearchBatches.isEmpty()) {
+            return searchQueryPlanner.planByCompetitor(run, recollecting);
+        }
+        if (recollecting) {
+            return plannedSearchBatches;
+        }
+        List<SearchQueryPlanner.SearchQueryBatch> ruleBatches = searchQueryPlanner.planByCompetitor(run, false);
+        Set<String> plannedCompetitors = plannedSearchBatches.stream()
+                .map(SearchQueryPlanner.SearchQueryBatch::competitor)
+                .map(this::normalizeText)
+                .collect(java.util.stream.Collectors.toCollection(LinkedHashSet::new));
+        List<SearchQueryPlanner.SearchQueryBatch> merged = new ArrayList<>(plannedSearchBatches);
+        ruleBatches.stream()
+                .filter(batch -> !plannedCompetitors.contains(normalizeText(batch.competitor())))
+                .forEach(merged::add);
+        return merged;
+    }
+
     private int searchSourcesPerCompetitor(int competitorCount) {
         if (competitorCount > LARGE_BATCH_COMPETITOR_THRESHOLD) {
             return LARGE_BATCH_SEARCH_SOURCES_PER_COMPETITOR;
@@ -236,13 +269,19 @@ public class SourceCollectionService {
     private List<SearchBatchResult> collectSearchBatches(AnalysisRun run,
                                                          List<SearchQueryPlanner.SearchQueryBatch> batches,
                                                          Set<String> seenUrls,
-                                                         int sourcesPerCompetitor) {
+                                                         int sourcesPerCompetitor,
+                                                         boolean recollecting) {
         ExecutorService executor = Executors.newFixedThreadPool(Math.min(batches.size(), 6));
         try {
             Set<String> existingSeenUrls = new LinkedHashSet<>(seenUrls);
             List<CompletableFuture<SearchBatchResult>> futures = batches.stream()
                     .map(batch -> CompletableFuture.supplyAsync(
-                            () -> collectSearchBatch(run, batch, existingSeenUrls, sourcesPerCompetitor),
+                            () -> collectSearchBatch(
+                                    run,
+                                    batch,
+                                    existingSeenUrls,
+                                    searchSourcesForBatch(run, batch, sourcesPerCompetitor, recollecting)
+                            ),
                             executor
                     ))
                     .toList();
@@ -253,6 +292,42 @@ public class SourceCollectionService {
         } finally {
             executor.shutdown();
         }
+    }
+
+    private int searchSourcesForBatch(AnalysisRun run,
+                                      SearchQueryPlanner.SearchQueryBatch batch,
+                                      int baseSourcesPerCompetitor,
+                                      boolean recollecting) {
+        if (!recollecting || run.getReviewDecision() == null || run.getReviewDecision().getRepairTasks().isEmpty()) {
+            return baseSourcesPerCompetitor;
+        }
+        Set<String> focusedCompetitors = focusedRepairCompetitors(run);
+        if (focusedCompetitors.isEmpty()) {
+            return baseSourcesPerCompetitor;
+        }
+        if (focusedCompetitors.contains(normalizeText(batch.competitor()))) {
+            return Math.min(baseSourcesPerCompetitor + 2, 5);
+        }
+        return Math.max(1, baseSourcesPerCompetitor - 1);
+    }
+
+    private Set<String> focusedRepairCompetitors(AnalysisRun run) {
+        String repairText = run.getReviewDecision().getRepairTasks().stream()
+                .map(task -> "%s %s %s %s".formatted(
+                        task.getInstruction(),
+                        task.getAcceptanceCriteria(),
+                        task.getClaimId(),
+                        task.getCategory()
+                ))
+                .collect(java.util.stream.Collectors.joining(" "));
+        repairText = repairText + " " + String.join(" ", run.getReviewDecision().getRepairInstructions());
+        Set<String> focused = new LinkedHashSet<>();
+        for (String competitor : run.getRequirement().getCompetitors()) {
+            if (containsIgnoreCase(repairText, competitor)) {
+                focused.add(normalizeText(competitor));
+            }
+        }
+        return focused;
     }
 
     private SearchBatchResult joinSearchBatch(CompletableFuture<SearchBatchResult> future) {
@@ -460,6 +535,10 @@ public class SourceCollectionService {
 
     private String normalizeUrl(String url) {
         return url == null ? "" : url.trim().replaceFirst("/+$", "").toLowerCase(Locale.ROOT);
+    }
+
+    private String normalizeText(String text) {
+        return text == null ? "" : text.trim().toLowerCase(Locale.ROOT);
     }
 
     private String snippet(String text) {

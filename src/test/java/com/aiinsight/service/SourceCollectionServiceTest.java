@@ -1,5 +1,8 @@
 package com.aiinsight.service;
 
+import com.aiinsight.model.enums.AgentName;
+import com.aiinsight.model.enums.ReviewAction;
+import com.aiinsight.model.review.ReviewRepairTask;
 import com.aiinsight.model.run.AnalysisRequirement;
 import com.aiinsight.model.run.AnalysisRun;
 import com.aiinsight.model.run.EvidenceSource;
@@ -383,6 +386,24 @@ class SourceCollectionServiceTest {
     }
 
     @Test
+    void clearsActualSearchQueriesWhenNoSearchBatchIsPlanned() {
+        SourceCollectionService service = new SourceCollectionService(fetchAlwaysFails(), new NoopSearchProvider());
+        AnalysisRun run = new AnalysisRun(new AnalysisRequirement(
+                "Analyze empty competitor list",
+                "AI tools",
+                List.of(),
+                List.of("pricing"),
+                List.of("official_site"),
+                List.of()
+        ));
+        run.getResearchPackage().setActualSearchQueries(List.of("stale query"));
+
+        service.collect(run, false);
+
+        assertThat(run.getResearchPackage().getActualSearchQueries()).isEmpty();
+    }
+
+    @Test
     void addsPreferredPricingAndFeedbackSearchSourcesWhenRequested() {
         SourceCollectionService service = new SourceCollectionService(fetchUsefulPages(), fakeSearchProvider());
         AnalysisRequirement requirement = new AnalysisRequirement(
@@ -402,6 +423,86 @@ class SourceCollectionServiceTest {
                 .extracting(EvidenceSource::getComplianceNote)
                 .anyMatch(note -> note.contains("pricing"))
                 .anyMatch(note -> note.contains("reviews"));
+    }
+
+    @Test
+    void usesProvidedSearchQueryBatchesBeforeRulePlanner() {
+        List<String> queries = new ArrayList<>();
+        SourceCollectionService service = new SourceCollectionService(fetchUsefulPages(), recordingSearchProvider(queries));
+        AnalysisRun run = new AnalysisRun(new AnalysisRequirement(
+                "Analyze AI coding tools",
+                "AI coding tools",
+                List.of("Cursor"),
+                List.of("pricing"),
+                List.of("official_site"),
+                List.of()
+        ));
+        List<SearchQueryPlanner.SearchQueryBatch> plannedBatches = List.of(
+                new SearchQueryPlanner.SearchQueryBatch(
+                        "Cursor",
+                        List.of("Cursor model selection official documentation")
+                )
+        );
+
+        var sources = service.collect(run, false, plannedBatches);
+
+        assertThat(sources).isNotEmpty();
+        assertThat(queries).containsExactly("Cursor model selection official documentation");
+        assertThat(queries).noneMatch(query -> query.contains("official pricing plans"));
+    }
+
+    @Test
+    void supplementsMissingCompetitorsWithRuleQueriesOnInitialCollection() {
+        List<String> queries = new ArrayList<>();
+        SourceCollectionService service = new SourceCollectionService(fetchUsefulPages(), recordingSearchProvider(queries));
+        AnalysisRun run = new AnalysisRun(new AnalysisRequirement(
+                "Analyze AI coding tools",
+                "AI coding tools",
+                List.of("Cursor", "GitHub Copilot"),
+                List.of("pricing"),
+                List.of("official_site"),
+                List.of()
+        ));
+        List<SearchQueryPlanner.SearchQueryBatch> plannedBatches = List.of(
+                new SearchQueryPlanner.SearchQueryBatch(
+                        "Cursor",
+                        List.of("Cursor model selection official documentation")
+                )
+        );
+
+        service.collect(run, false, plannedBatches);
+
+        assertThat(queries).anyMatch(query -> query.equals("Cursor model selection official documentation"));
+        assertThat(queries).anyMatch(query -> query.contains("GitHub Copilot"));
+    }
+
+    @Test
+    void allocatesMoreRecollectionResultsToRepairFocusedCompetitor() {
+        SourceCollectionService service = new SourceCollectionService(fetchUsefulPages(), multiResultSearchProvider());
+        AnalysisRun run = new AnalysisRun(new AnalysisRequirement(
+                "Analyze Alpha and Beta",
+                "AI tools",
+                List.of("Alpha", "Beta"),
+                List.of("pricing"),
+                List.of("official_site"),
+                List.of()
+        ));
+        run.getReviewDecision().setAction(ReviewAction.RECOLLECT_EVIDENCE);
+        run.getReviewDecision().setTargetAgent(AgentName.RESEARCHER);
+        ReviewRepairTask task = new ReviewRepairTask();
+        task.setTargetAgent(AgentName.RESEARCHER);
+        task.setInstruction("补充 Alpha 官方定价证据。");
+        run.getReviewDecision().getRepairTasks().add(task);
+        List<SearchQueryPlanner.SearchQueryBatch> plannedBatches = List.of(
+                new SearchQueryPlanner.SearchQueryBatch("Alpha", List.of("Alpha pricing official docs", "Alpha plans official docs")),
+                new SearchQueryPlanner.SearchQueryBatch("Beta", List.of("Beta pricing official docs", "Beta plans official docs"))
+        );
+
+        var sources = service.collect(run, true, plannedBatches);
+
+        long alphaSources = sources.stream().filter(source -> source.getUrl().contains("/alpha/")).count();
+        long betaSources = sources.stream().filter(source -> source.getUrl().contains("/beta/")).count();
+        assertThat(alphaSources).isGreaterThan(betaSources);
     }
 
     @Test
@@ -511,6 +612,29 @@ class SourceCollectionServiceTest {
                         query,
                         1
                 ));
+            }
+        };
+    }
+
+    private SearchProvider multiResultSearchProvider() {
+        return new SearchProvider() {
+            @Override
+            public boolean isAvailable() {
+                return true;
+            }
+
+            @Override
+            public List<SearchResult> search(String query, int count) {
+                String competitor = query.split("\\s+")[0].toLowerCase();
+                return java.util.stream.IntStream.rangeClosed(1, count)
+                        .mapToObj(index -> new SearchResult(
+                                "Search result " + index + " for " + query,
+                                "https://search.example.test/" + competitor + "/" + Integer.toUnsignedString((query + index).hashCode()),
+                                "Snippet for " + query + " with pricing, official documentation, user feedback and enterprise details.",
+                                query,
+                                index
+                        ))
+                        .toList();
             }
         };
     }

@@ -133,6 +133,16 @@ export function SchemaPanel({
                     ))}
                   </div>
                 ) : null}
+                {researchPackage.actualSearchQueries?.length ? (
+                  <div className="schema-list">
+                    {researchPackage.actualSearchQueries.map((query) => (
+                      <div className="schema-list-item" key={query}>
+                        <small>实际执行 Query</small>
+                        <p>{query}</p>
+                      </div>
+                    ))}
+                  </div>
+                ) : null}
               </section>
 
               <section className="schema-detail">

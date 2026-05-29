@@ -18,6 +18,8 @@ import com.aiinsight.model.schema.ResearchPlan;
 import com.aiinsight.model.schema.SurveyQuestion;
 import com.aiinsight.service.EvidenceChunkService;
 import com.aiinsight.service.InterviewInsightExtractor;
+import com.aiinsight.service.LlmSearchQueryPlanner;
+import com.aiinsight.service.SearchQueryPlanner;
 import com.aiinsight.service.SourceCollectionService;
 import com.aiinsight.service.fallback.FallbackResearchPlanFactory;
 import com.aiinsight.observability.AgentTraceContext;
@@ -43,6 +45,7 @@ public class ResearcherNode implements AgentNode {
     private final SourceCollectionService sourceCollectionService;
     private final EvidenceChunkService evidenceChunkService;
     private final LlmClient llmClient;
+    private final LlmSearchQueryPlanner llmSearchQueryPlanner;
     private final ObjectMapper objectMapper;
     private final FallbackResearchPlanFactory fallbackResearchPlanFactory;
     private final InterviewInsightExtractor interviewInsightExtractor;
@@ -63,7 +66,8 @@ public class ResearcherNode implements AgentNode {
                 && run.getReviewDecision().getTargetAgent() == name();
         // SourceCollectionService 会保留既有 citation 并追加新来源；这里再整体替换列表，
         // 避免旧 artifact 中的 [S1] 在重跑后指向不同来源。
-        List<EvidenceSource> collectedSources = sourceCollectionService.collect(run, recollecting);
+        List<SearchQueryPlanner.SearchQueryBatch> searchQueryBatches = llmSearchQueryPlanner.plan(run, recollecting);
+        List<EvidenceSource> collectedSources = sourceCollectionService.collect(run, recollecting, searchQueryBatches);
         run.getEvidenceSources().clear();
         run.getEvidenceChunks().clear();
         run.getEvidenceSources().addAll(collectedSources);
@@ -72,7 +76,7 @@ public class ResearcherNode implements AgentNode {
         // missingEvidenceTypes 是 Reviewer 是否打回采集的主要依据。
         // 每次采集后都重新计算，避免补采成功后仍保留旧缺口。
         run.getResearchPackage().setMissingEvidenceTypes(missingEvidenceTypes(run));
-        run.getResearchPackage().setResearchPlan(buildResearchPlan(run));
+        run.getResearchPackage().setResearchPlan(buildResearchPlan(run, recollecting));
         run.getResearchPackage().setInterviewInsights(interviewInsightExtractor.extract(run));
         run.getResearchPackage().setCollectedAt(Instant.now());
 
@@ -87,7 +91,8 @@ public class ResearcherNode implements AgentNode {
                 "调研计划与一手资料设计",
                 researchPlanMarkdown(
                         run.getResearchPackage().getResearchPlan(),
-                        run.getResearchPackage().getInterviewInsights()
+                        run.getResearchPackage().getInterviewInsights(),
+                        run.getResearchPackage().getActualSearchQueries()
                 ),
                 run.getEvidenceSources().stream().map(EvidenceSource::getCitationKey).toList()
         ));
@@ -144,7 +149,15 @@ public class ResearcherNode implements AgentNode {
         return text != null && pattern != null && text.toLowerCase(Locale.ROOT).contains(pattern.toLowerCase(Locale.ROOT));
     }
 
-    private ResearchPlan buildResearchPlan(AnalysisRun run) {
+    private ResearchPlan buildResearchPlan(AnalysisRun run, boolean recollecting) {
+        if (recollecting && isUsableResearchPlan(run.getResearchPackage().getResearchPlan())) {
+            ResearchPlan existingPlan = run.getResearchPackage().getResearchPlan();
+            existingPlan.setEvidenceGaps(new ArrayList<>(run.getResearchPackage().getMissingEvidenceTypes()));
+            if (!run.getResearchPackage().getActualSearchQueries().isEmpty()) {
+                existingPlan.setSearchQueries(new ArrayList<>(run.getResearchPackage().getActualSearchQueries()));
+            }
+            return existingPlan;
+        }
         ResearchPlan fallback = fallbackResearchPlanFactory.build(run);
         if (!llmClient.isAvailable()) {
             log.warn("Research plan fallback activated: runId={}, reason=llm_unavailable, competitors={}, missingEvidenceTypes={}, evidenceSources={}",
@@ -169,6 +182,15 @@ public class ResearcherNode implements AgentNode {
             AgentTraceContext.recordFallback("deterministic-research-plan-fallback", researchPlanMarkdown(fallback, List.of()));
             return fallback;
         }
+    }
+
+    private boolean isUsableResearchPlan(ResearchPlan plan) {
+        return plan != null
+                && hasText(plan.getObjective())
+                && plan.getPublicSourceTasks() != null
+                && !plan.getPublicSourceTasks().isEmpty()
+                && isUsableQuestionnaire(plan.getQuestionnaire())
+                && isUsableInterviewGuide(plan.getInterviewGuide());
     }
 
     private ResearchPlan generateResearchPlanWithLlm(AnalysisRun run, ResearchPlan fallback) {
@@ -474,6 +496,17 @@ public class ResearcherNode implements AgentNode {
     }
 
     private String researchPlanMarkdown(ResearchPlan plan, List<InterviewInsight> interviewInsights) {
+        return researchPlanMarkdown(plan, interviewInsights, List.of());
+    }
+
+    private String researchPlanMarkdown(ResearchPlan plan,
+                                        List<InterviewInsight> interviewInsights,
+                                        List<String> actualSearchQueries) {
+        String actualQueries = actualSearchQueries == null || actualSearchQueries.isEmpty()
+                ? "暂无实际执行搜索 query。"
+                : actualSearchQueries.stream()
+                .map(query -> "- " + query)
+                .collect(Collectors.joining("\n"));
         String tasks = plan.getPublicSourceTasks().stream()
                 .map(task -> "- %s：%s（%s，状态：%s）".formatted(
                         task.getType(),
@@ -514,6 +547,10 @@ public class ResearcherNode implements AgentNode {
 
                 %s
 
+                ## 本轮实际执行 Query
+
+                %s
+
                 ## 公开资料采集任务
 
                 %s
@@ -539,6 +576,7 @@ public class ResearcherNode implements AgentNode {
                 plan.getSearchQueries().isEmpty() ? "暂无搜索 query。" : plan.getSearchQueries().stream()
                         .map(query -> "- " + query)
                         .collect(Collectors.joining("\n")),
+                actualQueries,
                 tasks,
                 plan.getQuestionnaire().getTargetRespondents(),
                 questions,

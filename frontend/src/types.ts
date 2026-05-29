@@ -215,6 +215,7 @@ export interface ReviewDecision {
 export interface ResearchPackage {
   sources: EvidenceSource[];
   missingEvidenceTypes: string[];
+  actualSearchQueries?: string[];
   researchPlan?: ResearchPlan;
   interviewInsights?: InterviewInsight[];
   collectedAt?: string;
