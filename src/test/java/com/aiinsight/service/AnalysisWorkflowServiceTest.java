@@ -1004,6 +1004,118 @@ class AnalysisWorkflowServiceTest {
     }
 
     @Test
+    void extractorUsesLlmJsonToPopulateStructuredProfiles() {
+        StringBuilder promptCapture = new StringBuilder();
+        LlmClient extractorLlm = new LlmClient() {
+            @Override
+            public boolean isAvailable() {
+                return true;
+            }
+
+            @Override
+            public String complete(com.aiinsight.llm.ChatRequest request) {
+                promptCapture.append(request.getMessages().get(1).getContent());
+                return """
+                        {
+                          "profiles": [
+                            {
+                              "productName": "Cursor",
+                              "companyName": "Cursor",
+                              "positioning": "AI 优先的代码编辑器",
+                              "targetUsers": ["软件开发者", "研发团队"],
+                              "features": [
+                                {
+                                  "name": "Composer",
+                                  "description": "支持跨文件生成和修改代码",
+                                  "evidenceIds": ["S1"]
+                                },
+                                {
+                                  "name": "编造能力",
+                                  "description": "这个能力引用不存在证据",
+                                  "evidenceIds": ["S404"]
+                                }
+                              ],
+                              "pricing": {
+                                "strategySummary": "提供 Pro 和团队订阅，具体价格以页面为准",
+                                "hasFreePlan": true,
+                                "plans": [
+                                  {
+                                    "name": "Pro",
+                                    "priceText": "$20/月",
+                                    "billingCycle": "monthly",
+                                    "targetSegment": "个人开发者",
+                                    "includedFeatures": ["Composer"],
+                                    "evidenceIds": ["S1"]
+                                  }
+                                ],
+                                "evidenceIds": ["S1"]
+                              },
+                              "personas": [
+                                {
+                                  "name": "研发团队用户",
+                                  "segment": "软件研发",
+                                  "companySize": "中小团队到企业团队",
+                                  "jobsToBeDone": ["跨文件修改代码"],
+                                  "painPoints": ["上下文切换成本高"],
+                                  "buyingConcerns": ["价格方案"],
+                                  "evidenceIds": ["S1"]
+                                }
+                              ],
+                              "strengths": ["跨文件代码修改能力明确"],
+                              "weaknesses": ["企业安全能力待验证"],
+                              "evidenceIds": ["S1"]
+                            }
+                          ]
+                        }
+                        """;
+            }
+        };
+        AnalysisRun run = new AnalysisRun(new AnalysisRequirement(
+                "分析 Cursor 的 AI 编程能力。",
+                "AI 编程助手",
+                List.of("Cursor"),
+                List.of("Agent 工作流", "上下文管理"),
+                List.of("official_site", "pricing_page"),
+                List.of()
+        ));
+        run.getEvidenceSources().add(new EvidenceSource(
+                "S1",
+                "Cursor product and pricing",
+                "https://example.test/cursor",
+                "official_site",
+                "FETCHED",
+                "LIVE_FETCHED",
+                "Cursor is an AI code editor with Composer. Pro plan is $20/month.",
+                "Cursor Composer supports multi-file code edits. Cursor Pro costs $20/month.",
+                "test evidence"
+        ));
+
+        new ExtractorNode(extractorLlm, new FallbackExtractionFactory()).execute(run);
+
+        assertThat(promptCapture.toString()).contains("只输出可解析 JSON", "证据片段索引");
+        assertThat(run.getCompetitorProfiles()).hasSize(1);
+        var cursor = run.getCompetitorProfiles().get(0);
+        assertThat(cursor.getPositioning()).isEqualTo("AI 优先的代码编辑器");
+        assertThat(cursor.getStrengths()).contains("跨文件代码修改能力明确");
+        assertThat(cursor.getFeatureTree().getRoots())
+                .extracting(node -> node.getName())
+                .containsExactly("Composer");
+        assertThat(cursor.getPricingModel().getPlans())
+                .singleElement()
+                .satisfies(plan -> {
+                    assertThat(plan.getName()).isEqualTo("Pro");
+                    assertThat(plan.getPriceText()).isEqualTo("$20/月");
+                    assertThat(plan.getEvidenceIds()).containsExactly("S1");
+                });
+        assertThat(run.getArtifacts())
+                .filteredOn(artifact -> artifact.getType() == ArtifactType.COMPETITOR_PROFILE)
+                .last()
+                .satisfies(artifact -> assertThat(artifact.getContent())
+                        .contains("Composer", "$20/月")
+                        .doesNotContain("编造能力"));
+    }
+
+    @Test
     void extractorFallsBackWhenLlmReturnsEmptyMessage() {
         LlmClient failingExtractorLlm = new LlmClient() {
             @Override
