@@ -1,22 +1,39 @@
 import { Database, ExternalLink, Search, ShieldAlert } from "lucide-react";
 import type { EvidenceSource } from "../types";
+import { CollapsiblePanel } from "./CollapsiblePanel";
 
 interface EvidencePanelProps {
   sources: EvidenceSource[];
   selectedCitationKey?: string;
   onSelectCitation: (citationKey: string) => void;
+  collapsed: boolean;
+  onToggle: () => void;
 }
 
-export function EvidencePanel({ sources, selectedCitationKey, onSelectCitation }: EvidencePanelProps) {
+const TEXT = {
+  eyebrow: "\u6eaf\u6e90",
+  title: "\u8bc1\u636e\u6765\u6e90",
+  empty: "\u6682\u65e0\u8bc1\u636e\u6765\u6e90",
+  sourceCount: "\u6761\u6765\u6e90",
+  selected: "\u5df2\u9009"
+};
+
+export function EvidencePanel({
+  sources,
+  selectedCitationKey,
+  onSelectCitation,
+  collapsed,
+  onToggle
+}: EvidencePanelProps) {
   return (
-    <section className="panel">
-      <div className="section-title">
-        <div>
-          <p className="eyebrow">溯源</p>
-          <h2>证据来源</h2>
-        </div>
-        <Search size={18} />
-      </div>
+    <CollapsiblePanel
+      eyebrow={TEXT.eyebrow}
+      title={TEXT.title}
+      icon={<Search size={18} />}
+      summary={`${sources.length} ${TEXT.sourceCount}${selectedCitationKey ? ` · ${TEXT.selected} [${selectedCitationKey}]` : ""}`}
+      collapsed={collapsed}
+      onToggle={onToggle}
+    >
       <div className="evidence-list">
         {sources.length ? (
           sources.map((source) => (
@@ -66,10 +83,10 @@ export function EvidencePanel({ sources, selectedCitationKey, onSelectCitation }
             </article>
           ))
         ) : (
-          <p className="muted-text">暂无证据来源</p>
+          <p className="muted-text">{TEXT.empty}</p>
         )}
       </div>
-    </section>
+    </CollapsiblePanel>
   );
 }
 

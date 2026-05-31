@@ -1,6 +1,8 @@
-import { AlertTriangle, CheckCircle2, LocateFixed, RefreshCw, ShieldCheck } from "lucide-react";
+import { useState } from "react";
+import { AlertTriangle, CheckCircle2, ChevronDown, LocateFixed, RefreshCw, ShieldCheck } from "lucide-react";
 import type { AgentName, ReviewDecision, ReviewFinding } from "../types";
 import { AGENT_LABELS } from "../constants";
+import { CollapsiblePanel } from "./CollapsiblePanel";
 
 interface ReviewPanelProps {
   findings: ReviewFinding[];
@@ -8,47 +10,96 @@ interface ReviewPanelProps {
   onRerunTarget: (agent: AgentName) => void;
   onLocateFinding?: (finding: ReviewFinding) => void;
   disabled?: boolean;
+  collapsed: boolean;
+  onToggle: () => void;
 }
 
-export function ReviewPanel({ findings, decision, onRerunTarget, onLocateFinding, disabled }: ReviewPanelProps) {
+const TEXT = {
+  eyebrow: "\u590d\u6838",
+  title: "\u8d28\u68c0\u4e0e\u6253\u56de",
+  issue: "\u4e2a\u95ee\u9898",
+  credibility: "\u53ef\u4fe1\u5ea6\u72b6\u6001",
+  blocked: "\u963b\u65ad",
+  suggestion: "\u5efa\u8bae",
+  manualReview: "\u590d\u6838",
+  noTarget: "\u65e0\u9700\u6253\u56de",
+  waitingReason: "\u7b49\u5f85\u590d\u6838 Agent \u7ed9\u51fa\u7ed3\u6784\u5316\u51b3\u7b56",
+  affectedClaim: "\u5f71\u54cd Claim",
+  noClaim: "\u65e0\u6307\u5b9a Claim",
+  requiredEvidence: "\u9700\u8865\u8bc1\u636e",
+  noEvidenceType: "\u65e0\u6307\u5b9a\u8bc1\u636e\u7c7b\u578b",
+  decisionTime: "\u51b3\u7b56\u65f6\u95f4",
+  waitingRecord: "\u7b49\u5f85\u8bb0\u5f55",
+  noHighRisk: "\u6682\u65e0\u9ad8\u98ce\u9669\u8d28\u68c0\u95ee\u9898",
+  paragraph: "\u6bb5\u843d",
+  excerpt: "\u6458\u5f55",
+  expand: "\u5c55\u5f00",
+  collapse: "\u6536\u8d77",
+  more: "\u7b49",
+  item: "\u9879"
+};
+
+const REVIEW_SEVERITIES = ["HIGH", "MEDIUM", "LOW"] as const;
+
+export function ReviewPanel({
+  findings,
+  decision,
+  onRerunTarget,
+  onLocateFinding,
+  disabled,
+  collapsed,
+  onToggle
+}: ReviewPanelProps) {
   const groupedFindings = groupFindings(findings);
   const decisionAction = decision?.action || "PASS";
   const targetAgent = decision?.targetAgent;
   const quality = qualityProfile(groupedFindings);
+  const [collapsedSeverityGroups, setCollapsedSeverityGroups] = useState<Record<ReviewFinding["severity"], boolean>>({
+    HIGH: false,
+    MEDIUM: false,
+    LOW: false
+  });
+
+  function toggleSeverityGroup(severity: ReviewFinding["severity"]) {
+    setCollapsedSeverityGroups((current) => ({
+      ...current,
+      [severity]: !current[severity]
+    }));
+  }
 
   return (
-    <section className="panel">
-      <div className="section-title">
-        <div>
-          <p className="eyebrow">复核</p>
-          <h2>质检与打回</h2>
-        </div>
-        {findings.length ? <AlertTriangle size={18} /> : <ShieldCheck size={18} />}
-      </div>
+    <CollapsiblePanel
+      eyebrow={TEXT.eyebrow}
+      title={TEXT.title}
+      icon={findings.length ? <AlertTriangle size={18} /> : <ShieldCheck size={18} />}
+      summary={`${findings.length} ${TEXT.issue} \u00b7 ${decisionActionLabel(decisionAction)}`}
+      collapsed={collapsed}
+      onToggle={onToggle}
+    >
       <div className={`credibility-card ${quality.tone}`}>
         <div>
-          <span>可信度状态</span>
+          <span>{TEXT.credibility}</span>
           <strong>{quality.label}</strong>
         </div>
         <p>{quality.description}</p>
-        <div className="credibility-counts" aria-label="质检分层统计">
-          <span>{groupedFindings.HIGH.length} 阻断</span>
-          <span>{groupedFindings.MEDIUM.length} 建议</span>
-          <span>{groupedFindings.LOW.length} 复核</span>
+        <div className="credibility-counts" aria-label="\u8d28\u68c0\u5206\u5c42\u7edf\u8ba1">
+          <span>{groupedFindings.HIGH.length} {TEXT.blocked}</span>
+          <span>{groupedFindings.MEDIUM.length} {TEXT.suggestion}</span>
+          <span>{groupedFindings.LOW.length} {TEXT.manualReview}</span>
         </div>
       </div>
       {decision ? (
         <div className={`decision-box ${decisionClass(decisionAction)}`}>
           <div className="decision-header">
             <span>{decisionActionLabel(decisionAction)}</span>
-            {targetAgent ? <strong>{AGENT_LABELS[targetAgent] ?? targetAgent}</strong> : <strong>无需打回</strong>}
+            {targetAgent ? <strong>{AGENT_LABELS[targetAgent] ?? targetAgent}</strong> : <strong>{TEXT.noTarget}</strong>}
           </div>
           <small className="decision-action-code">{decisionAction}</small>
-          <p>{decision.reason || "等待复核 Agent 给出结构化决策"}</p>
+          <p>{decision.reason || TEXT.waitingReason}</p>
           <div className="decision-meta-grid">
-            <DecisionMeta label="影响 Claim" values={decision.affectedClaimIds} empty="无指定 Claim" />
-            <DecisionMeta label="需补证据" values={decision.requiredEvidenceTypes} empty="无指定证据类型" />
-            <DecisionMeta label="决策时间" values={decision.decidedAt ? [formatTime(decision.decidedAt)] : []} empty="等待记录" />
+            <DecisionMeta label={TEXT.affectedClaim} values={decision.affectedClaimIds} empty={TEXT.noClaim} />
+            <DecisionMeta label={TEXT.requiredEvidence} values={decision.requiredEvidenceTypes} empty={TEXT.noEvidenceType} />
+            <DecisionMeta label={TEXT.decisionTime} values={decision.decidedAt ? [formatTime(decision.decidedAt)] : []} empty={TEXT.waitingRecord} />
           </div>
           {targetAgent ? (
             <button type="button" onClick={() => onRerunTarget(targetAgent)} disabled={disabled}>
@@ -59,29 +110,44 @@ export function ReviewPanel({ findings, decision, onRerunTarget, onLocateFinding
       ) : null}
       <div className="finding-list">
         {findings.length ? (
-          (["HIGH", "MEDIUM", "LOW"] as const).map((severity) => (
-            groupedFindings[severity].length ? (
-              <div className="finding-group" key={severity}>
+          REVIEW_SEVERITIES.map((severity) => {
+            const severityFindings = groupedFindings[severity];
+            const severityCollapsed = collapsedSeverityGroups[severity];
+            return severityFindings.length ? (
+              <div className={`finding-group ${severityCollapsed ? "collapsed" : ""}`} key={severity}>
                 <div className="finding-group-title">
                   <span className={`severity-dot ${severity.toLowerCase()}`} />
                   <strong>{severity_LABELS[severity]}</strong>
-                  <small>{groupedFindings[severity].length}</small>
+                  <small>{severityFindings.length}</small>
+                  <button
+                    className="severity-toggle"
+                    type="button"
+                    aria-expanded={!severityCollapsed}
+                    aria-label={`${severityCollapsed ? TEXT.expand : TEXT.collapse}${severity_LABELS[severity]}`}
+                    onClick={() => toggleSeverityGroup(severity)}
+                  >
+                    <ChevronDown size={14} />
+                  </button>
                 </div>
-                <p className="finding-group-note">{severity_DESCRIPTIONS[severity]}</p>
-                {groupedFindings[severity].map((finding) => (
-                  <FindingItem finding={finding} onLocateFinding={onLocateFinding} key={finding.id} />
-                ))}
+                {severityCollapsed ? null : (
+                  <>
+                    <p className="finding-group-note">{severity_DESCRIPTIONS[severity]}</p>
+                    {severityFindings.map((finding) => (
+                      <FindingItem finding={finding} onLocateFinding={onLocateFinding} key={finding.id} />
+                    ))}
+                  </>
+                )}
               </div>
-            ) : null
-          ))
+            ) : null;
+          })
         ) : (
           <div className="pass-box">
             <CheckCircle2 size={18} />
-            <span>暂无高风险质检问题</span>
+            <span>{TEXT.noHighRisk}</span>
           </div>
         )}
       </div>
-    </section>
+    </CollapsiblePanel>
   );
 }
 
@@ -90,12 +156,12 @@ function DecisionMeta({ label, values, empty }: { label: string; values?: string
   const visibleValues = normalized.slice(0, 3);
   const hiddenCount = Math.max(normalized.length - visibleValues.length, 0);
   const displayValue = normalized.length
-    ? `${visibleValues.join("、")}${hiddenCount ? ` 等 ${hiddenCount} 项` : ""}`
+    ? `${visibleValues.join("\u3001")}${hiddenCount ? ` ${TEXT.more} ${hiddenCount} ${TEXT.item}` : ""}`
     : empty;
   return (
     <div className="decision-meta">
       <span>{label}</span>
-      <p title={normalized.join("、")}>{displayValue}</p>
+      <p title={normalized.join("\u3001")}>{displayValue}</p>
     </div>
   );
 }
@@ -113,9 +179,9 @@ function FindingItem({ finding, onLocateFinding }: { finding: ReviewFinding; onL
       <div className="finding-meta">
         {finding.claimId ? <span>Claim {finding.claimId}</span> : null}
         {finding.citationKey ? <span>[{finding.citationKey}]</span> : null}
-        {finding.paragraphIndex !== undefined ? <span>段落 {finding.paragraphIndex}</span> : null}
+        {finding.paragraphIndex !== undefined ? <span>{TEXT.paragraph} {finding.paragraphIndex}</span> : null}
       </div>
-      {finding.excerpt ? <small className="finding-excerpt">摘录：{finding.excerpt}</small> : null}
+      {finding.excerpt ? <small className="finding-excerpt">{TEXT.excerpt}: {finding.excerpt}</small> : null}
       {finding.claimId || finding.citationKey || finding.artifactId ? (
         <button className="finding-locate" type="button" onClick={() => onLocateFinding?.(finding)}>
           <LocateFixed size={13} /> {locateLabel(finding)}
@@ -126,15 +192,15 @@ function FindingItem({ finding, onLocateFinding }: { finding: ReviewFinding; onL
 }
 
 const severity_LABELS: Record<ReviewFinding["severity"], string> = {
-  HIGH: "阻断问题",
-  MEDIUM: "质量提醒",
-  LOW: "人工复核"
+  HIGH: "\u963b\u65ad\u95ee\u9898",
+  MEDIUM: "\u8d28\u91cf\u63d0\u9192",
+  LOW: "\u4eba\u5de5\u590d\u6838"
 };
 
 const severity_DESCRIPTIONS: Record<ReviewFinding["severity"], string> = {
-  HIGH: "会影响报告是否可以对外发布，通常需要补证、重做分析或修订报告。",
-  MEDIUM: "不阻断演示，但建议在正式使用前补强证据、降低措辞或替换来源。",
-  LOW: "系统无法自动定论，保留给人工检查、访谈、实测或最新价格确认。"
+  HIGH: "\u4f1a\u5f71\u54cd\u62a5\u544a\u662f\u5426\u53ef\u4ee5\u5bf9\u5916\u53d1\u5e03\uff0c\u901a\u5e38\u9700\u8981\u8865\u8bc1\u3001\u91cd\u505a\u5206\u6790\u6216\u4fee\u8ba2\u62a5\u544a\u3002",
+  MEDIUM: "\u4e0d\u963b\u65ad\u6f14\u793a\uff0c\u4f46\u5efa\u8bae\u5728\u6b63\u5f0f\u4f7f\u7528\u524d\u8865\u5f3a\u8bc1\u636e\u3001\u964d\u4f4e\u63aa\u8f9e\u6216\u66ff\u6362\u6765\u6e90\u3002",
+  LOW: "\u7cfb\u7edf\u65e0\u6cd5\u81ea\u52a8\u5b9a\u8bba\uff0c\u4fdd\u7559\u7ed9\u4eba\u5de5\u68c0\u67e5\u3001\u8bbf\u8c08\u3001\u5b9e\u6d4b\u6216\u6700\u65b0\u4ef7\u683c\u786e\u8ba4\u3002"
 };
 
 function groupFindings(findings: ReviewFinding[]) {
@@ -153,10 +219,10 @@ function decisionClass(action: string) {
 
 function decisionActionLabel(action: string) {
   const labels: Record<string, string> = {
-    PASS: "可继续",
-    RECOLLECT_EVIDENCE: "需补证",
-    REWORK_ANALYSIS: "需重析",
-    REVISE_REPORT: "需修订"
+    PASS: "\u53ef\u7ee7\u7eed",
+    RECOLLECT_EVIDENCE: "\u9700\u8865\u8bc1",
+    REWORK_ANALYSIS: "\u9700\u91cd\u6790",
+    REVISE_REPORT: "\u9700\u4fee\u8ba2"
   };
   return labels[action] ?? action;
 }
@@ -165,52 +231,52 @@ function qualityProfile(groupedFindings: Record<ReviewFinding["severity"], Revie
   if (groupedFindings.HIGH.length > 0) {
     return {
       tone: "blocked",
-      label: "不建议对外发布",
-      description: "存在阻断问题，相关结论需要先补证、降级或重新修订。"
+      label: "\u4e0d\u5efa\u8bae\u5bf9\u5916\u53d1\u5e03",
+      description: "\u5b58\u5728\u963b\u65ad\u95ee\u9898\uff0c\u76f8\u5173\u7ed3\u8bba\u9700\u8981\u5148\u8865\u8bc1\u3001\u964d\u7ea7\u6216\u91cd\u65b0\u4fee\u8ba2\u3002"
     };
   }
   if (groupedFindings.MEDIUM.length + groupedFindings.LOW.length > 0) {
     return {
       tone: "review",
-      label: "可演示，需人工确认",
-      description: "未发现阻断项，但还有质量提醒或人工复核项，正式使用前建议逐条确认。"
+      label: "\u53ef\u6f14\u793a\uff0c\u9700\u4eba\u5de5\u786e\u8ba4",
+      description: "\u672a\u53d1\u73b0\u963b\u65ad\u9879\uff0c\u4f46\u8fd8\u6709\u8d28\u91cf\u63d0\u9192\u6216\u4eba\u5de5\u590d\u6838\u9879\uff0c\u6b63\u5f0f\u4f7f\u7528\u524d\u5efa\u8bae\u9010\u6761\u786e\u8ba4\u3002"
     };
   }
   return {
     tone: "pass",
-    label: "已通过高风险检查",
-    description: "当前未发现阻断、质量提醒或人工复核项，可进入人工抽查。"
+    label: "\u5df2\u901a\u8fc7\u9ad8\u98ce\u9669\u68c0\u67e5",
+    description: "\u5f53\u524d\u672a\u53d1\u73b0\u963b\u65ad\u3001\u8d28\u91cf\u63d0\u9192\u6216\u4eba\u5de5\u590d\u6838\u9879\uff0c\u53ef\u8fdb\u5165\u4eba\u5de5\u62bd\u67e5\u3002"
   };
 }
 
 function rerunLabel(agent: AgentName) {
-  if (agent === "RESEARCHER") return "补采证据";
-  if (agent === "ANALYST") return "重做结构化分析";
-  if (agent === "WRITER") return "修订报告草稿";
-  return `重跑 ${AGENT_LABELS[agent] ?? agent}`;
+  if (agent === "RESEARCHER") return "\u8865\u91c7\u8bc1\u636e";
+  if (agent === "ANALYST") return "\u91cd\u505a\u7ed3\u6784\u5316\u5206\u6790";
+  if (agent === "WRITER") return "\u4fee\u8ba2\u62a5\u544a\u8349\u7a3f";
+  return `\u91cd\u8dd1 ${AGENT_LABELS[agent] ?? agent}`;
 }
 
 function locateLabel(finding: ReviewFinding) {
-  if (finding.claimId) return "定位 Claim";
-  if (finding.citationKey) return "定位证据";
-  return "定位报告";
+  if (finding.claimId) return "\u5b9a\u4f4d Claim";
+  if (finding.citationKey) return "\u5b9a\u4f4d\u8bc1\u636e";
+  return "\u5b9a\u4f4d\u62a5\u544a";
 }
 
 function findingCategoryLabel(category: string) {
   const labels: Record<string, string> = {
-    citation_missing: "缺少引用",
-    citation_unknown: "未知引用",
-    citation_weak_support: "引用弱支撑",
-    citation_snippet_only: "搜索摘要来源",
-    citation_blocked_source: "来源受限",
-    citation_thin_source: "来源过薄",
-    claim_missing_evidence: "Claim 缺证据",
-    claim_unknown_evidence: "Claim 引用未知证据",
-    claim_weak_support: "Claim 弱支撑",
-    claim_high_confidence_low_quality_source: "高置信低质量来源",
-    claim_confidence_mismatch: "置信度不一致",
-    llm_overclaim: "语义过度推断",
-    llm_semantic_review: "语义质检"
+    citation_missing: "\u7f3a\u5c11\u5f15\u7528",
+    citation_unknown: "\u672a\u77e5\u5f15\u7528",
+    citation_weak_support: "\u5f15\u7528\u5f31\u652f\u6491",
+    citation_snippet_only: "\u641c\u7d22\u6458\u8981\u6765\u6e90",
+    citation_blocked_source: "\u6765\u6e90\u53d7\u9650",
+    citation_thin_source: "\u6765\u6e90\u8fc7\u8584",
+    claim_missing_evidence: "Claim \u7f3a\u8bc1\u636e",
+    claim_unknown_evidence: "Claim \u5f15\u7528\u672a\u77e5\u8bc1\u636e",
+    claim_weak_support: "Claim \u5f31\u652f\u6491",
+    claim_high_confidence_low_quality_source: "\u9ad8\u7f6e\u4fe1\u4f4e\u8d28\u91cf\u6765\u6e90",
+    claim_confidence_mismatch: "\u7f6e\u4fe1\u5ea6\u4e0d\u4e00\u81f4",
+    llm_overclaim: "\u8bed\u4e49\u8fc7\u5ea6\u63a8\u65ad",
+    llm_semantic_review: "\u8bed\u4e49\u8d28\u68c0"
   };
   return labels[category] ?? category;
 }

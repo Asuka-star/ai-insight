@@ -33,6 +33,7 @@ import { StatusBadge } from "./components/StatusBadge";
 import { AgentTimeline } from "./components/AgentTimeline";
 import { EvidencePanel } from "./components/EvidencePanel";
 import { ReviewPanel } from "./components/ReviewPanel";
+import { CollapsiblePanel } from "./components/CollapsiblePanel";
 import { TraceDrawer } from "./components/TraceDrawer";
 import { ScopeConfirmationPanel } from "./components/ScopeConfirmationPanel";
 import { ContextPanel } from "./components/ContextPanel";
@@ -40,6 +41,7 @@ import { ArtifactVersionsPanel } from "./components/ArtifactVersionsPanel";
 import { HistoryDrawer } from "./components/HistoryDrawer";
 
 type MainView = "dag" | "report" | "schema" | "matrix" | "versions";
+type RightPanelId = "timeline" | "evidence" | "review" | "metrics";
 
 const MIN_LEFT_RAIL_WIDTH = 240;
 const MAX_LEFT_RAIL_WIDTH = 420;
@@ -77,6 +79,12 @@ export function App() {
   const [evidenceSensitive, setEvidenceSensitive] = useState(false);
   const [localContextMessages, setLocalContextMessages] = useState<AnalysisContextMessage[]>([]);
   const [mainView, setMainView] = useState<MainView>("dag");
+  const [collapsedRightPanels, setCollapsedRightPanels] = useState<Record<RightPanelId, boolean>>({
+    timeline: false,
+    evidence: false,
+    review: false,
+    metrics: true
+  });
   const [localScopeConfirmed, setLocalScopeConfirmed] = useState(false);
   const [eventMessage, setEventMessage] = useState("等待填写范围确认");
   const [backendOk, setBackendOk] = useState(false);
@@ -327,6 +335,13 @@ export function App() {
     "--left-rail-width": `${leftRailWidth}px`,
     "--right-rail-width": `${rightRailWidth}px`
   }) as CSSProperties, [leftRailWidth, rightRailWidth]);
+
+  const toggleRightPanel = useCallback((panel: RightPanelId) => {
+    setCollapsedRightPanels((current) => ({
+      ...current,
+      [panel]: !current[panel]
+    }));
+  }, []);
 
   const startRailResize = useCallback((
     side: "left" | "right",
@@ -869,13 +884,14 @@ export function App() {
         </button>
 
         <aside className="right-rail">
-          <section className="panel">
-            <div className="section-title">
-              <div>
-                <p className="eyebrow">时间线</p>
-                <h2>执行回放</h2>
-              </div>
-            </div>
+          <CollapsiblePanel
+            eyebrow="时间线"
+            title="执行回放"
+            icon={<Activity size={18} />}
+            summary={`${run?.steps.length ?? 0} 个步骤`}
+            collapsed={collapsedRightPanels.timeline}
+            onToggle={() => toggleRightPanel("timeline")}
+          >
             <AgentTimeline run={run} selectedAgent={selectedAgent} onSelectAgent={setSelectedAgent} />
             <div className="rerun-grid">
               {AGENTS.map((agent) => (
@@ -884,12 +900,14 @@ export function App() {
                 </button>
               ))}
             </div>
-          </section>
+          </CollapsiblePanel>
 
           <EvidencePanel
             sources={run?.evidenceSources ?? []}
             selectedCitationKey={selectedCitationKey}
             onSelectCitation={setSelectedCitationKey}
+            collapsed={collapsedRightPanels.evidence}
+            onToggle={() => toggleRightPanel("evidence")}
           />
 
           <ReviewPanel
@@ -898,15 +916,18 @@ export function App() {
             onRerunTarget={handleRerun}
             onLocateFinding={handleLocateFinding}
             disabled={runMutationDisabled}
+            collapsed={collapsedRightPanels.review}
+            onToggle={() => toggleRightPanel("review")}
           />
 
-          <section className="panel">
-            <div className="section-title">
-              <div>
-                <p className="eyebrow">指标</p>
-                <h2>运行指标</h2>
-              </div>
-            </div>
+          <CollapsiblePanel
+            eyebrow="指标"
+            title="运行指标"
+            icon={<Gauge size={18} />}
+            summary={`${runMetrics.highFindingCount} HIGH · ${formatDuration(runMetrics.totalLatencyMs)}`}
+            collapsed={collapsedRightPanels.metrics}
+            onToggle={() => toggleRightPanel("metrics")}
+          >
             <div className="metric-grid">
               {metricCards.map((metric) => {
                 const Icon = metric.icon;
@@ -919,13 +940,12 @@ export function App() {
                 );
               })}
             </div>
-          </section>
+          </CollapsiblePanel>
         </aside>
       </main>
 
       <TraceDrawer
         agent={selectedAgent}
-        steps={(run?.steps ?? []).filter((step) => step.agentName === selectedAgent)}
         traces={(run?.traces ?? []).filter((trace) => trace.agentName === selectedAgent)}
         onClose={() => setSelectedAgent(null)}
       />

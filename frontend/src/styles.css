@@ -295,6 +295,70 @@ h3 {
   color: var(--muted);
 }
 
+.collapsible-panel {
+  transition: border-color 0.18s ease, box-shadow 0.18s ease;
+}
+
+.collapsible-panel.collapsed {
+  box-shadow: none;
+}
+
+.collapsible-panel.collapsed .section-title {
+  margin-bottom: 0;
+}
+
+.collapsible-title {
+  align-items: flex-start;
+}
+
+.collapsible-title > div:first-child {
+  min-width: 0;
+}
+
+.collapse-summary {
+  display: block;
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 680;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.collapse-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+}
+
+.collapse-actions > svg {
+  flex: 0 0 auto;
+}
+
+.collapse-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  min-height: 28px;
+  padding: 0;
+  border-radius: 6px;
+  line-height: 1;
+}
+
+.collapse-toggle svg {
+  display: block;
+  flex: 0 0 auto;
+  transition: transform 0.16s ease;
+}
+
+.collapsible-panel.collapsed .collapse-toggle svg {
+  transform: rotate(-90deg);
+}
+
 .event-line {
   max-width: 58%;
   color: var(--muted);
@@ -1326,6 +1390,29 @@ h3 {
   font-size: 12px;
 }
 
+.severity-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 24px;
+  height: 24px;
+  min-height: 24px;
+  padding: 0;
+  border-radius: 6px;
+  line-height: 1;
+}
+
+.severity-toggle svg {
+  display: block;
+  flex: 0 0 auto;
+  transition: transform 0.16s ease;
+}
+
+.finding-group.collapsed .severity-toggle svg {
+  transform: rotate(-90deg);
+}
+
 .finding-group-title small {
   border-radius: 999px;
   background: #eef4f1;
@@ -1788,12 +1875,17 @@ h3 {
   margin: 0;
 }
 
-.trace-drawer {
+.trace-overlay {
   position: fixed;
-  top: 0;
-  right: 0;
+  inset: 0;
   z-index: 30;
-  width: min(430px, 96vw);
+  display: grid;
+  justify-content: end;
+  background: rgba(24, 33, 29, 0.18);
+}
+
+.trace-drawer {
+  width: min(430px, calc(100vw - 36px));
   height: 100vh;
   overflow: auto;
   border-left: 1px solid var(--line);
