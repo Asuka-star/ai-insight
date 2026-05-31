@@ -309,8 +309,108 @@ class SourceCollectionServiceTest {
         assertThat(sources.get(0).getSourceType()).isEqualTo("user_source_url");
         assertThat(sources.get(0).getCollectionStatus()).isEqualTo("FETCH_FAILED");
         assertThat(sources.get(0).getFreshness()).isEqualTo("FETCH_FAILED");
-        assertThat(sources.get(0).getSnippet()).contains("User-provided URL could not be fetched");
-        assertThat(run.getRecommendedActions()).anyMatch(action -> action.contains("User-provided URL fetch failed"));
+        assertThat(sources.get(0).getSnippet()).contains("User-provided URL issue", "network or TLS fetch failed");
+        assertThat(run.getRecommendedActions()).anyMatch(action -> action.contains("User-provided URL needs attention")
+                && action.contains("network or TLS fetch failed"));
+    }
+
+    @Test
+    void explainsEmptyTextUserProvidedUrlAsJavascriptRenderingIssue() {
+        WebPageFetchService fetchService = new WebPageFetchService() {
+            @Override
+            public FetchedPage fetch(String url) {
+                return FetchedPage.unusable(
+                        url,
+                        "JetBrains AI",
+                        "",
+                        "robots.txt checked: allowed for public fetch. statusCode=200; failureReason=EMPTY_TEXT; extractionMode=empty_text.",
+                        "article",
+                        "UNUSABLE",
+                        "EMPTY_TEXT",
+                        200,
+                        "text/html"
+                );
+            }
+        };
+        SourceCollectionService service = new SourceCollectionService(fetchService, new NoopSearchProvider());
+        AnalysisRun run = new AnalysisRun(new AnalysisRequirement(
+                "Analyze user supplied URL",
+                "AI coding tools",
+                List.of("JetBrains AI"),
+                List.of("core features"),
+                List.of("official_site"),
+                List.of("https://www.jetbrains.com/ai/")
+        ));
+
+        var sources = service.collect(run, false);
+
+        assertThat(sources).hasSize(1);
+        assertThat(sources.get(0).getCollectionStatus()).isEqualTo("UNUSABLE_CONTENT");
+        assertThat(sources.get(0).getFailureReason()).isEqualTo("EMPTY_TEXT");
+        assertThat(sources.get(0).getSnippet()).contains("no extractable text", "JavaScript rendering");
+        assertThat(run.getRecommendedActions()).anyMatch(action -> action.contains("JavaScript rendering"));
+    }
+
+    @Test
+    void flagsMetadataOnlyUserProvidedUrlAsWeakEvidence() {
+        WebPageFetchService fetchService = new WebPageFetchService() {
+            @Override
+            public FetchedPage fetch(String url) {
+                return FetchedPage.success(
+                        url,
+                        "JetBrains AI",
+                        "JetBrains AI brings AI-powered coding assistance, agent workflows, developer productivity tools, enterprise controls, team collaboration support, and software development expertise into JetBrains IDEs.",
+                        "robots.txt checked: allowed for public fetch. renderFallback=failed; failureReason=METADATA_ONLY.",
+                        "article",
+                        "LOW",
+                        "METADATA_ONLY",
+                        200,
+                        "text/html"
+                );
+            }
+        };
+        SourceCollectionService service = new SourceCollectionService(fetchService, new NoopSearchProvider());
+        AnalysisRun run = new AnalysisRun(new AnalysisRequirement(
+                "Analyze user supplied URL",
+                "AI coding tools",
+                List.of("JetBrains AI"),
+                List.of("core features"),
+                List.of("official_site"),
+                List.of("https://www.jetbrains.com/ai/")
+        ));
+
+        var sources = service.collect(run, false);
+
+        assertThat(sources).hasSize(1);
+        assertThat(sources.get(0).getCollectionStatus()).isEqualTo("FETCHED");
+        assertThat(sources.get(0).getFailureReason()).isEqualTo("METADATA_ONLY");
+        assertThat(run.getRecommendedActions()).anyMatch(action -> action.contains("only page metadata was extracted"));
+    }
+
+    @Test
+    void explainsTlsUserProvidedUrlFailure() {
+        WebPageFetchService fetchService = new WebPageFetchService() {
+            @Override
+            public FetchedPage fetch(String url) {
+                return FetchedPage.failed(url, "PKIX path validation failed", "TLS_FAILED");
+            }
+        };
+        SourceCollectionService service = new SourceCollectionService(fetchService, new NoopSearchProvider());
+        AnalysisRun run = new AnalysisRun(new AnalysisRequirement(
+                "Analyze user supplied URL",
+                "AI tools",
+                List.of("OpenAI"),
+                List.of("core features"),
+                List.of("official_site"),
+                List.of("https://openai.com/")
+        ));
+
+        var sources = service.collect(run, false);
+
+        assertThat(sources).hasSize(1);
+        assertThat(sources.get(0).getFailureReason()).isEqualTo("TLS_FAILED");
+        assertThat(sources.get(0).getSnippet()).contains("TLS certificate validation failed");
+        assertThat(run.getRecommendedActions()).anyMatch(action -> action.contains("TLS certificate validation failed"));
     }
 
     @Test

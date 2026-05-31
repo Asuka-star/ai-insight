@@ -2,13 +2,11 @@ package com.aiinsight.dto;
 
 import lombok.Getter;
 import lombok.NoArgsConstructor;
-import lombok.Setter;
 
 import java.util.ArrayList;
 import java.util.List;
 
 @Getter
-@Setter
 @NoArgsConstructor
 public class UpdateAnalysisRequirementRequest {
 
@@ -18,20 +16,64 @@ public class UpdateAnalysisRequirementRequest {
     private List<String> sourcePreferences = new ArrayList<>();
     private List<String> sourceUrls = new ArrayList<>();
     private String outputGoal;
+    private boolean industryProvided;
+    private boolean competitorsProvided;
+    private boolean dimensionsProvided;
+    private boolean sourcePreferencesProvided;
+    private boolean sourceUrlsProvided;
+    private boolean outputGoalProvided;
+
+    public void setIndustry(String industry) {
+        this.industry = industry;
+        this.industryProvided = true;
+    }
 
     public void setCompetitors(List<String> competitors) {
         this.competitors = competitors == null ? new ArrayList<>() : new ArrayList<>(competitors);
+        this.competitorsProvided = true;
     }
 
     public void setDimensions(List<String> dimensions) {
         this.dimensions = dimensions == null ? new ArrayList<>() : new ArrayList<>(dimensions);
+        this.dimensionsProvided = true;
     }
 
     public void setSourcePreferences(List<String> sourcePreferences) {
         this.sourcePreferences = sourcePreferences == null ? new ArrayList<>() : new ArrayList<>(sourcePreferences);
+        this.sourcePreferencesProvided = true;
     }
 
     public void setSourceUrls(List<String> sourceUrls) {
         this.sourceUrls = sourceUrls == null ? new ArrayList<>() : new ArrayList<>(sourceUrls);
+        this.sourceUrlsProvided = true;
+    }
+
+    public void setOutputGoal(String outputGoal) {
+        this.outputGoal = outputGoal;
+        this.outputGoalProvided = true;
+    }
+
+    public boolean industryProvided() {
+        return industryProvided;
+    }
+
+    public boolean competitorsProvided() {
+        return competitorsProvided;
+    }
+
+    public boolean dimensionsProvided() {
+        return dimensionsProvided;
+    }
+
+    public boolean sourcePreferencesProvided() {
+        return sourcePreferencesProvided;
+    }
+
+    public boolean sourceUrlsProvided() {
+        return sourceUrlsProvided;
+    }
+
+    public boolean outputGoalProvided() {
+        return outputGoalProvided;
     }
 }

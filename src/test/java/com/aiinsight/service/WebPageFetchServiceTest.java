@@ -58,6 +58,82 @@ class WebPageFetchServiceTest {
     }
 
     @Test
+    void fallsBackToMetadataWhenJavascriptRenderedPageHasNoBodyText() throws IOException {
+        HttpServer server = serverWithPage("""
+                <html>
+                  <head>
+                    <title>JetBrains AI | Intelligent Coding Assistance</title>
+                    <meta name="description" content="JetBrains AI brings AI-powered coding assistance, agent workflows, developer productivity tools, enterprise controls, team collaboration support, and software development expertise into JetBrains IDEs.">
+                    <meta property="og:description" content="Discover integrated AI tools for code generation, contextual chat, project-aware development, documentation help, test generation, refactoring guidance, and secure adoption across engineering teams.">
+                  </head>
+                  <body>
+                    <div id="overview-content"></div>
+                    <script>window.__NUXT__={page:'ai'};</script>
+                  </body>
+                </html>
+                """);
+        try {
+            var page = new WebPageFetchService().fetch(url(server, "/ai"));
+
+            assertThat(page.isUsable()).isTrue();
+            assertThat(page.getStatus()).isEqualTo("FETCHED");
+            assertThat(page.getFailureReason()).isEqualTo("METADATA_ONLY");
+            assertThat(page.getSourceQuality()).isEqualTo("LOW");
+            assertThat(page.getRawText()).contains("JetBrains AI", "AI-powered coding assistance");
+            assertThat(page.getComplianceNote()).contains("extractionMode=metadata_fallback");
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    void usesRenderedBodyWhenStaticPageOnlyProvidesMetadata() throws IOException {
+        HttpServer server = serverWithPage("""
+                <html>
+                  <head>
+                    <title>JetBrains AI | Intelligent Coding Assistance</title>
+                    <meta name="description" content="JetBrains AI brings AI-powered coding assistance, agent workflows, developer productivity tools, enterprise controls, team collaboration support, and software development expertise into JetBrains IDEs.">
+                    <meta property="og:description" content="Discover integrated AI tools for code generation, contextual chat, project-aware development, documentation help, test generation, refactoring guidance, and secure adoption across engineering teams.">
+                  </head>
+                  <body>
+                    <div id="overview-content"></div>
+                    <script>window.__NUXT__={page:'ai'};</script>
+                  </body>
+                </html>
+                """);
+        WebPageRenderService renderer = url -> WebPageRenderService.RenderResult.success(
+                url,
+                "JetBrains AI | Intelligent Coding Assistance",
+                """
+                        <html>
+                          <head><title>JetBrains AI | Intelligent Coding Assistance</title></head>
+                          <body>
+                            <main>
+                              Rendered JetBrains AI page content explains coding assistance, integrated chat,
+                              project context, AI agent workflows, documentation generation, test creation,
+                              refactoring guidance, enterprise governance, permission controls, audit readiness,
+                              secure deployment options, team collaboration workflows, IDE integrations,
+                              software development expertise, onboarding support, and adoption signals for buyers.
+                            </main>
+                          </body>
+                        </html>
+                        """,
+                "fake renderer"
+        );
+        try {
+            var page = noDelayFetchService(1, renderer).fetch(url(server, "/ai"));
+
+            assertThat(page.isUsable()).isTrue();
+            assertThat(page.getFailureReason()).isEqualTo("NONE");
+            assertThat(page.getSourceQuality()).isEqualTo("MEDIUM");
+            assertThat(page.getRawText()).contains("Rendered JetBrains AI page content", "enterprise governance");
+            assertThat(page.getComplianceNote()).contains("renderFallback=used", "extractionMode=main_content");
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
     void followsNormalRedirectsToFinalPage() throws IOException {
         HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
         server.createContext("/old", exchange -> {
@@ -481,6 +557,10 @@ class WebPageFetchServiceTest {
     }
 
     private WebPageFetchService noDelayFetchService(int maxFetchAttempts) {
+        return noDelayFetchService(maxFetchAttempts, WebPageRenderService.disabled());
+    }
+
+    private WebPageFetchService noDelayFetchService(int maxFetchAttempts, WebPageRenderService renderer) {
         return new WebPageFetchService(
                 Duration.ofSeconds(1),
                 Duration.ofSeconds(2),
@@ -488,7 +568,12 @@ class WebPageFetchServiceTest {
                 new PageQualityEvaluator(),
                 Duration.ZERO,
                 Duration.ofHours(1),
-                maxFetchAttempts
+                maxFetchAttempts,
+                null,
+                Duration.ofHours(1),
+                Duration.ofHours(1),
+                new FetchedPageCache(Duration.ofHours(1)),
+                renderer
         );
     }
 

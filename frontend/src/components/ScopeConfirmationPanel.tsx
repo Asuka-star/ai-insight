@@ -56,11 +56,17 @@ export function ScopeConfirmationPanel({
   const clarificationItems = draft?.clarificationItems ?? [];
   const isConfirmed = Boolean(draft?.confirmed || localConfirmed);
   const phaseText = String(phase);
+  const hasDraft = Boolean(run && draft);
+  const hasClarificationRequests = questions.length > 0 || clarificationItems.length > 0;
+  const canStartWithoutConfirm = hasDraft && !hasClarificationRequests;
   const hasScopeInput = [industry, competitors, dimensions, outputGoal, sourceUrls].some((value) => value.trim());
   const canCreate = !run && !busy && !creating && hasScopeInput;
-  const canConfirm = Boolean(run) && !busy && ["DRAFT", "AWAITING_CONFIRMATION", "PENDING"].includes(phaseText);
+  const canConfirm = Boolean(run) && hasClarificationRequests && !busy && ["DRAFT", "AWAITING_CONFIRMATION", "PENDING"].includes(phaseText);
   const canReclarify = Boolean(run) && !busy && ["DRAFT", "AWAITING_CONFIRMATION", "PENDING"].includes(phaseText);
-  const canStart = Boolean(run) && !busy && isConfirmed && ["PENDING", "NEEDS_USER_INPUT"].includes(phaseText);
+  const canStart = Boolean(run)
+    && !busy
+    && (isConfirmed || canStartWithoutConfirm)
+    && ["AWAITING_CONFIRMATION", "PENDING", "NEEDS_USER_INPUT"].includes(phaseText);
 
   return (
     <section className="panel scope-panel">
@@ -126,17 +132,27 @@ export function ScopeConfirmationPanel({
         />
       </label>
 
-      {questions.length ? (
+      {!run ? (
+        <div className="question-box quiet">
+          <strong>等待范围确认内容</strong>
+          <p>填写范围信息后，这里会展示待确认的问题和结构化范围。</p>
+        </div>
+      ) : questions.length ? (
         <div className="question-box">
           <strong>范围确认建议</strong>
           {questions.map((question) => (
             <p key={question}>{question}</p>
           ))}
         </div>
+      ) : clarificationItems.length ? (
+        <div className="question-box">
+          <strong>请确认下方澄清项</strong>
+          <p>Clarifier 已生成可选澄清内容，请选择或调整后再确认范围。</p>
+        </div>
       ) : (
-        <div className="question-box quiet">
-          <strong>等待范围确认内容</strong>
-          <p>填写范围信息后，这里会展示待确认的问题和结构化范围。</p>
+        <div className="question-box done">
+          <strong>无需额外澄清</strong>
+          <p>当前范围已足够明确，可以直接开始 Agent 分析。</p>
         </div>
       )}
 
@@ -162,9 +178,11 @@ export function ScopeConfirmationPanel({
             <button type="button" onClick={onReclarify} disabled={!canReclarify}>
               <RefreshCw size={15} /> 重新澄清
             </button>
-            <button type="button" onClick={onConfirm} disabled={!canConfirm}>
-              <CheckCircle2 size={15} /> {isConfirmed ? "已确认范围" : "确认范围"}
-            </button>
+            {hasClarificationRequests ? (
+              <button type="button" onClick={onConfirm} disabled={!canConfirm}>
+                <CheckCircle2 size={15} /> {isConfirmed ? "已确认范围" : "确认范围"}
+              </button>
+            ) : null}
             <button className="primary-button" type="button" onClick={onStart} disabled={!canStart}>
               <PlayCircle size={15} /> 开始 Agent 分析
             </button>

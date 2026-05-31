@@ -11,6 +11,7 @@ import com.aiinsight.model.run.AnalysisRequirement;
 import com.aiinsight.model.run.AnalysisRun;
 import com.aiinsight.model.run.EvidenceSource;
 import com.aiinsight.observability.AgentTraceContext;
+import com.aiinsight.util.JsonResponseExtractor;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -250,19 +251,7 @@ public class LlmSearchQueryPlanner {
     }
 
     private String extractJsonObject(String response) {
-        if (!StringUtils.hasText(response)) {
-            throw new IllegalStateException("模型输出为空");
-        }
-        String trimmed = response.trim();
-        if (trimmed.startsWith("```")) {
-            trimmed = trimmed.replaceFirst("^```(?:json)?\\s*", "").replaceFirst("\\s*```$", "").trim();
-        }
-        int start = trimmed.indexOf('{');
-        int end = trimmed.lastIndexOf('}');
-        if (start < 0 || end <= start) {
-            throw new IllegalStateException("模型输出不包含 JSON 对象");
-        }
-        return trimmed.substring(start, end + 1);
+        return JsonResponseExtractor.extractJsonObject(response);
     }
 
     private String abbreviate(String value, int maxLength) {

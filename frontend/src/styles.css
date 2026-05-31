@@ -513,6 +513,11 @@ h3 {
   background: var(--panel-soft);
 }
 
+.question-box.done {
+  border-color: rgba(24, 114, 77, 0.25);
+  background: #f0faf4;
+}
+
 .question-box strong {
   color: var(--text);
 }

@@ -33,39 +33,38 @@ export function ArtifactViewer({ artifact, sources = [], onSelectCitation }: Art
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
         components={{
-          text({ children }) {
-            return <>{renderCitationText(String(children), sourcesByKey, onSelectCitation)}</>;
+          a({ href, children }) {
+            const citationKey = citationKeyFromHref(href);
+            if (!citationKey) {
+              return <a href={href}>{children}</a>;
+            }
+            const source = sourcesByKey.get(citationKey);
+            return (
+              <button
+                className="citation-chip"
+                type="button"
+                title={citationTitle(source)}
+                onClick={() => onSelectCitation(citationKey)}
+              >
+                {children}
+              </button>
+            );
           }
         }}
       >
-        {artifact.content || "该产物暂无内容"}
+        {linkifyCitations(artifact.content || "该产物暂无内容")}
       </ReactMarkdown>
     </article>
   );
 }
 
-function renderCitationText(
-  text: string,
-  sourcesByKey: Map<string, EvidenceSource>,
-  onSelectCitation: (citationKey: string) => void
-) {
-  const parts = text.split(/(\[S\d+])/g);
-  return parts.map((part, index) => {
-    const match = part.match(/^\[(S\d+)]$/);
-    if (!match) return part;
-    const source = sourcesByKey.get(match[1]);
-    return (
-      <button
-        key={`${part}-${index}`}
-        className="citation-chip"
-        type="button"
-        title={citationTitle(source)}
-        onClick={() => onSelectCitation(match[1])}
-      >
-        {part}
-      </button>
-    );
-  });
+function linkifyCitations(markdown: string) {
+  return markdown.replace(/\[(S\d+)]/g, "[\\[$1\\]](#citation-$1)");
+}
+
+function citationKeyFromHref(href?: string) {
+  const match = href?.match(/^#citation-(S\d+)$/);
+  return match?.[1];
 }
 
 function citationTitle(source?: EvidenceSource) {

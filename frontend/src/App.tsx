@@ -520,8 +520,16 @@ export function App() {
   async function handleStartAnalysis() {
     if (!run) return;
     setIsScopeBusy(true);
-    setEventMessage("正在启动 Agent 分析");
+    setEventMessage("正在保存范围并启动 Agent 分析");
     try {
+      await updateRequirement(run.id, {
+        industry,
+        competitors: splitList(competitors),
+        dimensions: splitList(dimensions),
+        sourcePreferences: sources,
+        sourceUrls: splitLines(sourceUrls),
+        outputGoal
+      });
       const nextRun = await startAnalysis(run.id);
       setRun(nextRun);
       setMainView("dag");

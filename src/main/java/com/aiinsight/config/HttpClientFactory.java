@@ -11,9 +11,14 @@ import java.net.ProxySelector;
 import java.net.SocketAddress;
 import java.net.URI;
 import java.net.http.HttpClient;
+import java.security.KeyStore;
 import java.time.Duration;
 import java.util.List;
 import java.util.Locale;
+import java.util.Optional;
+
+import javax.net.ssl.SSLContext;
+import javax.net.ssl.TrustManagerFactory;
 
 public final class HttpClientFactory {
 
@@ -22,6 +27,7 @@ public final class HttpClientFactory {
 
     public static HttpClient.Builder builder(Duration connectTimeout, HttpProxyProperties proxyProperties) {
         HttpClient.Builder builder = HttpClient.newBuilder();
+        windowsRootSslContext().ifPresent(builder::sslContext);
         if (connectTimeout != null) {
             builder.connectTimeout(connectTimeout);
         }
@@ -39,6 +45,24 @@ public final class HttpClientFactory {
             }
         }
         return builder;
+    }
+
+    private static Optional<SSLContext> windowsRootSslContext() {
+        String osName = System.getProperty("os.name", "").toLowerCase(Locale.ROOT);
+        if (!osName.contains("windows")) {
+            return Optional.empty();
+        }
+        try {
+            KeyStore keyStore = KeyStore.getInstance("Windows-ROOT");
+            keyStore.load(null, null);
+            TrustManagerFactory trustManagerFactory = TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm());
+            trustManagerFactory.init(keyStore);
+            SSLContext sslContext = SSLContext.getInstance("TLS");
+            sslContext.init(null, trustManagerFactory.getTrustManagers(), null);
+            return Optional.of(sslContext);
+        } catch (Exception ignored) {
+            return Optional.empty();
+        }
     }
 
     private static final class ConfigurableProxySelector extends ProxySelector {

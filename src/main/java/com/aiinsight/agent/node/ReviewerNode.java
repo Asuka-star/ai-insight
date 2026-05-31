@@ -18,6 +18,7 @@ import com.aiinsight.service.CitationCoverageEvaluator;
 import com.aiinsight.service.fallback.FallbackReviewReportFactory;
 import com.aiinsight.agent.AgentNode;
 import com.aiinsight.observability.AgentTraceContext;
+import com.aiinsight.util.JsonResponseExtractor;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -645,24 +646,7 @@ public class ReviewerNode implements AgentNode {
     }
 
     private String extractJson(String raw) {
-        String trimmed = raw.trim();
-        if (trimmed.startsWith("```")) {
-            trimmed = trimmed.replaceFirst("^```(?:json)?\\s*", "").replaceFirst("\\s*```$", "");
-        }
-        int objectStart = trimmed.indexOf('{');
-        int arrayStart = trimmed.indexOf('[');
-        int start;
-        if (objectStart < 0) {
-            start = arrayStart;
-        } else if (arrayStart < 0) {
-            start = objectStart;
-        } else {
-            start = Math.min(objectStart, arrayStart);
-        }
-        if (start > 0) {
-            trimmed = trimmed.substring(start);
-        }
-        return trimmed;
+        return JsonResponseExtractor.extractJsonValue(raw);
     }
 
     private String claimsBlock(AnalysisRun run) {

@@ -16,6 +16,11 @@ management:
       exposure:
         include: health,info
 
+logging:
+  charset:
+    console: UTF-8
+    file: UTF-8
+
 ai-insight:
   http:
     proxy:
@@ -30,6 +35,13 @@ ai-insight:
         - localhost
         - 127.0.0.1
         - ::1
+  web-renderer:
+    enabled: ${AI_INSIGHT_WEB_RENDERER_ENABLED:true}
+    browser-channel: ${AI_INSIGHT_WEB_RENDERER_BROWSER_CHANNEL:msedge}
+    headless: ${AI_INSIGHT_WEB_RENDERER_HEADLESS:true}
+    navigation-timeout: ${AI_INSIGHT_WEB_RENDERER_NAVIGATION_TIMEOUT:15s}
+    wait-after-load: ${AI_INSIGHT_WEB_RENDERER_WAIT_AFTER_LOAD:1s}
+    max-html-length: ${AI_INSIGHT_WEB_RENDERER_MAX_HTML_LENGTH:2000000}
   llm:
     xiaomi:
       api-key: ${XIAOMI_LLM_API_KEY:}

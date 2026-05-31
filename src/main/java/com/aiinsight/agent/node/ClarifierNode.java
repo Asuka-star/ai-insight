@@ -15,6 +15,7 @@ import com.aiinsight.model.run.ClarificationItem;
 import com.aiinsight.model.run.ClarificationOption;
 import com.aiinsight.observability.AgentTraceContext;
 import com.aiinsight.service.fallback.FallbackClarificationDraftFactory;
+import com.aiinsight.util.JsonResponseExtractor;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -265,15 +266,7 @@ public class ClarifierNode implements AgentNode {
     }
 
     private String extractJsonObject(String raw) {
-        if (!StringUtils.hasText(raw)) {
-            throw new IllegalArgumentException("LLM 范围确认内容为空");
-        }
-        int start = raw.indexOf('{');
-        int end = raw.lastIndexOf('}');
-        if (start < 0 || end <= start) {
-            throw new IllegalArgumentException("LLM 范围确认内容缺少 JSON 对象");
-        }
-        return raw.substring(start, end + 1);
+        return JsonResponseExtractor.extractJsonObject(raw);
     }
 
     private String text(JsonNode root, String field) {
@@ -433,10 +426,6 @@ public class ClarifierNode implements AgentNode {
                 ## 可选澄清项
 
                 %s
-
-                ## 执行说明
-
-                Clarifier 已将确认后的范围同步为结构化任务输入；下游 Agent 只能围绕该范围采集证据、抽取 Schema、生成分析和报告。
                 """.formatted(
                 textOrFallback(draft.getIndustry(), requirement == null ? null : requirement.getIndustry(), "待澄清"),
                 listText(draft.getCompetitors()),

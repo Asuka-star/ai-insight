@@ -142,6 +142,34 @@ class AnalysisWorkflowServiceTest {
     }
 
     @Test
+    void updateRequirementClearsProvidedEmptyFieldsAndKeepsOmittedFields() {
+        AnalysisWorkflowService service = newService();
+        CreateAnalysisRunRequest request = new CreateAnalysisRunRequest();
+        request.setPrompt("Analyze Notion and Confluence.");
+        request.setIndustry("AI 文档协作");
+        request.setCompetitors(List.of("Notion", "Confluence"));
+        request.setDimensions(List.of("AI 搜索", "权限协作"));
+        request.setSourcePreferences(List.of("official_site", "pricing_page"));
+        request.setSourceUrls(List.of("https://example.test/notion", "https://example.test/confluence"));
+        request.setOutputGoal("产品规划");
+        var draft = service.createDraft(request);
+
+        UpdateAnalysisRequirementRequest update = new UpdateAnalysisRequirementRequest();
+        update.setDimensions(List.of());
+        update.setSourcePreferences(List.of());
+        update.setSourceUrls(List.of());
+        update.setOutputGoal("");
+        var updated = service.updateRequirement(draft.getId(), update);
+
+        assertThat(updated.getRequirement().getIndustry()).isEqualTo("AI 文档协作");
+        assertThat(updated.getRequirement().getCompetitors()).containsExactly("Notion", "Confluence");
+        assertThat(updated.getRequirement().getDimensions()).isEmpty();
+        assertThat(updated.getRequirement().getSourcePreferences()).isEmpty();
+        assertThat(updated.getRequirement().getSourceUrls()).isEmpty();
+        assertThat(updated.getRequirement().getOutputGoal()).isEmpty();
+    }
+
+    @Test
     void startAutoConfirmsScopeDraft() {
         AnalysisWorkflowService service = newService();
         CreateAnalysisRunRequest request = new CreateAnalysisRunRequest();

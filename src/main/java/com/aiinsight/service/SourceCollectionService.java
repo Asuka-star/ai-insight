@@ -90,8 +90,8 @@ public class SourceCollectionService {
             EvidenceSource source = fromUserUrl("S" + index, url);
             sources.add(source);
             index++;
-            if ("FETCH_FAILED".equals(source.getCollectionStatus()) || "BLOCKED_BY_ROBOTS".equals(source.getCollectionStatus())) {
-                run.getRecommendedActions().add("User-provided URL fetch failed: " + url);
+            if (userUrlNeedsAttention(source)) {
+                run.getRecommendedActions().add(userUrlAction(url, source));
             }
         }
 
@@ -445,10 +445,10 @@ public class SourceCollectionService {
         try {
             page = webPageFetchService.fetch(url);
         } catch (RuntimeException ex) {
-            return failedUserUrl(citationKey, url, "FETCH_FAILED", "Page fetch failed: " + ex.getMessage());
+            return failedUserUrl(citationKey, url, "FETCH_FAILED", "FETCH_FAILED", "Page fetch failed: " + ex.getMessage());
         }
         if (!page.isUsable() || !StringUtils.hasText(page.getRawText())) {
-            return failedUserUrl(citationKey, url, page.getStatus(), page.getComplianceNote());
+            return failedUserUrl(citationKey, url, page.getStatus(), page.getFailureReason(), page.getComplianceNote());
         }
         EvidenceSource source = new EvidenceSource(
                 citationKey,
@@ -468,9 +468,14 @@ public class SourceCollectionService {
         return source;
     }
 
-    private EvidenceSource failedUserUrl(String citationKey, String url, String status, String complianceNote) {
+    private EvidenceSource failedUserUrl(String citationKey,
+                                         String url,
+                                         String status,
+                                         String failureReason,
+                                         String complianceNote) {
         String normalizedStatus = StringUtils.hasText(status) ? status : "FETCH_FAILED";
-        String message = "User-provided URL could not be fetched: " + url;
+        String normalizedReason = StringUtils.hasText(failureReason) ? failureReason : normalizedStatus;
+        String message = userUrlFailureMessage(url, normalizedStatus, normalizedReason);
         return new EvidenceSource(
                 citationKey,
                 url,
@@ -479,11 +484,74 @@ public class SourceCollectionService {
                 normalizedStatus,
                 "FETCH_FAILED",
                 "UNUSABLE",
-                normalizedStatus,
+                normalizedReason,
                 message,
                 "",
                 complianceNote
         );
+    }
+
+    private boolean userUrlNeedsAttention(EvidenceSource source) {
+        String status = source.getCollectionStatus();
+        return "FETCH_FAILED".equals(status)
+                || "BLOCKED_BY_ROBOTS".equals(status)
+                || "UNUSABLE_CONTENT".equals(status)
+                || "METADATA_ONLY".equals(source.getFailureReason());
+    }
+
+    private String userUrlAction(String url, EvidenceSource source) {
+        return "User-provided URL needs attention: " + url + " - " + explainFailure(source.getCollectionStatus(), source.getFailureReason());
+    }
+
+    private String userUrlFailureMessage(String url, String status, String failureReason) {
+        return "User-provided URL issue: " + explainFailure(status, failureReason) + " URL: " + url;
+    }
+
+    private String explainFailure(String status, String failureReason) {
+        String reason = failureReason == null ? "" : failureReason;
+        if ("EMPTY_TEXT".equals(reason)) {
+            return "page returned HTTP success but no extractable text was found; it may require JavaScript rendering.";
+        }
+        if ("THIN_TEXT".equals(reason)) {
+            return "page returned HTTP success but only very thin text was extracted; it may be a shell or JavaScript-rendered page.";
+        }
+        if ("HTTP_4XX".equals(reason)) {
+            return "page returned a 4xx response or anti-bot checkpoint.";
+        }
+        if ("HTTP_5XX".equals(reason)) {
+            return "page returned a server error.";
+        }
+        if ("ANTI_BOT_PAGE".equals(reason)) {
+            return "page appears to be an anti-bot challenge.";
+        }
+        if ("LOGIN_REQUIRED".equals(reason)) {
+            return "page requires login or restricted access.";
+        }
+        if ("ROBOTS_BLOCKED".equals(reason) || "BLOCKED_BY_ROBOTS".equals(status)) {
+            return "robots.txt disallows public fetching.";
+        }
+        if ("TIMEOUT".equals(reason)) {
+            return "page fetch timed out.";
+        }
+        if ("TLS_FAILED".equals(reason)) {
+            return "TLS certificate validation failed; on Windows the fetcher now tries the system root store, but the proxy or JDK may still need its certificate installed.";
+        }
+        if ("DNS_FAILED".equals(reason)) {
+            return "domain name resolution failed.";
+        }
+        if ("CONNECT_FAILED".equals(reason)) {
+            return "network connection to the page failed.";
+        }
+        if ("METADATA_ONLY".equals(reason)) {
+            return "only page metadata was extracted, so the evidence is usable but weak; JavaScript rendering may not have produced full body text.";
+        }
+        if ("FETCH_FAILED".equals(reason) || "FETCH_FAILED".equals(status)) {
+            return "network or TLS fetch failed.";
+        }
+        if ("UNUSABLE_CONTENT".equals(status)) {
+            return "page was fetched but did not provide usable evidence text.";
+        }
+        return StringUtils.hasText(reason) ? reason : "unknown fetch issue.";
     }
 
     private EvidenceSource fromUrl(String citationKey,

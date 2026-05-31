@@ -9,10 +9,6 @@ import type {
   UpdateAnalysisRequirementRequest
 } from "./types";
 
-export async function listRuns(): Promise<AnalysisRun[]> {
-  return requestJson("/api/analysis-runs");
-}
-
 export async function listRunSummaries(): Promise<AnalysisRunSummary[]> {
   return requestJson("/api/analysis-runs/summaries");
 }

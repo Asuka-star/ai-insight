@@ -23,6 +23,7 @@ import com.aiinsight.service.SearchQueryPlanner;
 import com.aiinsight.service.SourceCollectionService;
 import com.aiinsight.service.fallback.FallbackResearchPlanFactory;
 import com.aiinsight.observability.AgentTraceContext;
+import com.aiinsight.util.JsonResponseExtractor;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -426,19 +427,7 @@ public class ResearcherNode implements AgentNode {
     }
 
     private String extractJsonObject(String response) {
-        if (response == null || response.isBlank()) {
-            throw new IllegalStateException("模型输出为空");
-        }
-        String trimmed = response.trim();
-        if (trimmed.startsWith("```")) {
-            trimmed = trimmed.replaceFirst("^```(?:json)?\\s*", "").replaceFirst("\\s*```$", "").trim();
-        }
-        int start = trimmed.indexOf('{');
-        int end = trimmed.lastIndexOf('}');
-        if (start < 0 || end <= start) {
-            throw new IllegalStateException("模型输出不包含 JSON 对象");
-        }
-        return trimmed.substring(start, end + 1);
+        return JsonResponseExtractor.extractJsonObject(response);
     }
 
     private ResearchPlan mergeResearchPlan(ResearchPlan generated, ResearchPlan fallback) {

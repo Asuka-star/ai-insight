@@ -413,22 +413,22 @@ public class AnalysisWorkflowService {
     }
 
     private void applyRequirementUpdate(AnalysisRequirement requirement, UpdateAnalysisRequirementRequest request) {
-        if (StringUtils.hasText(request.getIndustry())) {
+        if (request.industryProvided()) {
             requirement.setIndustry(request.getIndustry());
         }
-        if (!request.getCompetitors().isEmpty()) {
+        if (request.competitorsProvided()) {
             requirement.setCompetitors(new ArrayList<>(request.getCompetitors()));
         }
-        if (!request.getDimensions().isEmpty()) {
+        if (request.dimensionsProvided()) {
             requirement.setDimensions(new ArrayList<>(request.getDimensions()));
         }
-        if (!request.getSourcePreferences().isEmpty()) {
+        if (request.sourcePreferencesProvided()) {
             requirement.setSourcePreferences(new ArrayList<>(request.getSourcePreferences()));
         }
-        if (!request.getSourceUrls().isEmpty()) {
+        if (request.sourceUrlsProvided()) {
             requirement.setSourceUrls(new ArrayList<>(request.getSourceUrls()));
         }
-        if (StringUtils.hasText(request.getOutputGoal())) {
+        if (request.outputGoalProvided()) {
             requirement.setOutputGoal(request.getOutputGoal());
         }
     }
