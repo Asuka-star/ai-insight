@@ -113,6 +113,14 @@ public class AnalysisWorkflowService {
         return repository.findSummaries();
     }
 
+    public void delete(UUID runId) {
+        if (!repository.existsById(runId)) {
+            throw new RunNotFoundException(runId);
+        }
+        repository.deleteById(runId);
+        eventBroker.close(runId);
+    }
+
     public Collection<AgentTrace> traces(UUID runId) {
         return get(runId).getTraces();
     }

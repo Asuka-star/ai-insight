@@ -35,6 +35,13 @@ public class AnalysisEventBroker {
         emitters.getOrDefault(run.getId(), List.of()).forEach(emitter -> send(emitter, event));
     }
 
+    public void close(UUID runId) {
+        List<SseEmitter> runEmitters = emitters.remove(runId);
+        if (runEmitters != null) {
+            runEmitters.forEach(SseEmitter::complete);
+        }
+    }
+
     private void send(SseEmitter emitter, RunEvent event) {
         try {
             emitter.send(SseEmitter.event().name(event.getType()).data(event));

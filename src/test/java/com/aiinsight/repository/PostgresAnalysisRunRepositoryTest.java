@@ -24,8 +24,10 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.contains;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -38,6 +40,7 @@ class PostgresAnalysisRunRepositoryTest {
                 jdbcTemplate,
                 new ObjectMapper().findAndRegisterModules()
         );
+        when(jdbcTemplate.update(contains("insert into analysis_run"), any(Object[].class))).thenReturn(1);
         AnalysisRun run = new AnalysisRun();
         run.getEvidenceSources().add(new EvidenceSource(
                 "S" + "1".repeat(64),
@@ -72,6 +75,20 @@ class PostgresAnalysisRunRepositoryTest {
         assertProjectionArgLengths(jdbcTemplate, "insert into evidence_source", 2, 32, 5, 64, 6, 64, 7, 64);
         assertProjectionArgLengths(jdbcTemplate, "insert into evidence_chunk", 2, 128, 3, 32);
         assertProjectionArgLengths(jdbcTemplate, "insert into review_finding", 3, 128, 6, 32);
+    }
+
+    @Test
+    void saveSkipsProjectionRefreshWhenRunWasDeleted() {
+        JdbcTemplate jdbcTemplate = mock(JdbcTemplate.class);
+        PostgresAnalysisRunRepository repository = new PostgresAnalysisRunRepository(
+                jdbcTemplate,
+                new ObjectMapper().findAndRegisterModules()
+        );
+        when(jdbcTemplate.update(contains("insert into analysis_run"), any(Object[].class))).thenReturn(0);
+
+        repository.save(new AnalysisRun());
+
+        verify(jdbcTemplate, never()).update(eq("delete from analysis_artifact where run_id = ?"), any(UUID.class));
     }
 
     @Test
@@ -121,6 +138,51 @@ class PostgresAnalysisRunRepositoryTest {
                     assertThat(summary.getCreatedAt()).isEqualTo(createdAt);
                     assertThat(summary.getUpdatedAt()).isEqualTo(updatedAt);
                 });
+    }
+
+    @Test
+    void existsByIdChecksRunTableWithoutReadingPayload() {
+        JdbcTemplate jdbcTemplate = mock(JdbcTemplate.class);
+        PostgresAnalysisRunRepository repository = new PostgresAnalysisRunRepository(
+                jdbcTemplate,
+                new ObjectMapper().findAndRegisterModules()
+        );
+        UUID runId = UUID.randomUUID();
+        when(jdbcTemplate.queryForObject(
+                "select exists(select 1 from analysis_run where id = ?)",
+                Boolean.class,
+                runId
+        )).thenReturn(true);
+
+        boolean exists = repository.existsById(runId);
+
+        assertThat(exists).isTrue();
+        verify(jdbcTemplate).queryForObject(
+                "select exists(select 1 from analysis_run where id = ?)",
+                Boolean.class,
+                runId
+        );
+    }
+
+    @Test
+    void deleteByIdRemovesProjectionRowsBeforeRunPayload() {
+        JdbcTemplate jdbcTemplate = mock(JdbcTemplate.class);
+        PostgresAnalysisRunRepository repository = new PostgresAnalysisRunRepository(
+                jdbcTemplate,
+                new ObjectMapper().findAndRegisterModules()
+        );
+        UUID runId = UUID.randomUUID();
+
+        repository.deleteById(runId);
+
+        verify(jdbcTemplate).update(contains("insert into deleted_analysis_run"), eq(runId), any(Timestamp.class));
+        verify(jdbcTemplate).update("delete from review_finding where run_id = ?", runId);
+        verify(jdbcTemplate).update("delete from evidence_chunk where run_id = ?", runId);
+        verify(jdbcTemplate).update("delete from evidence_source where run_id = ?", runId);
+        verify(jdbcTemplate).update("delete from agent_trace where run_id = ?", runId);
+        verify(jdbcTemplate).update("delete from agent_step where run_id = ?", runId);
+        verify(jdbcTemplate).update("delete from analysis_artifact where run_id = ?", runId);
+        verify(jdbcTemplate).update("delete from analysis_run where id = ?", runId);
     }
 
     private void assertProjectionArgLengths(JdbcTemplate jdbcTemplate,

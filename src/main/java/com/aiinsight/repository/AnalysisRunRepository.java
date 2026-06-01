@@ -13,7 +13,11 @@ public interface AnalysisRunRepository {
 
     Optional<AnalysisRun> findById(UUID id);
 
+    boolean existsById(UUID id);
+
     Collection<AnalysisRun> findAll();
 
     Collection<AnalysisRunSummary> findSummaries();
+
+    void deleteById(UUID id);
 }

@@ -25,6 +25,12 @@ export async function getRun(runId: string): Promise<AnalysisRun> {
   return requestJson(`/api/analysis-runs/${runId}`);
 }
 
+export async function deleteRun(runId: string): Promise<void> {
+  await requestVoid(`/api/analysis-runs/${runId}`, {
+    method: "DELETE"
+  });
+}
+
 export async function getRunMetrics(runId: string): Promise<AnalysisRunMetrics> {
   return requestJson(`/api/analysis-runs/${runId}/metrics`);
 }
@@ -75,6 +81,16 @@ export async function rerunAgent(runId: string, agentName: AgentName): Promise<A
 
 async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, init);
+  await ensureOk(response);
+  return response.json() as Promise<T>;
+}
+
+async function requestVoid(path: string, init?: RequestInit): Promise<void> {
+  const response = await fetch(path, init);
+  await ensureOk(response);
+}
+
+async function ensureOk(response: Response): Promise<void> {
   if (!response.ok) {
     let message = `HTTP ${response.status}`;
     const text = await response.text();
@@ -88,5 +104,4 @@ async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
     }
     throw new Error(message);
   }
-  return response.json() as Promise<T>;
 }

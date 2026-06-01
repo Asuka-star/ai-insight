@@ -13,10 +13,11 @@ import {
   Search,
   ShieldCheck,
   Sparkles,
+  Trash2,
   UploadCloud
 } from "lucide-react";
 import type { AnalysisContextMessage, AgentName, AnalysisArtifact, AnalysisRun, AnalysisRunMetrics, AnalysisRunSummary, ContextIntent, ReviewFinding, RunEvent } from "./types";
-import { addContext, addEvidence, clarifyRequirement, createRun, getRun, getRunMetrics, listRunSummaries, rerunAgent, startAnalysis, updateRequirement } from "./api";
+import { addContext, addEvidence, clarifyRequirement, createRun, deleteRun, getRun, getRunMetrics, listRunSummaries, rerunAgent, startAnalysis, updateRequirement } from "./api";
 import { AGENTS, AGENT_LABELS, ARTIFACT_LABELS, SOURCE_OPTIONS } from "./constants";
 import {
   calculateRunMetrics,
@@ -50,21 +51,34 @@ const MIN_RIGHT_RAIL_WIDTH = 280;
 const MAX_RIGHT_RAIL_WIDTH = 520;
 const RESIZE_LAYOUT_RESERVE = 72;
 const CURRENT_RUN_STORAGE_KEY = "ai-insight.currentRunId";
+const SCOPE_DRAFT_STORAGE_KEY = "ai-insight.scopeDraft";
+const DEFAULT_SOURCE_VALUES = SOURCE_OPTIONS.map((source) => source.value);
 const WorkflowGraph = lazy(() => import("./components/WorkflowGraph").then((module) => ({ default: module.WorkflowGraph })));
 const ArtifactViewer = lazy(() => import("./components/ArtifactViewer").then((module) => ({ default: module.ArtifactViewer })));
 const SchemaPanel = lazy(() => import("./components/SchemaPanel").then((module) => ({ default: module.SchemaPanel })));
 
+interface ScopeDraft {
+  industry: string;
+  competitors: string;
+  dimensions: string;
+  outputGoal: string;
+  sources: string[];
+  sourceUrls: string;
+  maxReviewReworkAttempts: number;
+}
+
 export function App() {
+  const initialScopeDraftRef = useRef(readScopeDraft());
   const [run, setRun] = useState<AnalysisRun | null>(null);
   const [serverRunMetrics, setServerRunMetrics] = useState<AnalysisRunMetrics | null>(null);
   const [historyRuns, setHistoryRuns] = useState<AnalysisRunSummary[]>([]);
-  const [industry, setIndustry] = useState("");
-  const [competitors, setCompetitors] = useState("");
-  const [dimensions, setDimensions] = useState("");
-  const [outputGoal, setOutputGoal] = useState("");
-  const [sources, setSources] = useState<string[]>(SOURCE_OPTIONS.map((source) => source.value));
-  const [sourceUrls, setSourceUrls] = useState("");
-  const [maxReviewReworkAttempts, setMaxReviewReworkAttempts] = useState(0);
+  const [industry, setIndustry] = useState(() => initialScopeDraftRef.current?.industry ?? "");
+  const [competitors, setCompetitors] = useState(() => initialScopeDraftRef.current?.competitors ?? "");
+  const [dimensions, setDimensions] = useState(() => initialScopeDraftRef.current?.dimensions ?? "");
+  const [outputGoal, setOutputGoal] = useState(() => initialScopeDraftRef.current?.outputGoal ?? "");
+  const [sources, setSources] = useState<string[]>(() => initialScopeDraftRef.current?.sources ?? DEFAULT_SOURCE_VALUES);
+  const [sourceUrls, setSourceUrls] = useState(() => initialScopeDraftRef.current?.sourceUrls ?? "");
+  const [maxReviewReworkAttempts, setMaxReviewReworkAttempts] = useState(() => initialScopeDraftRef.current?.maxReviewReworkAttempts ?? 0);
   const [selectedArtifactId, setSelectedArtifactId] = useState<string>();
   const [artifactPinned, setArtifactPinned] = useState(false);
   const [selectedCitationKey, setSelectedCitationKey] = useState<string>();
@@ -92,6 +106,8 @@ export function App() {
   const [isCreating, setIsCreating] = useState(false);
   const [isScopeBusy, setIsScopeBusy] = useState(false);
   const [isHistoryLoading, setIsHistoryLoading] = useState(false);
+  const [deletingRunId, setDeletingRunId] = useState<string>();
+  const [deleteCandidate, setDeleteCandidate] = useState<AnalysisRunSummary>();
   const [historyOpen, setHistoryOpen] = useState(false);
   const [leftRailWidth, setLeftRailWidth] = useState(286);
   const [rightRailWidth, setRightRailWidth] = useState(342);
@@ -334,6 +350,28 @@ export function App() {
     setLocalScopeConfirmed(Boolean(run.clarificationDraft?.confirmed));
   }, [scopeSyncKey]);
 
+  useEffect(() => {
+    if (run?.id) return;
+    writeScopeDraft({
+      industry,
+      competitors,
+      dimensions,
+      outputGoal,
+      sources,
+      sourceUrls,
+      maxReviewReworkAttempts
+    });
+  }, [
+    run?.id,
+    industry,
+    competitors,
+    dimensions,
+    outputGoal,
+    sources,
+    sourceUrls,
+    maxReviewReworkAttempts
+  ]);
+
   const workspaceStyle = useMemo(() => ({
     "--left-rail-width": `${leftRailWidth}px`,
     "--right-rail-width": `${rightRailWidth}px`
@@ -391,15 +429,16 @@ export function App() {
   function handleNewRun() {
     workspaceRequestTokenRef.current += 1;
     window.localStorage.removeItem(CURRENT_RUN_STORAGE_KEY);
+    const draft = readScopeDraft();
     setRun(null);
     setServerRunMetrics(null);
-    setIndustry("");
-    setCompetitors("");
-    setDimensions("");
-    setOutputGoal("");
-    setSources(SOURCE_OPTIONS.map((source) => source.value));
-    setSourceUrls("");
-    setMaxReviewReworkAttempts(0);
+    setIndustry(draft?.industry ?? "");
+    setCompetitors(draft?.competitors ?? "");
+    setDimensions(draft?.dimensions ?? "");
+    setOutputGoal(draft?.outputGoal ?? "");
+    setSources(draft?.sources ?? DEFAULT_SOURCE_VALUES);
+    setSourceUrls(draft?.sourceUrls ?? "");
+    setMaxReviewReworkAttempts(draft?.maxReviewReworkAttempts ?? 0);
     setSelectedArtifactId(undefined);
     setArtifactPinned(false);
     setSelectedCitationKey(undefined);
@@ -418,7 +457,45 @@ export function App() {
     setIsHistoryLoading(false);
     setMainView("dag");
     setHistoryOpen(false);
-    setEventMessage("已切换到新建分析");
+    setEventMessage(draft ? "已恢复未提交的范围草稿" : "已切换到新建分析");
+  }
+
+  async function handleDeleteHistoryRun(summary: AnalysisRunSummary) {
+    setDeleteCandidate(summary);
+  }
+
+  function handleCancelDeleteHistoryRun() {
+    if (deletingRunId) {
+      return;
+    }
+    setDeleteCandidate(undefined);
+  }
+
+  async function confirmDeleteHistoryRun() {
+    const summary = deleteCandidate;
+    if (!summary || deletingRunId) return;
+    const deletingCurrentRun = run?.id === summary.id;
+    setDeletingRunId(summary.id);
+    setEventMessage("正在删除历史会话");
+    try {
+      await deleteRun(summary.id);
+      setBackendOk(true);
+      setHistoryRuns((runs) => runs.filter((item) => item.id !== summary.id));
+      if (window.localStorage.getItem(CURRENT_RUN_STORAGE_KEY) === summary.id) {
+        window.localStorage.removeItem(CURRENT_RUN_STORAGE_KEY);
+      }
+      if (deletingCurrentRun) {
+        handleNewRun();
+        setHistoryOpen(true);
+      }
+      setDeleteCandidate(undefined);
+      setEventMessage("历史会话已删除");
+    } catch (error) {
+      setBackendOk(false);
+      setEventMessage(error instanceof Error ? `历史会话删除失败：${error.message}` : "历史会话删除失败");
+    } finally {
+      setDeletingRunId(undefined);
+    }
   }
 
   async function handleCreateRun() {
@@ -446,6 +523,7 @@ export function App() {
       if (requestToken !== workspaceRequestTokenRef.current) return;
       setBackendOk(true);
       setRun(nextRun);
+      removeScopeDraft();
       window.localStorage.setItem(CURRENT_RUN_STORAGE_KEY, nextRun.id);
       setHistoryRuns((runs) => upsertHistorySummary(runs, summaryFromRun(nextRun)));
     } catch (error) {
@@ -990,6 +1068,14 @@ export function App() {
         onNewRun={handleNewRun}
         onRefresh={() => loadHistory().catch((error) => setEventMessage(error.message))}
         onSelectRun={selectRun}
+        onDeleteRun={handleDeleteHistoryRun}
+        deletingRunId={deletingRunId}
+      />
+      <DeleteHistoryDialog
+        summary={deleteCandidate}
+        deleting={Boolean(deleteCandidate && deletingRunId === deleteCandidate.id)}
+        onCancel={handleCancelDeleteHistoryRun}
+        onConfirm={confirmDeleteHistoryRun}
       />
     </div>
   );
@@ -1002,11 +1088,163 @@ function statusTone(status?: string) {
   return "neutral";
 }
 
+function readScopeDraft(): ScopeDraft | null {
+  try {
+    const raw = window.localStorage.getItem(SCOPE_DRAFT_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<ScopeDraft>;
+    return normalizeScopeDraft(parsed);
+  } catch {
+    return null;
+  }
+}
+
+function writeScopeDraft(draft: ScopeDraft) {
+  if (!hasScopeDraftContent(draft)) {
+    removeScopeDraft();
+    return;
+  }
+  try {
+    window.localStorage.setItem(SCOPE_DRAFT_STORAGE_KEY, JSON.stringify(normalizeScopeDraft(draft)));
+  } catch {
+    // Draft persistence is a convenience; storage failures should not interrupt the form.
+  }
+}
+
+function removeScopeDraft() {
+  try {
+    window.localStorage.removeItem(SCOPE_DRAFT_STORAGE_KEY);
+  } catch {
+    // Ignore unavailable storage.
+  }
+}
+
+function normalizeScopeDraft(draft: Partial<ScopeDraft>): ScopeDraft {
+  return {
+    industry: draft.industry ?? "",
+    competitors: draft.competitors ?? "",
+    dimensions: draft.dimensions ?? "",
+    outputGoal: draft.outputGoal ?? "",
+    sources: Array.isArray(draft.sources) ? draft.sources.filter((source): source is string => typeof source === "string") : DEFAULT_SOURCE_VALUES,
+    sourceUrls: draft.sourceUrls ?? "",
+    maxReviewReworkAttempts: Number.isFinite(draft.maxReviewReworkAttempts) ? Number(draft.maxReviewReworkAttempts) : 0
+  };
+}
+
+function hasScopeDraftContent(draft: ScopeDraft) {
+  return Boolean(
+    draft.industry.trim()
+    || draft.competitors.trim()
+    || draft.dimensions.trim()
+    || draft.outputGoal.trim()
+    || draft.sourceUrls.trim()
+    || draft.maxReviewReworkAttempts > 0
+    || !sameStringArray(draft.sources, DEFAULT_SOURCE_VALUES)
+  );
+}
+
+function sameStringArray(left: string[], right: string[]) {
+  if (left.length !== right.length) return false;
+  return left.every((value, index) => value === right[index]);
+}
+
 function PanelLoading({ label }: { label: string }) {
   return (
     <div className="panel-loading">
       <RefreshCw size={16} />
       <span>{label}</span>
+    </div>
+  );
+}
+
+function DeleteHistoryDialog({
+  summary,
+  deleting,
+  onCancel,
+  onConfirm
+}: {
+  summary?: AnalysisRunSummary;
+  deleting: boolean;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  const dialogRef = useRef<HTMLElement>(null);
+
+  useEffect(() => {
+    if (!summary) return;
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && !deleting) {
+        event.stopPropagation();
+        onCancel();
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown, true);
+    return () => window.removeEventListener("keydown", handleKeyDown, true);
+  }, [deleting, onCancel, summary]);
+
+  useEffect(() => {
+    if (summary) {
+      dialogRef.current?.focus();
+    }
+  }, [summary]);
+
+  if (!summary) return null;
+
+  const title = historyTitle(summary);
+  const counts = [
+    summary.competitors.length ? `${summary.competitors.length} 个竞品` : "",
+    summary.evidenceCount ? `${summary.evidenceCount} 条证据` : "",
+    summary.findingCount ? `${summary.findingCount} 个质检项` : "",
+    summary.stepCount ? `${summary.stepCount} 个步骤` : ""
+  ].filter(Boolean);
+
+  return (
+    <div
+      className="confirm-overlay"
+      role="presentation"
+      onMouseDown={(event) => {
+        if (event.currentTarget === event.target && !deleting) {
+          onCancel();
+        }
+      }}
+    >
+      <section
+        ref={dialogRef}
+        className="confirm-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="delete-history-title"
+        aria-describedby="delete-history-description"
+        tabIndex={-1}
+        onMouseDown={(event) => event.stopPropagation()}
+      >
+        <div className="confirm-head">
+          <div className="confirm-icon danger">
+            <AlertTriangle size={20} />
+          </div>
+          <div>
+            <p className="eyebrow">删除历史会话</p>
+            <h2 id="delete-history-title">确认删除这次分析？</h2>
+          </div>
+        </div>
+        <p id="delete-history-description" className="confirm-copy">
+          删除后，后端保存的运行数据、执行步骤、Trace、证据与产物记录都会一并移除。
+        </p>
+        <div className="confirm-target">
+          <strong>{title}</strong>
+          <span>{displayRunPhase(summary.status)}</span>
+          {counts.length ? <small>{counts.join(" · ")}</small> : null}
+        </div>
+        <div className="confirm-actions">
+          <button className="ghost-button" type="button" onClick={onCancel} disabled={deleting}>
+            取消
+          </button>
+          <button className="danger-button" type="button" onClick={onConfirm} disabled={deleting}>
+            {deleting ? <RefreshCw size={14} /> : <Trash2 size={14} />}
+            {deleting ? "正在删除" : "删除会话"}
+          </button>
+        </div>
+      </section>
     </div>
   );
 }
@@ -1035,6 +1273,13 @@ function summaryFromRun(run: AnalysisRun): AnalysisRunSummary {
     createdAt: run.createdAt,
     updatedAt: run.updatedAt
   };
+}
+
+function historyTitle(summary: AnalysisRunSummary) {
+  if (summary.industry?.trim()) return summary.industry.trim();
+  if (summary.competitors?.length) return summary.competitors.slice(0, 3).join(", ");
+  if (summary.originalPrompt?.trim()) return summary.originalPrompt.trim().slice(0, 28);
+  return summary.id;
 }
 
 function timestampValue(value?: string) {

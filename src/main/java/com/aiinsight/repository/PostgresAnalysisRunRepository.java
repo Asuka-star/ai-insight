@@ -34,6 +34,12 @@ public class PostgresAnalysisRunRepository implements AnalysisRunRepository {
     @PostConstruct
     void ensureSchema() {
         jdbcTemplate.execute("""
+                create table if not exists deleted_analysis_run (
+                    id uuid primary key,
+                    deleted_at timestamptz not null
+                )
+                """);
+        jdbcTemplate.execute("""
                 create table if not exists analysis_run (
                     id uuid primary key,
                     status varchar(32) not null,
@@ -159,9 +165,10 @@ public class PostgresAnalysisRunRepository implements AnalysisRunRepository {
     @Transactional
     public AnalysisRun save(AnalysisRun run) {
         run.touch();
-        jdbcTemplate.update("""
+        int affectedRows = jdbcTemplate.update("""
                         insert into analysis_run (id, status, original_prompt, run_payload, created_at, updated_at)
-                        values (?, ?, ?, ?::jsonb, ?, ?)
+                        select ?, ?, ?, ?::jsonb, ?, ?
+                        where not exists (select 1 from deleted_analysis_run where id = ?)
                         on conflict (id) do update set
                             status = excluded.status,
                             original_prompt = excluded.original_prompt,
@@ -173,8 +180,12 @@ public class PostgresAnalysisRunRepository implements AnalysisRunRepository {
                 originalPrompt(run),
                 toJson(run),
                 Timestamp.from(run.getCreatedAt()),
-                Timestamp.from(run.getUpdatedAt())
+                Timestamp.from(run.getUpdatedAt()),
+                run.getId()
         );
+        if (affectedRows == 0) {
+            return run;
+        }
         refreshDetailTables(run);
         return run;
     }
@@ -190,6 +201,16 @@ public class PostgresAnalysisRunRepository implements AnalysisRunRepository {
         } catch (EmptyResultDataAccessException ex) {
             return Optional.empty();
         }
+    }
+
+    @Override
+    public boolean existsById(UUID id) {
+        Boolean exists = jdbcTemplate.queryForObject(
+                "select exists(select 1 from analysis_run where id = ?)",
+                Boolean.class,
+                id
+        );
+        return Boolean.TRUE.equals(exists);
     }
 
     @Override
@@ -225,6 +246,21 @@ public class PostgresAnalysisRunRepository implements AnalysisRunRepository {
                         """,
                 (rs, rowNum) -> toSummary(rs)
         );
+    }
+
+    @Override
+    @Transactional
+    public void deleteById(UUID id) {
+        jdbcTemplate.update("""
+                        insert into deleted_analysis_run (id, deleted_at)
+                        values (?, ?)
+                        on conflict (id) do nothing
+                        """,
+                id,
+                Timestamp.from(Instant.now())
+        );
+        deleteDetails(id);
+        jdbcTemplate.update("delete from analysis_run where id = ?", id);
     }
 
     private String originalPrompt(AnalysisRun run) {

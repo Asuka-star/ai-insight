@@ -1,5 +1,5 @@
 import { useEffect } from "react";
-import { FileText, Plus, RefreshCw, X } from "lucide-react";
+import { FileText, Plus, RefreshCw, Trash2, X } from "lucide-react";
 import type { AnalysisRunSummary } from "../types";
 import { displayRunPhase } from "../utils";
 
@@ -12,6 +12,8 @@ interface HistoryDrawerProps {
   onNewRun: () => void;
   onRefresh: () => void;
   onSelectRun: (runId: string) => void;
+  onDeleteRun: (summary: AnalysisRunSummary) => void;
+  deletingRunId?: string;
 }
 
 export function HistoryDrawer({
@@ -22,7 +24,9 @@ export function HistoryDrawer({
   onClose,
   onNewRun,
   onRefresh,
-  onSelectRun
+  onSelectRun,
+  onDeleteRun,
+  deletingRunId
 }: HistoryDrawerProps) {
   useEffect(() => {
     if (!open) return;
@@ -65,20 +69,34 @@ export function HistoryDrawer({
         </div>
         <div className="history-list">
           {summaries.length ? summaries.map((summary) => (
-            <button
+            <div
               key={summary.id}
-              type="button"
               className={`history-item ${summary.id === currentRunId ? "selected" : ""}`}
-              onClick={() => onSelectRun(summary.id)}
-              disabled={loading && summary.id !== currentRunId}
             >
-              <FileText size={17} />
-              <span>
-                <strong>{runTitle(summary)}</strong>
-                <small>{runMeta(summary)}</small>
-              </span>
-              <em>{displayRunPhase(summary.status)}</em>
-            </button>
+              <button
+                className="history-select"
+                type="button"
+                onClick={() => onSelectRun(summary.id)}
+                disabled={loading && summary.id !== currentRunId}
+              >
+                <FileText size={17} />
+                <span>
+                  <strong>{runTitle(summary)}</strong>
+                  <small>{runMeta(summary)}</small>
+                </span>
+                <em>{displayRunPhase(summary.status)}</em>
+              </button>
+              <button
+                className="history-delete"
+                type="button"
+                aria-label={`删除${runTitle(summary)}`}
+                title="删除历史会话"
+                onClick={() => onDeleteRun(summary)}
+                disabled={Boolean(deletingRunId) || loading}
+              >
+                {deletingRunId === summary.id ? <RefreshCw size={14} /> : <Trash2 size={14} />}
+              </button>
+            </div>
           )) : (
             <div className="empty-state">
               <strong>暂无历史会话</strong>

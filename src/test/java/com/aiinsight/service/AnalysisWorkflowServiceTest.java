@@ -2204,6 +2204,11 @@ class AnalysisWorkflowServiceTest {
         }
 
         @Override
+        public boolean existsById(UUID id) {
+            return runs.containsKey(id);
+        }
+
+        @Override
         public Collection<AnalysisRun> findAll() {
             return runs.values();
         }
@@ -2211,6 +2216,11 @@ class AnalysisWorkflowServiceTest {
         @Override
         public Collection<AnalysisRunSummary> findSummaries() {
             return runs.values().stream().map(AnalysisWorkflowServiceTest::summaryOf).toList();
+        }
+
+        @Override
+        public void deleteById(UUID id) {
+            runs.remove(id);
         }
     }
 
@@ -2232,6 +2242,11 @@ class AnalysisWorkflowServiceTest {
         }
 
         @Override
+        public boolean existsById(UUID id) {
+            return runs.containsKey(id);
+        }
+
+        @Override
         public Collection<AnalysisRun> findAll() {
             return runs.values().stream().map(this::deserialize).toList();
         }
@@ -2239,6 +2254,11 @@ class AnalysisWorkflowServiceTest {
         @Override
         public Collection<AnalysisRunSummary> findSummaries() {
             return findAll().stream().map(AnalysisWorkflowServiceTest::summaryOf).toList();
+        }
+
+        @Override
+        public void deleteById(UUID id) {
+            runs.remove(id);
         }
 
         private AnalysisRun copy(AnalysisRun run) {
