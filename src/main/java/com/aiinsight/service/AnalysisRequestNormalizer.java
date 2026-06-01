@@ -23,6 +23,13 @@ public class AnalysisRequestNormalizer {
             "official_site", "pricing_page", "product_docs", "release_notes", "technical_blog", "authoritative_media", "public_reviews"
     );
     private static final Pattern URL_PATTERN = Pattern.compile("https?://[^\\s，。；、,;]+");
+    private static final Pattern COMPETITOR_SEGMENT_PATTERN = Pattern.compile(
+            "(?:分析|对比|比较|研究|加入|补充|新增|再加入|覆盖)\\s*([^，。；;\\n]+)"
+    );
+    private static final Set<String> NON_COMPETITOR_TERMS = Set.of(
+            "官网", "官方网站", "价格页", "定价页", "产品文档", "帮助文档", "公开评价", "用户评价",
+            "访谈记录", "问卷", "调研", "更新日志", "技术博客", "报告", "资料", "来源"
+    );
 
     public AnalysisRequirement normalize(CreateAnalysisRunRequest request) {
         String industry = StringUtils.hasText(request.getIndustry()) ? request.getIndustry() : inferIndustry(request.getPrompt());
@@ -56,17 +63,66 @@ public class AnalysisRequestNormalizer {
     }
 
     private List<String> inferCompetitors(String prompt) {
+        List<String> extractedCompetitors = extractMentionedCompetitors(prompt);
+        if (extractedCompetitors.size() >= 2) {
+            return extractedCompetitors;
+        }
         Set<String> competitors = new LinkedHashSet<>();
-        List.of("Notion", "飞书文档", "钉钉文档", "语雀", "Confluence", "Airtable").forEach(candidate -> {
-            if (prompt.toLowerCase().contains(candidate.toLowerCase())) {
-                competitors.add(candidate);
-            }
-        });
-        if (competitors.size() < 2) {
-            competitors.add("竞品 A");
-            competitors.add("竞品 B");
+        competitors.addAll(extractedCompetitors);
+        while (competitors.size() < 2) {
+            competitors.add("竞品 " + (char) ('A' + competitors.size()));
         }
         return new ArrayList<>(competitors);
+    }
+
+    List<String> extractMentionedCompetitors(String text) {
+        Set<String> competitors = new LinkedHashSet<>();
+        if (!StringUtils.hasText(text)) {
+            return List.of();
+        }
+        String textWithoutUrls = URL_PATTERN.matcher(text).replaceAll(" ");
+        Matcher matcher = COMPETITOR_SEGMENT_PATTERN.matcher(textWithoutUrls);
+        while (matcher.find()) {
+            splitCompetitorSegment(matcher.group(1)).stream()
+                    .map(this::cleanCompetitorName)
+                    .filter(StringUtils::hasText)
+                    .filter(this::isLikelyCompetitorName)
+                    .forEach(competitors::add);
+        }
+        return new ArrayList<>(competitors);
+    }
+
+    private List<String> splitCompetitorSegment(String segment) {
+        if (!StringUtils.hasText(segment)) {
+            return List.of();
+        }
+        String normalized = segment
+                .replaceAll("\\s+(?i:vs\\.?|versus)\\s+", "、")
+                .replaceAll("\\s*(和|与|及|以及|、|/|,|，)\\s*", "、");
+        return List.of(normalized.split("、"));
+    }
+
+    private String cleanCompetitorName(String value) {
+        if (!StringUtils.hasText(value)) {
+            return "";
+        }
+        String cleaned = value.trim()
+                .replaceFirst("^(一下|下|一下子)", "")
+                .replaceFirst("(在|重点|主要|用于|输出|围绕|关于|看|比较|对比).*$", "")
+                .replaceFirst("(这个|这款|该|的).*$", "")
+                .trim();
+        if (cleaned.matches("[A-Za-z0-9_.-]+\\s+.*[\\u4e00-\\u9fa5].*")) {
+            cleaned = cleaned.substring(0, cleaned.indexOf(' ')).trim();
+        }
+        return cleaned;
+    }
+
+    private boolean isLikelyCompetitorName(String value) {
+        String trimmed = value.trim();
+        if (NON_COMPETITOR_TERMS.contains(trimmed)) {
+            return false;
+        }
+        return NON_COMPETITOR_TERMS.stream().noneMatch(trimmed::endsWith);
     }
 
     private List<String> normalizeSourceUrls(CreateAnalysisRunRequest request) {

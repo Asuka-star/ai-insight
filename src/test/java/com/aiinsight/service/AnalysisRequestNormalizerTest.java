@@ -12,12 +12,12 @@ class AnalysisRequestNormalizerTest {
     @Test
     void infersDocumentIndustryAndCompetitorsFromPrompt() {
         CreateAnalysisRunRequest request = new CreateAnalysisRunRequest();
-        request.setPrompt("分析 Notion 和飞书文档在 AI 协作文档方向的竞品机会");
+        request.setPrompt("分析 AlphaDocs 和 BetaBase 在 AI 协作文档方向的竞品机会");
 
         var requirement = normalizer.normalize(request);
 
         assertThat(requirement.getIndustry()).isEqualTo("AI 协作文档");
-        assertThat(requirement.getCompetitors()).contains("Notion", "飞书文档");
+        assertThat(requirement.getCompetitors()).containsExactly("AlphaDocs", "BetaBase");
         assertThat(requirement.getDimensions()).contains("产品定位", "机会点", "风险提示");
     }
 
@@ -31,6 +31,13 @@ class AnalysisRequestNormalizerTest {
 
         assertThat(requirement.getSourceUrls())
                 .containsExactly("https://www.feishu.cn/product/docs", "https://www.notion.so/product");
+    }
+
+    @Test
+    void extractsCompetitorHintsWithoutTreatingSourceTypesAsCompetitors() {
+        var competitors = normalizer.extractMentionedCompetitors("再加入 GammaDocs，重点看权限，也补充价格页和公开评价。");
+
+        assertThat(competitors).containsExactly("GammaDocs");
     }
 
     @Test

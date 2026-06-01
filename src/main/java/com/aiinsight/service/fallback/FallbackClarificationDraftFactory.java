@@ -32,17 +32,14 @@ public class FallbackClarificationDraftFactory {
                     .filter(StringUtils::hasText)
                     .filter(competitor -> !PLACEHOLDER_COMPETITORS.contains(competitor))
                     .toList();
-            List<String> benchmarkCompetitors = currentCompetitors.isEmpty()
-                    ? List.of("Notion", "Confluence", "Airtable")
-                    : appendBenchmarks(currentCompetitors);
             items.add(new ClarificationItem(
                     "competitors",
-                    "是否需要补充标杆竞品作为对照？",
+                    "是否需要补充或修正竞品列表？",
                     "竞品数量过少时，后续矩阵和 SWOT 的对比价值会下降。",
                     false,
                     List.of(
                             new ClarificationOption("保留当前竞品", "适合已经明确对比对象的场景。", currentCompetitors, currentCompetitors.size() >= 2),
-                            new ClarificationOption("加入常见标杆", "补充横向参照，便于后续生成对比矩阵。", benchmarkCompetitors, currentCompetitors.size() < 2)
+                            new ClarificationOption("手动补充竞品", "请在输入框中补充具体竞品名称，系统不会自动编造对照对象。", currentCompetitors, currentCompetitors.size() < 2)
                     )
             ));
         }
@@ -77,9 +74,7 @@ public class FallbackClarificationDraftFactory {
                     "行业场景会影响搜索关键词、竞品选择和报告术语。",
                     true,
                     List.of(
-                            new ClarificationOption("AI 编程助手", "适合 Cursor、Copilot、Claude Code 等工具分析。", List.of("AI 编程助手与研发协作工具"), true),
-                            new ClarificationOption("企业协作文档", "适合 Notion、Confluence、飞书文档等工具分析。", List.of("企业协作文档与知识管理"), false),
-                            new ClarificationOption("CRM 销售自动化", "适合 Salesforce、HubSpot 等工具分析。", List.of("企业服务 CRM 与销售自动化"), false)
+                            new ClarificationOption("手动填写行业", "请在行业方向输入框中补充你的真实业务场景。", List.of(), true)
                     )
             ));
         }
@@ -88,9 +83,6 @@ public class FallbackClarificationDraftFactory {
 
     private List<String> ruleQuestions(AnalysisRequirement requirement) {
         List<String> questions = new ArrayList<>();
-        if (hasPlaceholderCompetitors(requirement.getCompetitors()) || requirement.getCompetitors().size() < 3) {
-            questions.add("是否需要加入 Confluence、Airtable 等标杆产品作为对照？");
-        }
         if (requirement.getSourceUrls().isEmpty()) {
             questions.add("是否有官网、价格页、产品文档、公开评价或访谈记录可以作为资料来源？");
         }
@@ -105,19 +97,6 @@ public class FallbackClarificationDraftFactory {
 
     private boolean hasMeaningfulIndustry(String value) {
         return StringUtils.hasText(value) && !UNKNOWN_INDUSTRY.equals(value);
-    }
-
-    private List<String> appendBenchmarks(List<String> competitors) {
-        List<String> values = new ArrayList<>(competitors);
-        for (String benchmark : List.of("Confluence", "Airtable", "Notion")) {
-            if (values.stream().noneMatch(value -> value.equalsIgnoreCase(benchmark))) {
-                values.add(benchmark);
-            }
-            if (values.size() >= 4) {
-                break;
-            }
-        }
-        return values;
     }
 
     private boolean hasPlaceholderCompetitors(List<String> competitors) {

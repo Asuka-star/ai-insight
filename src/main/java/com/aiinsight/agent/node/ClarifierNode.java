@@ -131,7 +131,9 @@ public class ClarifierNode implements AgentNode {
                 3. sourceUrls 只能复述用户已提供的 URL，不要编造 URL。
                 4. 默认优先官方、权威和可复核来源，sourcePreferences 只表示重点覆盖类型。
                 5. clarificationItems 要给出可点选的正常选项；如果是单值字段，values 放一个值；如果是列表字段，values 放完整列表。
-                6. 输出要短，确保 JSON 完整闭合。
+                6. 如果竞品名称疑似拼写错误、错别字或品牌别名，不要静默改写；保留用户原值，并在 clarificationItems 中给出修正选项，values 放修正后的完整竞品列表。
+                7. 如果竞品过少或用户表达“同类产品/标杆产品”等模糊范围，可以在 clarificationItems 中给出补充竞品选项，values 放补充后的完整竞品列表。
+                8. 输出要短，确保 JSON 完整闭合。
 
                 原始需求：%s
                 industry=%s
@@ -186,23 +188,22 @@ public class ClarifierNode implements AgentNode {
         // URL 只接受用户输入，避免模型生成不可验证的来源链接。
         merged.setSourceUrls(new ArrayList<>(requirement.getSourceUrls()));
         merged.setOutputGoal(firstText(requirement.getOutputGoal(), llmDraft.getOutputGoal(), fallback.getOutputGoal()));
-        merged.setClarificationQuestions(mergeQuestions(llmDraft.getClarificationQuestions(), fallback.getClarificationQuestions()));
-        merged.setClarificationItems(mergeItems(llmDraft.getClarificationItems(), fallback.getClarificationItems()));
+        // LLM 成功时，前端可见的澄清问题必须只展示模型返回内容；规则 fallback 只负责补齐结构化字段。
+        merged.setClarificationQuestions(mergeQuestions(llmDraft.getClarificationQuestions()));
+        merged.setClarificationItems(mergeItems(llmDraft.getClarificationItems()));
         return merged;
     }
 
-    private List<String> mergeQuestions(List<String> llmQuestions, List<String> fallbackQuestions) {
+    private List<String> mergeQuestions(List<String> llmQuestions) {
         LinkedHashSet<String> merged = new LinkedHashSet<>();
         addAllText(merged, llmQuestions);
-        addAllText(merged, fallbackQuestions);
         return new ArrayList<>(merged);
     }
 
-    private List<ClarificationItem> mergeItems(List<ClarificationItem> llmItems, List<ClarificationItem> fallbackItems) {
+    private List<ClarificationItem> mergeItems(List<ClarificationItem> llmItems) {
         LinkedHashSet<String> seen = new LinkedHashSet<>();
         List<ClarificationItem> merged = new ArrayList<>();
         addItems(merged, seen, llmItems);
-        addItems(merged, seen, fallbackItems);
         return merged;
     }
 

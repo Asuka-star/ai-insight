@@ -498,14 +498,11 @@ public class AnalysisWorkflowService {
         if (requirement == null || content == null) {
             return;
         }
-        appendIfMentionedAny(requirement.getCompetitors(), content, "Notion", "notion");
-        appendIfMentionedAny(requirement.getCompetitors(), content, "飞书文档", "飞书文档", "飞书 docs", "feishu docs",
-                "lark docs");
-        appendIfMentionedAny(requirement.getCompetitors(), content, "钉钉文档", "钉钉文档", "dingdocs");
-        appendIfMentionedAny(requirement.getCompetitors(), content, "语雀", "语雀", "yuque");
-        appendIfMentionedAny(requirement.getCompetitors(), content, "Confluence", "confluence");
-        appendIfMentionedAny(requirement.getCompetitors(), content, "Airtable", "airtable");
-        appendIfMentionedAny(requirement.getCompetitors(), content, "腾讯文档", "腾讯文档", "tencent docs");
+        List<String> mentionedCompetitors = normalizer.extractMentionedCompetitors(content);
+        if (!mentionedCompetitors.isEmpty()) {
+            requirement.getCompetitors().removeIf(value -> "竞品 A".equals(value) || "竞品 B".equals(value));
+            mentionedCompetitors.forEach(competitor -> appendUnique(requirement.getCompetitors(), competitor));
+        }
 
         appendIfMentionedAny(requirement.getDimensions(), content, "AI 搜索", "AI 搜索", "ai search", "智能搜索");
         appendIfMentionedAny(requirement.getDimensions(), content, "权限协作", "权限协作", "权限", "permission collaboration",
