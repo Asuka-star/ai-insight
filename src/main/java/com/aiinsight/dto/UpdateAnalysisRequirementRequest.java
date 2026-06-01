@@ -16,12 +16,14 @@ public class UpdateAnalysisRequirementRequest {
     private List<String> sourcePreferences = new ArrayList<>();
     private List<String> sourceUrls = new ArrayList<>();
     private String outputGoal;
+    private Integer maxReviewReworkAttempts;
     private boolean industryProvided;
     private boolean competitorsProvided;
     private boolean dimensionsProvided;
     private boolean sourcePreferencesProvided;
     private boolean sourceUrlsProvided;
     private boolean outputGoalProvided;
+    private boolean maxReviewReworkAttemptsProvided;
 
     public void setIndustry(String industry) {
         this.industry = industry;
@@ -53,6 +55,11 @@ public class UpdateAnalysisRequirementRequest {
         this.outputGoalProvided = true;
     }
 
+    public void setMaxReviewReworkAttempts(Integer maxReviewReworkAttempts) {
+        this.maxReviewReworkAttempts = maxReviewReworkAttempts;
+        this.maxReviewReworkAttemptsProvided = true;
+    }
+
     public boolean industryProvided() {
         return industryProvided;
     }
@@ -75,5 +82,9 @@ public class UpdateAnalysisRequirementRequest {
 
     public boolean outputGoalProvided() {
         return outputGoalProvided;
+    }
+
+    public boolean maxReviewReworkAttemptsProvided() {
+        return maxReviewReworkAttemptsProvided;
     }
 }

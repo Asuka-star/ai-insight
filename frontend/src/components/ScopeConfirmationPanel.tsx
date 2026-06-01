@@ -12,12 +12,14 @@ interface ScopeConfirmationPanelProps {
   outputGoal: string;
   sources: string[];
   sourceUrls: string;
+  maxReviewReworkAttempts: number;
   onIndustryChange: (value: string) => void;
   onCompetitorsChange: (value: string) => void;
   onDimensionsChange: (value: string) => void;
   onOutputGoalChange: (value: string) => void;
   onSourcesChange: (value: string[]) => void;
   onSourceUrlsChange: (value: string) => void;
+  onMaxReviewReworkAttemptsChange: (value: number) => void;
   onApplyClarificationOption: (field: string, values: string[]) => void;
   onCreate: () => void;
   onReclarify: () => void;
@@ -36,12 +38,14 @@ export function ScopeConfirmationPanel({
   outputGoal,
   sources,
   sourceUrls,
+  maxReviewReworkAttempts,
   onIndustryChange,
   onCompetitorsChange,
   onDimensionsChange,
   onOutputGoalChange,
   onSourcesChange,
   onSourceUrlsChange,
+  onMaxReviewReworkAttemptsChange,
   onApplyClarificationOption,
   onCreate,
   onReclarify,
@@ -58,6 +62,7 @@ export function ScopeConfirmationPanel({
   const phaseText = String(phase);
   const hasDraft = Boolean(run && draft);
   const hasClarificationRequests = questions.length > 0 || clarificationItems.length > 0;
+  // Clarifier 没产出待确认项时，用户无需再点一次“确认范围”，启动前会直接保存当前结构化范围。
   const canStartWithoutConfirm = hasDraft && !hasClarificationRequests;
   const hasScopeInput = [industry, competitors, dimensions, outputGoal, sourceUrls].some((value) => value.trim());
   const canCreate = !run && !busy && !creating && hasScopeInput;
@@ -130,6 +135,19 @@ export function ScopeConfirmationPanel({
           placeholder="每行一个公开网页 URL，例如官网、价格页、产品文档"
           rows={3}
         />
+      </label>
+
+      <label>
+        质检自动返工
+        {/* 这是单次 run 的执行选项，由 Review Gate 读取；默认不返工，避免一次分析被自动拉长。 */}
+        <select
+          value={maxReviewReworkAttempts}
+          onChange={(event) => onMaxReviewReworkAttemptsChange(Number(event.target.value))}
+        >
+          <option value={0}>不自动返工</option>
+          <option value={1}>最多 1 轮</option>
+          <option value={2}>最多 2 轮</option>
+        </select>
       </label>
 
       {!run ? (

@@ -3,9 +3,13 @@ package com.aiinsight.service;
 import com.aiinsight.config.HttpProxyProperties;
 import com.sun.net.httpserver.HttpServer;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
+import org.springframework.boot.test.system.CapturedOutput;
+import org.springframework.boot.test.system.OutputCaptureExtension;
 
 import java.io.IOException;
 import java.net.InetSocketAddress;
+import java.net.ServerSocket;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -13,6 +17,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+@ExtendWith(OutputCaptureExtension.class)
 class WebPageFetchServiceTest {
 
     @Test
@@ -503,6 +508,18 @@ class WebPageFetchServiceTest {
     }
 
     @Test
+    void logsClassifiedFailureReasonWhenFetchFails(CapturedOutput output) throws IOException {
+        int closedPort = closedLocalPort();
+        WebPageFetchService service = noDelayFetchService(1);
+
+        var page = service.fetch("http://127.0.0.1:" + closedPort + "/missing");
+
+        assertThat(page.getStatus()).isEqualTo("FETCH_FAILED");
+        assertThat(page.getFailureReason()).isEqualTo("CONNECT_FAILED");
+        assertThat(output).contains("Web page fetch failed", "failureReason=CONNECT_FAILED");
+    }
+
+    @Test
     void appliesMinimumIntervalBetweenSameOriginFetches() throws IOException {
         HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
         server.createContext("/robots.txt", exchange -> {
@@ -554,6 +571,12 @@ class WebPageFetchServiceTest {
 
     private String url(HttpServer server, String path) {
         return "http://127.0.0.1:" + server.getAddress().getPort() + path;
+    }
+
+    private int closedLocalPort() throws IOException {
+        try (ServerSocket socket = new ServerSocket(0)) {
+            return socket.getLocalPort();
+        }
     }
 
     private WebPageFetchService noDelayFetchService(int maxFetchAttempts) {

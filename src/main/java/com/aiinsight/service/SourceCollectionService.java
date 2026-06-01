@@ -25,37 +25,35 @@ public class SourceCollectionService {
 
     private static final int SNIPPET_LENGTH = 220;
     private static final int MIN_SEARCH_FETCH_TEXT_LENGTH = 180;
-    private static final int MAX_RESULTS_PER_QUERY = 3;
-    private static final int MIN_SEARCH_SOURCES = 12;
-    private static final int SMALL_BATCH_SEARCH_SOURCES_PER_COMPETITOR = 3;
-    private static final int LARGE_BATCH_SEARCH_SOURCES_PER_COMPETITOR = 2;
-    private static final int LARGE_BATCH_COMPETITOR_THRESHOLD = 12;
-    private static final int HARD_MAX_SEARCH_SOURCES = 60;
 
     private final WebPageFetchService webPageFetchService;
     private final SearchProvider searchProvider;
     private final SearchQueryPlanner searchQueryPlanner;
     private final SourceTypeClassifier sourceTypeClassifier;
+    private final SourceCollectionProperties properties;
 
     @Autowired
     public SourceCollectionService(WebPageFetchService webPageFetchService,
                                    SearchProvider searchProvider,
-                                   SearchQueryPlanner searchQueryPlanner) {
-        this(webPageFetchService, searchProvider, searchQueryPlanner, new SourceTypeClassifier());
+                                   SearchQueryPlanner searchQueryPlanner,
+                                   SourceCollectionProperties properties) {
+        this(webPageFetchService, searchProvider, searchQueryPlanner, new SourceTypeClassifier(), properties);
     }
 
     SourceCollectionService(WebPageFetchService webPageFetchService,
                             SearchProvider searchProvider,
                             SearchQueryPlanner searchQueryPlanner,
-                            SourceTypeClassifier sourceTypeClassifier) {
+                            SourceTypeClassifier sourceTypeClassifier,
+                            SourceCollectionProperties properties) {
         this.webPageFetchService = webPageFetchService;
         this.searchProvider = searchProvider;
         this.searchQueryPlanner = searchQueryPlanner;
         this.sourceTypeClassifier = sourceTypeClassifier;
+        this.properties = properties == null ? new SourceCollectionProperties() : properties;
     }
 
     public SourceCollectionService(WebPageFetchService webPageFetchService, SearchProvider searchProvider) {
-        this(webPageFetchService, searchProvider, new SearchQueryPlanner());
+        this(webPageFetchService, searchProvider, new SearchQueryPlanner(), new SourceCollectionProperties());
     }
 
     public List<EvidenceSource> collect(AnalysisRun run, boolean recollecting) {
@@ -198,6 +196,7 @@ public class SourceCollectionService {
                 .mapToInt(result -> result.sources().size())
                 .max()
                 .orElse(0);
+        // 按候选位轮询各竞品，避免第一个竞品独占全部证据名额，导致后续画像缺少基础来源。
         for (int candidateIndex = 0; candidateIndex < maxCandidates && added < maxSearchSources; candidateIndex++) {
             for (SearchBatchResult batchResult : batchResults) {
                 if (candidateIndex >= batchResult.sources().size()) {
@@ -246,6 +245,7 @@ public class SourceCollectionService {
                     .map(this::normalizeText)
                     .collect(java.util.stream.Collectors.toCollection(LinkedHashSet::new));
             List<SearchQueryPlanner.SearchQueryBatch> merged = new ArrayList<>(plannedSearchBatches);
+            // LLM 规划可以更贴合任务，但不能漏掉竞品覆盖；规则规划只补齐缺失竞品。
             ruleBatches.stream()
                     .filter(batch -> !plannedCompetitors.contains(normalizeText(batch.competitor())))
                     .forEach(merged::add);
@@ -279,16 +279,16 @@ public class SourceCollectionService {
     }
 
     private int searchSourcesPerCompetitor(int competitorCount) {
-        if (competitorCount > LARGE_BATCH_COMPETITOR_THRESHOLD) {
-            return LARGE_BATCH_SEARCH_SOURCES_PER_COMPETITOR;
+        if (competitorCount > properties.largeBatchCompetitorThreshold()) {
+            return properties.largeBatchSearchSourcesPerCompetitor();
         }
-        return SMALL_BATCH_SEARCH_SOURCES_PER_COMPETITOR;
+        return properties.smallBatchSearchSourcesPerCompetitor();
     }
 
     private int maxSearchSources(int competitorCount, int sourcesPerCompetitor) {
         return Math.min(
-                HARD_MAX_SEARCH_SOURCES,
-                Math.max(MIN_SEARCH_SOURCES, competitorCount * sourcesPerCompetitor)
+                properties.hardMaxSearchSources(),
+                Math.max(properties.minSearchSources(), competitorCount * sourcesPerCompetitor)
         );
     }
 
@@ -297,8 +297,9 @@ public class SourceCollectionService {
                                                          Set<String> seenUrls,
                                                          int sourcesPerCompetitor,
                                                          boolean recollecting) {
-        ExecutorService executor = Executors.newFixedThreadPool(Math.min(batches.size(), 6));
+        ExecutorService executor = Executors.newFixedThreadPool(Math.min(batches.size(), properties.maxParallelBatches()));
         try {
+            // 并发抓取共享“已有来源”快照，批内先去重；最终提升证据时再用全局 seenUrls 做一次严格去重。
             Set<String> existingSeenUrls = new LinkedHashSet<>(seenUrls);
             List<CompletableFuture<SearchBatchResult>> futures = batches.stream()
                     .map(batch -> CompletableFuture.supplyAsync(
@@ -384,7 +385,7 @@ public class SourceCollectionService {
             }
             List<SearchResult> results;
             try {
-                results = searchProvider.search(query, MAX_RESULTS_PER_QUERY);
+                results = searchProvider.search(query, properties.maxResultsPerQuery());
             } catch (RuntimeException ex) {
                 log.warn("Source collection search query failed: runId={}, competitor={}, query={}, exceptionType={}, message={}",
                         run.getId(),

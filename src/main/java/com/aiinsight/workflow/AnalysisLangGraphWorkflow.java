@@ -15,6 +15,7 @@ import org.bsc.langgraph4j.GraphDefinition;
 import org.bsc.langgraph4j.StateGraph;
 import org.bsc.langgraph4j.action.AsyncEdgeAction;
 import org.bsc.langgraph4j.action.AsyncNodeAction;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 import java.util.Comparator;
@@ -32,26 +33,36 @@ public class AnalysisLangGraphWorkflow {
     private static final String ROUTE_REANALYZE = "reanalyze";
     private static final String ROUTE_REVISE = "revise";
     private static final String REVIEW_GATE = "REVIEW_GATE";
-    private static final int MAX_REVIEW_REWORK_ATTEMPTS = 1;
 
     private final WorkflowNodeExecutor nodeExecutor;
     private final AnalysisRunRepository repository;
     private final AnalysisEventBroker eventBroker;
+    private final AnalysisWorkflowProperties workflowProperties;
     private final Map<AgentName, AgentNode> nodesByName;
     private final CompiledGraph<AnalysisGraphState> graph;
 
+    @Autowired
     public AnalysisLangGraphWorkflow(List<AgentNode> nodes,
                                      WorkflowNodeExecutor nodeExecutor,
                                      AnalysisRunRepository repository,
-                                     AnalysisEventBroker eventBroker) {
+                                     AnalysisEventBroker eventBroker,
+                                     AnalysisWorkflowProperties workflowProperties) {
         this.nodeExecutor = nodeExecutor;
         this.repository = repository;
         this.eventBroker = eventBroker;
+        this.workflowProperties = workflowProperties == null ? new AnalysisWorkflowProperties() : workflowProperties;
         this.nodesByName = new EnumMap<>(AgentName.class);
         nodes.stream()
                 .sorted(Comparator.comparingInt(node -> node.name().ordinal()))
                 .forEach(node -> this.nodesByName.put(node.name(), node));
         this.graph = buildGraph();
+    }
+
+    public AnalysisLangGraphWorkflow(List<AgentNode> nodes,
+                                     WorkflowNodeExecutor nodeExecutor,
+                                     AnalysisRunRepository repository,
+                                     AnalysisEventBroker eventBroker) {
+        this(nodes, nodeExecutor, repository, eventBroker, new AnalysisWorkflowProperties());
     }
 
     public void execute(UUID runId) {
@@ -148,7 +159,7 @@ public class AnalysisLangGraphWorkflow {
 
     private String nextRoute(AnalysisRun run, int reworkAttempts) {
         // MVP 限制自动返工轮次，防止 Reviewer 和上游 Agent 在证据不足时无限循环。
-        if (reworkAttempts >= MAX_REVIEW_REWORK_ATTEMPTS) {
+        if (reworkAttempts >= maxReviewReworkAttempts(run)) {
             return ROUTE_FINISH;
         }
         // ReviewAction 是后端和前端共同理解的返工协议：
@@ -164,6 +175,15 @@ public class AnalysisLangGraphWorkflow {
             return ROUTE_REVISE;
         }
         return ROUTE_FINISH;
+    }
+
+    private int maxReviewReworkAttempts(AnalysisRun run) {
+        Integer runValue = run.getMaxReviewReworkAttempts();
+        if (runValue == null) {
+            return workflowProperties.maxReviewReworkAttempts();
+        }
+        // run 级配置来自前端本次选择，优先于全局默认；再次夹紧范围，避免历史数据或接口调用绕过限制。
+        return Math.max(0, Math.min(runValue, 2));
     }
 
     private String targetNodeFor(String route) {

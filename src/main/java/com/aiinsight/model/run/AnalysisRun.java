@@ -47,6 +47,7 @@ public class AnalysisRun {
     private List<WorkflowTransition> workflowTransitions = new ArrayList<>();
     private List<ReviewFinding> reviewFindings = new ArrayList<>();
     private List<String> recommendedActions = new ArrayList<>();
+    private Integer maxReviewReworkAttempts;
     private String errorMessage;
     private Instant createdAt = Instant.now();
     private Instant updatedAt = Instant.now();

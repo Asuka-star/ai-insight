@@ -18,8 +18,8 @@ management:
 
 logging:
   charset:
-    console: UTF-8
-    file: UTF-8
+    console: ${LOGGING_CHARSET_CONSOLE:UTF-8}
+    file: ${LOGGING_CHARSET_FILE:UTF-8}
 
 ai-insight:
   http:
@@ -39,8 +39,8 @@ ai-insight:
     enabled: ${AI_INSIGHT_WEB_RENDERER_ENABLED:true}
     browser-channel: ${AI_INSIGHT_WEB_RENDERER_BROWSER_CHANNEL:msedge}
     headless: ${AI_INSIGHT_WEB_RENDERER_HEADLESS:true}
-    navigation-timeout: ${AI_INSIGHT_WEB_RENDERER_NAVIGATION_TIMEOUT:15s}
-    wait-after-load: ${AI_INSIGHT_WEB_RENDERER_WAIT_AFTER_LOAD:1s}
+    navigation-timeout: ${AI_INSIGHT_WEB_RENDERER_NAVIGATION_TIMEOUT:8s}
+    wait-after-load: ${AI_INSIGHT_WEB_RENDERER_WAIT_AFTER_LOAD:250ms}
     max-html-length: ${AI_INSIGHT_WEB_RENDERER_MAX_HTML_LENGTH:2000000}
   llm:
     xiaomi:
@@ -55,5 +55,18 @@ ai-insight:
       base-url: ${TAVILY_BASE_URL:https://api.tavily.com/search}
       max-results: ${TAVILY_MAX_RESULTS:5}
       search-depth: ${TAVILY_SEARCH_DEPTH:basic}
-      include-raw-content: ${TAVILY_INCLUDE_RAW_CONTENT:true}
+      include-raw-content: ${TAVILY_INCLUDE_RAW_CONTENT:false}
       timeout: 20s
+  search-query-planner:
+    max-search-queries: ${AI_INSIGHT_MAX_SEARCH_QUERIES:8}
+    max-search-queries-per-competitor: ${AI_INSIGHT_MAX_SEARCH_QUERIES_PER_COMPETITOR:7}
+  source-collection:
+    max-results-per-query: ${AI_INSIGHT_SEARCH_MAX_RESULTS_PER_QUERY:2}
+    min-search-sources: ${AI_INSIGHT_MIN_SEARCH_SOURCES:8}
+    small-batch-search-sources-per-competitor: ${AI_INSIGHT_SEARCH_SOURCES_PER_COMPETITOR:3}
+    large-batch-search-sources-per-competitor: ${AI_INSIGHT_LARGE_BATCH_SEARCH_SOURCES_PER_COMPETITOR:1}
+    large-batch-competitor-threshold: ${AI_INSIGHT_LARGE_BATCH_COMPETITOR_THRESHOLD:12}
+    hard-max-search-sources: ${AI_INSIGHT_HARD_MAX_SEARCH_SOURCES:24}
+    max-parallel-batches: ${AI_INSIGHT_MAX_PARALLEL_SEARCH_BATCHES:8}
+  workflow:
+    max-review-rework-attempts: ${AI_INSIGHT_MAX_REVIEW_REWORK_ATTEMPTS:0}

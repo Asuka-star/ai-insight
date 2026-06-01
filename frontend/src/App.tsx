@@ -64,6 +64,7 @@ export function App() {
   const [outputGoal, setOutputGoal] = useState("");
   const [sources, setSources] = useState<string[]>(SOURCE_OPTIONS.map((source) => source.value));
   const [sourceUrls, setSourceUrls] = useState("");
+  const [maxReviewReworkAttempts, setMaxReviewReworkAttempts] = useState(0);
   const [selectedArtifactId, setSelectedArtifactId] = useState<string>();
   const [artifactPinned, setArtifactPinned] = useState(false);
   const [selectedCitationKey, setSelectedCitationKey] = useState<string>();
@@ -110,6 +111,7 @@ export function App() {
       outputGoal: scope.outputGoal ?? "",
       sourcePreferences: scope.sourcePreferences ?? [],
       sourceUrls: scope.sourceUrls ?? [],
+      maxReviewReworkAttempts: run.maxReviewReworkAttempts ?? 0,
       confirmed: Boolean(run.clarificationDraft?.confirmed)
     });
   }, [run]);
@@ -328,6 +330,7 @@ export function App() {
     if (scope.sourcePreferences?.length) {
       setSources(scope.sourcePreferences);
     }
+    setMaxReviewReworkAttempts(run.maxReviewReworkAttempts ?? 0);
     setLocalScopeConfirmed(Boolean(run.clarificationDraft?.confirmed));
   }, [scopeSyncKey]);
 
@@ -396,6 +399,7 @@ export function App() {
     setOutputGoal("");
     setSources(SOURCE_OPTIONS.map((source) => source.value));
     setSourceUrls("");
+    setMaxReviewReworkAttempts(0);
     setSelectedArtifactId(undefined);
     setArtifactPinned(false);
     setSelectedCitationKey(undefined);
@@ -428,6 +432,7 @@ export function App() {
       const competitorList = splitList(competitors);
       const dimensionList = splitList(dimensions);
       const sourceUrlList = splitLines(sourceUrls);
+      // 返工次数属于 run 级执行选项，不写入需求正文；创建草稿时就带上，后续启动接口只负责开跑。
       const nextRun = await createRun({
         prompt: buildScopePrompt(industry, outputGoal, competitorList, dimensionList, sourceUrlList),
         industry,
@@ -435,7 +440,8 @@ export function App() {
         dimensions: dimensionList,
         sourcePreferences: sources,
         sourceUrls: sourceUrlList,
-        outputGoal
+        outputGoal,
+        maxReviewReworkAttempts
       });
       if (requestToken !== workspaceRequestTokenRef.current) return;
       setBackendOk(true);
@@ -464,7 +470,8 @@ export function App() {
         dimensions: splitList(dimensions),
         sourcePreferences: sources,
         sourceUrls: splitLines(sourceUrls),
-        outputGoal
+        outputGoal,
+        maxReviewReworkAttempts
       });
       setRun(nextRun);
       setEventMessage("分析范围已确认");
@@ -505,7 +512,8 @@ export function App() {
         dimensions: splitList(dimensions),
         sourcePreferences: sources,
         sourceUrls: splitLines(sourceUrls),
-        outputGoal
+        outputGoal,
+        maxReviewReworkAttempts
       });
       setRun(nextRun);
       setLocalScopeConfirmed(Boolean(nextRun.clarificationDraft?.confirmed));
@@ -522,13 +530,15 @@ export function App() {
     setIsScopeBusy(true);
     setEventMessage("正在保存范围并启动 Agent 分析");
     try {
+      // startAnalysis 没有请求体，先把最新范围和执行选项落库，再启动 DAG，避免前端选择被旧 run 覆盖。
       await updateRequirement(run.id, {
         industry,
         competitors: splitList(competitors),
         dimensions: splitList(dimensions),
         sourcePreferences: sources,
         sourceUrls: splitLines(sourceUrls),
-        outputGoal
+        outputGoal,
+        maxReviewReworkAttempts
       });
       const nextRun = await startAnalysis(run.id);
       setRun(nextRun);
@@ -703,12 +713,14 @@ export function App() {
             outputGoal={outputGoal}
             sources={sources}
             sourceUrls={sourceUrls}
+            maxReviewReworkAttempts={maxReviewReworkAttempts}
             onIndustryChange={setIndustry}
             onCompetitorsChange={setCompetitors}
             onDimensionsChange={setDimensions}
             onOutputGoalChange={setOutputGoal}
             onSourcesChange={setSources}
             onSourceUrlsChange={setSourceUrls}
+            onMaxReviewReworkAttemptsChange={setMaxReviewReworkAttempts}
             onApplyClarificationOption={handleApplyClarificationOption}
             onCreate={handleCreateRun}
             onReclarify={handleReclarifyScope}
@@ -896,11 +908,16 @@ export function App() {
             eyebrow="时间线"
             title="执行回放"
             icon={<Activity size={18} />}
-            summary={`${run?.steps.length ?? 0} 个步骤`}
+            summary={isCreating ? "澄清执行中" : `${run?.steps.length ?? 0} 个步骤`}
             collapsed={collapsedRightPanels.timeline}
             onToggle={() => toggleRightPanel("timeline")}
           >
-            <AgentTimeline run={run} selectedAgent={selectedAgent} onSelectAgent={setSelectedAgent} />
+            <AgentTimeline
+              run={run}
+              selectedAgent={selectedAgent}
+              onSelectAgent={setSelectedAgent}
+              pendingClarification={isCreating}
+            />
             <div className="rerun-grid">
               {AGENTS.map((agent) => (
                 <button key={agent} type="button" onClick={() => handleRerun(agent)} disabled={runMutationDisabled}>

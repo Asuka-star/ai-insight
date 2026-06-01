@@ -142,6 +142,26 @@ class AnalysisWorkflowServiceTest {
     }
 
     @Test
+    void persistsFrontendControlledReviewReworkAttempts() {
+        AnalysisWorkflowService service = newService();
+        CreateAnalysisRunRequest request = new CreateAnalysisRunRequest();
+        request.setPrompt("Analyze Notion.");
+        request.setMaxReviewReworkAttempts(1);
+
+        var draft = service.createDraft(request);
+
+        assertThat(draft.getMaxReviewReworkAttempts()).isEqualTo(1);
+
+        UpdateAnalysisRequirementRequest update = new UpdateAnalysisRequirementRequest();
+        update.setCompetitors(List.of("Notion", "Confluence"));
+        update.setMaxReviewReworkAttempts(2);
+
+        var updated = service.updateRequirement(draft.getId(), update);
+
+        assertThat(updated.getMaxReviewReworkAttempts()).isEqualTo(2);
+    }
+
+    @Test
     void updateRequirementClearsProvidedEmptyFieldsAndKeepsOmittedFields() {
         AnalysisWorkflowService service = newService();
         CreateAnalysisRunRequest request = new CreateAnalysisRunRequest();

@@ -21,6 +21,7 @@ public class CreateAnalysisRunRequest {
     private List<String> sourcePreferences = new ArrayList<>();
     private List<String> sourceUrls = new ArrayList<>();
     private String outputGoal;
+    private Integer maxReviewReworkAttempts;
 
     public void setCompetitors(List<String> competitors) {
         this.competitors = competitors == null ? new ArrayList<>() : new ArrayList<>(competitors);

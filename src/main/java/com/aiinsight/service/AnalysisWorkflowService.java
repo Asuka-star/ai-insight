@@ -84,6 +84,8 @@ public class AnalysisWorkflowService {
 
     public AnalysisRun createDraft(CreateAnalysisRunRequest request) {
         AnalysisRun run = new AnalysisRun(normalizer.normalize(request));
+        // 自动返工是运行级策略，不属于用户需求语义；创建 Clarifier 草稿时先持久化，启动时直接读取。
+        run.setMaxReviewReworkAttempts(normalizeReviewReworkAttempts(request.getMaxReviewReworkAttempts()));
         // Clarifier 作为主流程前置 Agent 单独运行：保留回放记录，但不进入长耗时分析 DAG。
         run.setStatus(AnalysisStatus.AWAITING_CONFIRMATION);
         run.setClarificationDraft(buildClarificationDraft(run.getRequirement()));
@@ -172,6 +174,7 @@ public class AnalysisWorkflowService {
             run.setRequirement(requirement);
         }
         applyRequirementUpdate(requirement, request);
+        applyRunOptions(run, request);
 
         ClarificationDraft draft = buildClarificationDraft(requirement);
         draft.setConfirmed(true);
@@ -193,6 +196,7 @@ public class AnalysisWorkflowService {
             run.setRequirement(requirement);
         }
         applyRequirementUpdate(requirement, request);
+        applyRunOptions(run, request);
 
         run.setClarificationDraft(buildClarificationDraft(requirement));
         run.setStatus(AnalysisStatus.AWAITING_CONFIRMATION);
@@ -431,6 +435,20 @@ public class AnalysisWorkflowService {
         if (request.outputGoalProvided()) {
             requirement.setOutputGoal(request.getOutputGoal());
         }
+    }
+
+    private void applyRunOptions(AnalysisRun run, UpdateAnalysisRequirementRequest request) {
+        // 前端可能在确认、重澄清或启动前保存执行选项；这里统一归一化，防止绕过 UI 后形成长循环。
+        if (request.maxReviewReworkAttemptsProvided()) {
+            run.setMaxReviewReworkAttempts(normalizeReviewReworkAttempts(request.getMaxReviewReworkAttempts()));
+        }
+    }
+
+    private int normalizeReviewReworkAttempts(Integer attempts) {
+        if (attempts == null) {
+            return 0;
+        }
+        return Math.max(0, Math.min(attempts, 2));
     }
 
     private void applyContextIntent(AnalysisRun run, AnalysisContextMessage message) {

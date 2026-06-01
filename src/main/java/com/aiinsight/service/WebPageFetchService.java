@@ -331,6 +331,7 @@ public class WebPageFetchService {
                     : sourceTypeClassifier.qualityFor(sourceType, "FETCHED", "LIVE_FETCHED"))
                     : quality.sourceQuality();
             String renderNote = "";
+            // 只有静态抓取为空/过薄时才走浏览器渲染兜底，控制 Playwright 成本和单次分析耗时。
             if (shouldAttemptRender(quality, extraction)) {
                 WebPageRenderService.RenderResult renderResult = webPageRenderService.render(finalUrl);
                 if (renderResult.success() && StringUtils.hasText(renderResult.html())) {
@@ -423,32 +424,38 @@ public class WebPageFetchService {
             fetchedPageCache.put(uri, page);
             return page;
         } catch (HttpTimeoutException ex) {
-            log.warn("Web page fetch timeout: url={}, exceptionType={}, message={}, note={}",
+            String failureReason = "TIMEOUT";
+            log.warn("Web page fetch timeout: url={}, failureReason={}, exceptionType={}, message={}, note={}",
                     url,
+                    failureReason,
                     ex.getClass().getName(),
                     ex.getMessage(),
                     robotsDecision.note());
-            return FetchedPage.failed(url, "页面抓取超时：" + ex.getMessage() + "；" + robotsDecision.note(), "TIMEOUT");
+            return FetchedPage.failed(url, "页面抓取超时：" + ex.getMessage() + "；" + robotsDecision.note(), failureReason);
         } catch (InterruptedException ex) {
             Thread.currentThread().interrupt();
-            log.warn("Web page fetch interrupted: url={}, exceptionType={}, message={}, note={}",
+            String failureReason = "TIMEOUT";
+            log.warn("Web page fetch interrupted: url={}, failureReason={}, exceptionType={}, message={}, note={}",
                     url,
+                    failureReason,
                     ex.getClass().getName(),
                     ex.getMessage(),
                     robotsDecision.note());
-            return FetchedPage.failed(url, "页面抓取被中断：" + ex.getMessage() + "；" + robotsDecision.note(), "TIMEOUT");
+            return FetchedPage.failed(url, "页面抓取被中断：" + ex.getMessage() + "；" + robotsDecision.note(), failureReason);
         } catch (RuntimeException ex) {
             String failureReason = classifyFetchFailure(ex);
-            log.warn("Web page fetch failed: url={}, exceptionType={}, message={}, note={}",
+            log.warn("Web page fetch failed: url={}, failureReason={}, exceptionType={}, message={}, note={}",
                     url,
+                    failureReason,
                     ex.getClass().getName(),
                     ex.getMessage(),
                     robotsDecision.note());
             return FetchedPage.failed(url, "页面抓取失败：" + ex.getMessage() + "；" + robotsDecision.note(), failureReason);
         } catch (Exception ex) {
             String failureReason = classifyFetchFailure(ex);
-            log.warn("Web page fetch failed: url={}, exceptionType={}, message={}, note={}",
+            log.warn("Web page fetch failed: url={}, failureReason={}, exceptionType={}, message={}, note={}",
                     url,
+                    failureReason,
                     ex.getClass().getName(),
                     ex.getMessage(),
                     robotsDecision.note());

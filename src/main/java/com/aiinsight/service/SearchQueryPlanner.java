@@ -2,6 +2,7 @@ package com.aiinsight.service;
 
 import com.aiinsight.model.run.AnalysisRequirement;
 import com.aiinsight.model.run.AnalysisRun;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 import org.springframework.util.StringUtils;
 
@@ -14,14 +15,23 @@ import java.util.Set;
 @Component
 public class SearchQueryPlanner {
 
-    private static final int MAX_SEARCH_QUERIES = 8;
-    private static final int MAX_SEARCH_QUERIES_PER_COMPETITOR = 8;
     private static final List<String> DEFAULT_AUTHORITY_TOPICS = List.of(
             "official site product documentation",
             "official pricing plans",
             "official release notes changelog",
             "official technical blog"
     );
+
+    private final SearchQueryPlannerProperties properties;
+
+    public SearchQueryPlanner() {
+        this(new SearchQueryPlannerProperties());
+    }
+
+    @Autowired
+    public SearchQueryPlanner(SearchQueryPlannerProperties properties) {
+        this.properties = properties == null ? new SearchQueryPlannerProperties() : properties;
+    }
 
     public record SearchQueryBatch(String competitor, List<String> queries) {
     }
@@ -30,7 +40,7 @@ public class SearchQueryPlanner {
         return planByCompetitor(run, recollecting).stream()
                 .flatMap(batch -> batch.queries().stream())
                 .distinct()
-                .limit(MAX_SEARCH_QUERIES)
+                .limit(properties.maxSearchQueries())
                 .toList();
     }
 
@@ -47,7 +57,7 @@ public class SearchQueryPlanner {
             if (!targetedEvidenceTypes.isEmpty()) {
                 for (String evidenceType : targetedEvidenceTypes) {
                     addSourcePreferenceQuery(queries, competitor, evidenceType, domain);
-                    if (queries.size() >= MAX_SEARCH_QUERIES_PER_COMPETITOR) {
+                    if (queries.size() >= properties.maxSearchQueriesPerCompetitor()) {
                         break;
                     }
                 }
@@ -56,7 +66,7 @@ public class SearchQueryPlanner {
                 }
                 batches.add(new SearchQueryBatch(
                         competitor.trim(),
-                        queries.stream().limit(MAX_SEARCH_QUERIES_PER_COMPETITOR).toList()
+                        queries.stream().limit(properties.maxSearchQueriesPerCompetitor()).toList()
                 ));
                 continue;
             }
@@ -69,23 +79,24 @@ public class SearchQueryPlanner {
             }
             for (String sourcePreference : requirement.getSourcePreferences()) {
                 addSourcePreferenceQuery(queries, competitor, sourcePreference, domain);
-                if (queries.size() >= MAX_SEARCH_QUERIES_PER_COMPETITOR) {
+                if (queries.size() >= properties.maxSearchQueriesPerCompetitor()) {
                     break;
                 }
             }
+            // 官方和权威主题先占住基础名额，防止用户维度过多时把官网、价格页、发布记录挤掉。
+            addDefaultAuthorityQueries(queries, competitor, domain);
             for (String dimension : requirement.getDimensions()) {
                 if (StringUtils.hasText(dimension)) {
                     addQuery(queries, competitor, dimension, domain);
                 }
-                if (queries.size() >= MAX_SEARCH_QUERIES_PER_COMPETITOR) {
+                if (queries.size() >= properties.maxSearchQueriesPerCompetitor()) {
                     break;
                 }
             }
-            addDefaultAuthorityQueries(queries, competitor, domain);
             if (!queries.isEmpty()) {
                 batches.add(new SearchQueryBatch(
                         competitor.trim(),
-                        queries.stream().limit(MAX_SEARCH_QUERIES_PER_COMPETITOR).toList()
+                        queries.stream().limit(properties.maxSearchQueriesPerCompetitor()).toList()
                 ));
             }
         }
@@ -101,7 +112,7 @@ public class SearchQueryPlanner {
         return run.getReviewDecision().getRequiredEvidenceTypes().stream()
                 .filter(StringUtils::hasText)
                 .distinct()
-                .limit(MAX_SEARCH_QUERIES_PER_COMPETITOR)
+                .limit(properties.maxSearchQueriesPerCompetitor())
                 .toList();
     }
 
@@ -150,7 +161,7 @@ public class SearchQueryPlanner {
     private void addDefaultAuthorityQueries(Set<String> queries, String competitor, String domain) {
         for (String topic : DEFAULT_AUTHORITY_TOPICS) {
             addQuery(queries, competitor, topic, domain);
-            if (queries.size() >= MAX_SEARCH_QUERIES_PER_COMPETITOR) {
+            if (queries.size() >= properties.maxSearchQueriesPerCompetitor()) {
                 return;
             }
         }

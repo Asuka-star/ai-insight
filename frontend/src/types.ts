@@ -39,6 +39,7 @@ export interface CreateAnalysisRunRequest {
   sourcePreferences: string[];
   sourceUrls?: string[];
   outputGoal?: string;
+  maxReviewReworkAttempts?: number;
 }
 
 export interface AnalysisRequirement {
@@ -90,6 +91,7 @@ export interface UpdateAnalysisRequirementRequest {
   sourcePreferences: string[];
   sourceUrls?: string[];
   outputGoal?: string;
+  maxReviewReworkAttempts?: number;
 }
 
 export interface ClarificationOption {
@@ -380,6 +382,7 @@ export interface AnalysisRun {
   traces?: AgentTrace[];
   workflowTransitions?: WorkflowTransition[];
   reviewDecision?: ReviewDecision;
+  maxReviewReworkAttempts?: number;
   errorMessage?: string;
   createdAt?: string;
   updatedAt?: string;
