@@ -1885,18 +1885,23 @@ h3 {
   inset: 0;
   z-index: 30;
   display: grid;
-  justify-content: end;
-  background: rgba(24, 33, 29, 0.18);
+  place-items: center;
+  padding: 24px;
+  background: rgba(24, 33, 29, 0.34);
 }
 
 .trace-drawer {
-  width: min(430px, calc(100vw - 36px));
-  height: 100vh;
-  overflow: auto;
-  border-left: 1px solid var(--line);
+  width: min(960px, calc(100vw - 48px));
+  height: min(860px, calc(100vh - 48px));
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 8px;
   background: var(--panel);
-  box-shadow: -18px 0 45px rgba(24, 33, 29, 0.16);
-  padding: 16px;
+  box-shadow: 0 24px 70px rgba(24, 33, 29, 0.24);
+  font-size: 15px;
+  padding: 18px;
 }
 
 .history-overlay {
@@ -2154,13 +2159,17 @@ h3 {
 
 .drawer-section {
   display: grid;
+  align-content: start;
   gap: 9px;
+  min-height: 0;
   margin-bottom: 18px;
+  overflow: auto;
+  padding-right: 3px;
 }
 
 .trace-card {
   display: grid;
-  gap: 6px;
+  gap: 8px;
   border: 1px solid var(--line);
   border-radius: 8px;
   background: var(--panel-soft);
@@ -2174,6 +2183,7 @@ h3 {
 
 .trace-card small {
   color: var(--faint);
+  font-size: 12px;
 }
 
 .trace-card-header {
@@ -2228,7 +2238,7 @@ h3 {
 
 .trace-metric span {
   color: var(--faint);
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 820;
 }
 
@@ -2236,7 +2246,7 @@ h3 {
   min-width: 0;
   overflow: hidden;
   color: var(--text);
-  font-size: 12px;
+  font-size: 13px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -2251,7 +2261,7 @@ h3 {
   align-items: center;
   gap: 5px;
   color: var(--faint);
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 850;
 }
 
@@ -2269,23 +2279,38 @@ h3 {
 .trace-disclosure summary {
   cursor: pointer;
   color: var(--muted);
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 850;
   padding: 8px 9px;
 }
 
 .trace-disclosure pre {
-  max-height: 210px;
-  overflow: auto;
+  max-height: none;
+  overflow: visible;
   margin: 0;
   border-top: 1px solid var(--line);
   color: var(--text);
   font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
-  font-size: 11px;
-  line-height: 1.55;
+  font-size: 12px;
+  line-height: 1.65;
   padding: 9px;
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+.trace-expand-button {
+  width: 100%;
+  min-height: 32px;
+  border: 0;
+  border-top: 1px solid var(--line);
+  border-radius: 0 0 7px 7px;
+  background: #fbfcfc;
+  color: var(--teal);
+  font-size: 13px;
+}
+
+.trace-expand-button:hover:not(:disabled) {
+  background: #eef8f7;
 }
 
 .toast {
@@ -2364,5 +2389,15 @@ h3 {
   .event-line {
     max-width: none;
     text-align: left;
+  }
+
+  .trace-overlay {
+    padding: 10px;
+  }
+
+  .trace-drawer {
+    width: calc(100vw - 20px);
+    height: calc(100vh - 20px);
+    padding: 14px;
   }
 }

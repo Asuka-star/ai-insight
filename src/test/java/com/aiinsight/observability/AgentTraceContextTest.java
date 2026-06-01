@@ -36,7 +36,7 @@ class AgentTraceContextTest {
         assertThat(trace.getRawModelOutput()).isEqualTo("not-json-model-output");
         assertThat(trace.getCompletionTokens()).isEqualTo(7);
         assertThat(trace.getTotalTokens()).isEqualTo(27);
-        assertThat(trace.getOutputSnapshot()).startsWith("Fallback output:");
+        assertThat(trace.getOutputSnapshot()).isNull();
     }
 
     @Test
@@ -101,6 +101,7 @@ class AgentTraceContextTest {
         assertThat(trace.getPromptTokens()).isEqualTo(30);
         assertThat(trace.getCompletionTokens()).isEqualTo(20);
         assertThat(trace.getTotalTokens()).isEqualTo(50);
+        assertThat(trace.getOutputSnapshot()).isNull();
     }
 
     @Test
@@ -132,16 +133,18 @@ class AgentTraceContextTest {
     }
 
     @Test
-    void outputSummaryDoesNotChangeTokenUsage() {
+    void processSummaryDoesNotChangeTokenUsageOrBusinessOutput() {
         AgentTrace trace = new AgentTrace();
         AgentTraceContext.start(trace);
         AgentTraceContext.recordModelResponse("model-output", 11, 22);
 
-        AgentTraceContext.recordOutputSummary("Parallel subtasks succeeded.");
+        AgentTraceContext.recordProcessSummary("Parallel subtasks succeeded.");
 
         assertThat(trace.getPromptTokens()).isEqualTo(11);
         assertThat(trace.getCompletionTokens()).isEqualTo(22);
         assertThat(trace.getTotalTokens()).isEqualTo(33);
-        assertThat(trace.getOutputSnapshot()).contains("Parallel subtasks");
+        assertThat(trace.getRawModelOutput()).isEqualTo("model-output");
+        assertThat(trace.getOutputSnapshot()).isNull();
+        assertThat(trace.getProcessSnapshot()).contains("Parallel subtasks");
     }
 }

@@ -145,11 +145,11 @@ public class WorkflowNodeExecutor {
         AgentName agentName = node.name();
         return switch (agentName) {
             case CLARIFIER -> prefix + "澄清原始需求：%s".formatted(
-                    truncate(textOrDefault(requirement == null ? null : requirement.getOriginalPrompt(), "未填写原始需求"), 90)
+                    textOrDefault(requirement == null ? null : requirement.getOriginalPrompt(), "未填写原始需求")
             );
-            case RESEARCHER -> prefix + "采集公开资料：竞品=%s，指定URL=%d，已有来源=%d".formatted(
-                    listPreview(requirement == null ? List.of() : requirement.getCompetitors(), 5),
-                    size(requirement == null ? null : requirement.getSourceUrls()),
+            case RESEARCHER -> prefix + "采集公开资料：竞品=%s，指定URL=%s，已有来源=%d".formatted(
+                    listAll(requirement == null ? List.of() : requirement.getCompetitors()),
+                    listAll(requirement == null ? List.of() : requirement.getSourceUrls()),
                     run.getEvidenceSources().size()
             );
             case EXTRACTOR -> prefix + "抽取结构化画像：待处理来源=%d，已有竞品画像=%d".formatted(
@@ -182,16 +182,16 @@ public class WorkflowNodeExecutor {
         ResearchPackage researchPackage = run.getResearchPackage();
         ResearchPlan researchPlan = researchPackage == null ? null : researchPackage.getResearchPlan();
         return switch (node.name()) {
-            case CLARIFIER -> "范围已澄清：行业=%s，竞品=%s，分析维度=%s，指定URL=%d".formatted(
+            case CLARIFIER -> "范围已澄清：行业=%s，竞品=%s，分析维度=%s，指定URL=%s".formatted(
                     textOrDefault(run.getClarificationDraft().getIndustry(), "未指定"),
-                    listPreview(run.getClarificationDraft().getCompetitors(), 5),
-                    listPreview(run.getClarificationDraft().getDimensions(), 4),
-                    size(run.getClarificationDraft().getSourceUrls())
+                    listAll(run.getClarificationDraft().getCompetitors()),
+                    listAll(run.getClarificationDraft().getDimensions()),
+                    listAll(run.getClarificationDraft().getSourceUrls())
             );
             case RESEARCHER -> "资料采集完成：有效来源=%d，检索任务=%d，证据缺口=%s".formatted(
                     run.getEvidenceSources().size(),
                     researchPlan == null ? 0 : researchPlan.getPublicSourceTasks().size(),
-                    listPreview(researchPackage == null ? List.of() : researchPackage.getMissingEvidenceTypes(), 4)
+                    listAll(researchPackage == null ? List.of() : researchPackage.getMissingEvidenceTypes())
             );
             case EXTRACTOR -> "结构化抽取完成：竞品画像=%d，访谈洞察=%d".formatted(
                     run.getCompetitorProfiles().size(),
@@ -200,9 +200,9 @@ public class WorkflowNodeExecutor {
             case ANALYST -> "分析完成：结论=%d，产物=%d，覆盖竞品=%s".formatted(
                     run.getClaims().size(),
                     run.getArtifacts().size(),
-                    listPreview(run.getCompetitorProfiles().stream()
+                    listAll(run.getCompetitorProfiles().stream()
                             .map(profile -> textOrDefault(profile.getProductName(), profile.getCompanyName()))
-                            .toList(), 5)
+                            .toList())
             );
             case WRITER -> "报告生成完成：产物=%d，引用结论=%d，证据来源=%d".formatted(
                     run.getArtifacts().size(),
@@ -212,7 +212,7 @@ public class WorkflowNodeExecutor {
             case REVIEWER -> "复核完成：问题=%d，处理动作=%s，原因=%s".formatted(
                     run.getReviewFindings().size(),
                     reviewAction(run),
-                    truncate(textOrDefault(reviewDecision(run).getReason(), "未记录原因"), 60)
+                    textOrDefault(reviewDecision(run).getReason(), "未记录原因")
             );
             case FINALIZER -> "最终封版完成：产物=%d，遗留复核问题=%d，建议动作=%d".formatted(
                     run.getArtifacts().size(),
@@ -229,7 +229,9 @@ public class WorkflowNodeExecutor {
                                long startedAt) {
         trace.setStatus(step.getStatus());
         trace.setDecisionSummary(decisionSummary);
-        if (trace.getOutputSnapshot() == null || trace.getOutputSnapshot().isBlank()) {
+        if (hasText(step.getOutputSummary())) {
+            trace.setOutputSnapshot(step.getOutputSummary());
+        } else if (!hasText(trace.getOutputSnapshot())) {
             trace.setOutputSnapshot(stateSnapshot(run));
         }
         if (trace.getCompletedAt() == null) {
@@ -272,39 +274,22 @@ public class WorkflowNodeExecutor {
         return String.valueOf(reviewDecision(run).getAction());
     }
 
-    private String listPreview(List<String> values, int max) {
+    private String listAll(List<String> values) {
         if (values == null || values.isEmpty()) {
             return "未指定";
         }
-        List<String> cleaned = values.stream()
+        String joined = values.stream()
                 .filter(value -> value != null && !value.isBlank())
-                .toList();
-        if (cleaned.isEmpty()) {
-            return "未指定";
-        }
-        String preview = cleaned.stream()
-                .limit(max)
                 .collect(Collectors.joining("、"));
-        int remaining = cleaned.size() - Math.min(cleaned.size(), max);
-        if (remaining > 0) {
-            return preview + " 等" + cleaned.size() + "项";
-        }
-        return preview;
+        return joined.isBlank() ? "未指定" : joined;
     }
 
     private String textOrDefault(String value, String defaultValue) {
         return value == null || value.isBlank() ? defaultValue : value;
     }
 
-    private int size(List<?> values) {
-        return values == null ? 0 : values.size();
-    }
-
-    private String truncate(String value, int maxChars) {
-        if (value == null || value.length() <= maxChars) {
-            return value;
-        }
-        return value.substring(0, Math.max(0, maxChars - 1)) + "…";
+    private boolean hasText(String value) {
+        return value != null && !value.isBlank();
     }
 
     private void pauseForReadableEvents() {

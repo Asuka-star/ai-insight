@@ -541,7 +541,7 @@ public class ReviewerNode implements AgentNode {
                         result.succeeded() ? "" : " (" + result.errorMessage() + ")"
                 ))
                 .collect(Collectors.joining("\n"));
-        AgentTraceContext.recordOutputSummary("Parallel Reviewer LLM subtasks:\n" + summary);
+        AgentTraceContext.recordProcessSummary("Parallel Reviewer LLM subtasks:\n" + summary);
     }
 
     private LlmReviewResult parseLlmReviewResult(String raw) {

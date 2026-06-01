@@ -208,6 +208,7 @@ export interface AgentTrace {
   prompt?: string;
   inputSnapshot?: string;
   outputSnapshot?: string;
+  processSnapshot?: string;
   rawModelOutput?: string;
   decisionSummary?: string;
   modelName?: string;

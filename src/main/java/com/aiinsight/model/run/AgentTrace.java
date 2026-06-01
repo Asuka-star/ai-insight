@@ -22,6 +22,7 @@ public class AgentTrace {
     private String prompt;
     private String inputSnapshot;
     private String outputSnapshot;
+    private String processSnapshot;
     private String rawModelOutput;
     private String decisionSummary;
     private String modelName;

@@ -75,7 +75,6 @@ public final class AgentTraceContext {
         current().ifPresent(trace -> {
             synchronized (trace) {
                 trace.setRawModelOutput(appendBlock(trace.getRawModelOutput(), rawModelOutput));
-                trace.setOutputSnapshot(summarize(rawModelOutput));
                 PromptUsageAccumulator accumulator = promptUsage(trace);
                 if (promptTokens != null && promptTokens > 0) {
                     if (!accumulator.pendingEstimates.isEmpty()) {
@@ -94,10 +93,13 @@ public final class AgentTraceContext {
     }
 
     public static void recordOutputSummary(String outputSummary) {
+        recordProcessSummary(outputSummary);
+    }
+
+    public static void recordProcessSummary(String processSummary) {
         current().ifPresent(trace -> {
             synchronized (trace) {
-                trace.setRawModelOutput(appendBlock(trace.getRawModelOutput(), outputSummary));
-                trace.setOutputSnapshot(summarize(outputSummary));
+                trace.setProcessSnapshot(appendBlock(trace.getProcessSnapshot(), processSummary));
             }
         });
     }
@@ -129,7 +131,6 @@ public final class AgentTraceContext {
                 if (!hasRawModelOutput) {
                     trace.setRawModelOutput(output);
                 }
-                trace.setOutputSnapshot("Fallback output: " + summarize(output));
                 if (!hasCompletionTokens) {
                     trace.setCompletionTokens(estimateTokens(output));
                 }
@@ -190,17 +191,6 @@ public final class AgentTraceContext {
             return next;
         }
         return existing + "\n\n--- LLM call ---\n\n" + next;
-    }
-
-    private static String summarize(String text) {
-        if (text == null) {
-            return "";
-        }
-        String normalized = text.replaceAll("\\s+", " ").trim();
-        if (normalized.length() <= 280) {
-            return normalized;
-        }
-        return normalized.substring(0, 280) + "...";
     }
 
     private static final class PromptUsageAccumulator {

@@ -328,7 +328,7 @@ public class AnalystNode implements AgentNode {
                         result.succeeded() ? "" : " (" + result.errorMessage() + ")"
                 ))
                 .collect(Collectors.joining("\n"));
-        AgentTraceContext.recordOutputSummary("Staged Analyst LLM subtasks:\n" + summary);
+        AgentTraceContext.recordProcessSummary("Staged Analyst LLM subtasks:\n" + summary);
     }
 
     private AnalysisDraft parseAnalysisDraft(String raw, AnalysisRun run) {

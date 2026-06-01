@@ -391,7 +391,7 @@ public class ResearcherNode implements AgentNode {
                         result.succeeded() ? "" : " (" + result.errorMessage() + ")"
                 ))
                 .collect(Collectors.joining("\n"));
-        AgentTraceContext.recordOutputSummary("Parallel Researcher LLM subtasks:\n" + summary);
+        AgentTraceContext.recordProcessSummary("Parallel Researcher LLM subtasks:\n" + summary);
     }
 
     private String compactEvidenceSources(AnalysisRun run, int limit) {

@@ -65,7 +65,7 @@ public class LlmSearchQueryPlanner {
             ));
             List<SearchQueryPlanner.SearchQueryBatch> batches = parse(response, run);
             if (!batches.isEmpty()) {
-                AgentTraceContext.recordOutputSummary("LLM search query batches:\n" + batches.stream()
+                AgentTraceContext.recordProcessSummary("LLM search query batches:\n" + batches.stream()
                         .map(batch -> "%s: %s".formatted(batch.competitor(), String.join(" | ", batch.queries())))
                         .collect(Collectors.joining("\n")));
             }

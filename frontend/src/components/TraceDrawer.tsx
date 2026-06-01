@@ -1,4 +1,4 @@
-import { useRef } from "react";
+import { useRef, useState } from "react";
 import { Clock, FileOutput, Gauge, MessageSquareText, X } from "lucide-react";
 import type { ReactNode } from "react";
 import type { AgentName, AgentTrace } from "../types";
@@ -23,11 +23,17 @@ const TEXT = {
   output: "\u8f93\u51fa",
   total: "\u603b\u91cf",
   latency: "\u8017\u65f6",
+  processSnapshot: "\u8fc7\u7a0b\u6458\u8981",
   inputSnapshot: "\u8f93\u5165\u6458\u8981",
   outputSnapshot: "\u8f93\u51fa\u6458\u8981",
-  rawOutput: "\u539f\u59cb\u6a21\u578b\u8f93\u51fa",
-  error: "\u5f02\u5e38"
+  fullPrompt: "Prompt",
+  rawOutput: "\u6a21\u578b\u8f93\u51fa",
+  error: "\u5f02\u5e38",
+  expand: "\u5c55\u5f00\u5b8c\u6574\u5185\u5bb9",
+  collapse: "\u6536\u8d77"
 };
+
+const DISCLOSURE_PREVIEW_CHARS = 180;
 
 export function TraceDrawer({ agent, traces, onClose }: TraceDrawerProps) {
   const closeStartedOnOverlayRef = useRef(false);
@@ -90,12 +96,13 @@ function TraceCard({ trace }: { trace: AgentTrace }) {
         <TraceMetric icon={<MessageSquareText size={13} />} label="Prompt" value={trace.promptTokens ?? 0} />
         <TraceMetric icon={<FileOutput size={13} />} label={TEXT.output} value={trace.completionTokens ?? 0} />
         <TraceMetric icon={<Gauge size={13} />} label={TEXT.total} value={trace.totalTokens ?? ((trace.promptTokens ?? 0) + (trace.completionTokens ?? 0))} />
-        <TraceMetric icon={<Clock size={13} />} label={TEXT.latency} value={`${trace.latencyMs ?? 0}ms`} />
+        <TraceMetric icon={<Clock size={13} />} label={TEXT.latency} value={formatLatencySeconds(trace.latencyMs)} />
       </div>
       <TraceField icon={<Gauge size={14} />} label={TEXT.decision} value={trace.decisionSummary} />
-      <TraceDisclosure title="Prompt" value={trace.prompt} />
+      {trace.processSnapshot ? <TraceDisclosure title={TEXT.processSnapshot} value={trace.processSnapshot} /> : null}
       <TraceDisclosure title={TEXT.inputSnapshot} value={trace.inputSnapshot} />
       <TraceDisclosure title={TEXT.outputSnapshot} value={trace.outputSnapshot} />
+      <TraceDisclosure title={TEXT.fullPrompt} value={trace.prompt} />
       <TraceDisclosure title={TEXT.rawOutput} value={trace.rawModelOutput} />
       {trace.errorMessage ? <TraceField label={TEXT.error} value={trace.errorMessage} danger /> : null}
       <small>
@@ -113,6 +120,11 @@ function TraceMetric({ icon, label, value }: { icon: ReactNode; label: string; v
       <strong>{value}</strong>
     </div>
   );
+}
+
+function formatLatencySeconds(latencyMs?: number) {
+  if (!latencyMs) return "0s";
+  return `${(latencyMs / 1000).toFixed(2)}s`;
 }
 
 function TraceField({
@@ -135,10 +147,28 @@ function TraceField({
 }
 
 function TraceDisclosure({ title, value }: { title: string; value?: string }) {
+  const [expanded, setExpanded] = useState(false);
+  const completeValue = value || TEXT.noRecord;
+  const previewValue = truncatePreview(completeValue, DISCLOSURE_PREVIEW_CHARS);
+  const hasTruncatedPreview = previewValue !== completeValue;
+  const displayValue = expanded ? completeValue : previewValue;
+
   return (
     <details className="trace-disclosure">
       <summary>{title}</summary>
-      <pre>{value || TEXT.noRecord}</pre>
+      <pre>{displayValue}</pre>
+      {hasTruncatedPreview ? (
+        <button className="trace-expand-button" type="button" onClick={() => setExpanded((current) => !current)}>
+          {expanded ? TEXT.collapse : TEXT.expand}
+        </button>
+      ) : null}
     </details>
   );
+}
+
+function truncatePreview(value: string, maxChars: number) {
+  if (value.length <= maxChars) {
+    return value;
+  }
+  return `${value.slice(0, Math.max(0, maxChars - 1))}\u2026`;
 }
