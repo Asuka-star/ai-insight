@@ -1287,6 +1287,11 @@ h3 {
   background: #edf7f1;
 }
 
+.decision-box.limited {
+  border-color: rgba(185, 69, 39, 0.38);
+  background: #fff4ed;
+}
+
 .decision-header {
   display: flex;
   align-items: center;
@@ -1307,6 +1312,20 @@ h3 {
 .decision-box.blocked .decision-header span {
   background: #fff1ef;
   color: var(--red);
+}
+
+.decision-box.limited .decision-header span {
+  background: #fee2d3;
+  color: #9b2f18;
+}
+
+.decision-warning {
+  border: 1px solid rgba(185, 69, 39, 0.22);
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.68);
+  color: #7d2b1a;
+  padding: 7px;
+  font-weight: 750;
 }
 
 .decision-action-code {

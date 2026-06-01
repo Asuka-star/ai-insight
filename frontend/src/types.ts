@@ -229,7 +229,25 @@ export interface ReviewDecision {
   reason?: string;
   affectedClaimIds?: string[];
   requiredEvidenceTypes?: string[];
+  findingCategories?: string[];
+  blockingFindingIds?: string[];
+  repairInstructions?: string[];
+  repairTasks?: ReviewRepairTask[];
+  repairScopeSummary?: string;
   decidedAt?: string;
+}
+
+export interface ReviewRepairTask {
+  id?: string;
+  targetAgent?: AgentName;
+  findingId?: string;
+  claimId?: string;
+  citationKey?: string;
+  category?: string;
+  action?: string;
+  instruction?: string;
+  acceptanceCriteria?: string;
+  requiredEvidenceTypes?: string[];
 }
 
 export interface ResearchPackage {
@@ -362,6 +380,12 @@ export interface WorkflowTransition {
   reviewAction?: string;
   reason?: string;
   attempt: number;
+  trigger?: string;
+  resolutionStatus?: string;
+  blockingFindingIds?: string[];
+  blockingFindingSignatures?: string[];
+  resolvedFindingSignatures?: string[];
+  unresolvedFindingSignatures?: string[];
   createdAt?: string;
 }
 

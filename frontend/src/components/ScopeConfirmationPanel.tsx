@@ -59,17 +59,22 @@ export function ScopeConfirmationPanel({
   const questions = draft?.clarificationQuestions ?? [];
   const clarificationItems = draft?.clarificationItems ?? [];
   const isConfirmed = Boolean(draft?.confirmed || localConfirmed);
+  const pendingQuestions = isConfirmed ? [] : questions;
+  const pendingClarificationItems = isConfirmed ? [] : clarificationItems;
   const phaseText = String(phase);
   const hasDraft = Boolean(run && draft);
-  const hasClarificationRequests = questions.length > 0 || clarificationItems.length > 0;
+  const hasClarificationRequests = pendingQuestions.length > 0 || pendingClarificationItems.length > 0;
+  const agentRunning = Boolean(run?.steps?.some((step) => step.status === "RUNNING"));
+  const scopeEditable = !busy && !creating && !agentRunning && (!run || ["DRAFT", "AWAITING_CONFIRMATION", "PENDING"].includes(phaseText));
   // Clarifier 没产出待确认项时，用户无需再点一次“确认范围”，启动前会直接保存当前结构化范围。
   const canStartWithoutConfirm = hasDraft && !hasClarificationRequests;
   const hasScopeInput = [industry, competitors, dimensions, outputGoal, sourceUrls].some((value) => value.trim());
   const canCreate = !run && !busy && !creating && hasScopeInput;
-  const canConfirm = Boolean(run) && hasClarificationRequests && !busy && ["DRAFT", "AWAITING_CONFIRMATION", "PENDING"].includes(phaseText);
-  const canReclarify = Boolean(run) && !busy && ["DRAFT", "AWAITING_CONFIRMATION", "PENDING"].includes(phaseText);
+  const canConfirm = Boolean(run) && hasClarificationRequests && !busy && !agentRunning && ["DRAFT", "AWAITING_CONFIRMATION", "PENDING"].includes(phaseText);
+  const canReclarify = Boolean(run) && !busy && !agentRunning && ["DRAFT", "AWAITING_CONFIRMATION", "PENDING"].includes(phaseText);
   const canStart = Boolean(run)
     && !busy
+    && !agentRunning
     && (isConfirmed || canStartWithoutConfirm)
     && ["AWAITING_CONFIRMATION", "PENDING", "NEEDS_USER_INPUT"].includes(phaseText);
 
@@ -86,19 +91,19 @@ export function ScopeConfirmationPanel({
       <div className="scope-grid">
         <label>
           行业方向
-          <input value={industry} onChange={(event) => onIndustryChange(event.target.value)} placeholder="请输入行业或业务方向" />
+          <input value={industry} onChange={(event) => onIndustryChange(event.target.value)} placeholder="请输入行业或业务方向" disabled={!scopeEditable} />
         </label>
         <label>
           报告用途
-          <input value={outputGoal} onChange={(event) => onOutputGoalChange(event.target.value)} placeholder="请输入报告使用场景" />
+          <input value={outputGoal} onChange={(event) => onOutputGoalChange(event.target.value)} placeholder="请输入报告使用场景" disabled={!scopeEditable} />
         </label>
         <label>
           竞品列表
-          <input value={competitors} onChange={(event) => onCompetitorsChange(event.target.value)} placeholder="请输入竞品名称，多个用逗号分隔" />
+          <input value={competitors} onChange={(event) => onCompetitorsChange(event.target.value)} placeholder="请输入竞品名称，多个用逗号分隔" disabled={!scopeEditable} />
         </label>
         <label>
           分析维度
-          <input value={dimensions} onChange={(event) => onDimensionsChange(event.target.value)} placeholder="请输入关注维度，多个用逗号分隔" />
+          <input value={dimensions} onChange={(event) => onDimensionsChange(event.target.value)} placeholder="请输入关注维度，多个用逗号分隔" disabled={!scopeEditable} />
         </label>
       </div>
 
@@ -113,6 +118,7 @@ export function ScopeConfirmationPanel({
               <input
                 type="checkbox"
                 checked={sources.includes(source.value)}
+                disabled={!scopeEditable}
                 onChange={(event) => {
                   onSourcesChange(
                     event.target.checked
@@ -134,15 +140,17 @@ export function ScopeConfirmationPanel({
           onChange={(event) => onSourceUrlsChange(event.target.value)}
           placeholder="每行一个公开网页 URL，例如官网、价格页、产品文档"
           rows={3}
+          disabled={!scopeEditable}
         />
       </label>
 
       <label>
         质检自动返工
-        {/* 这是单次 run 的执行选项，由 Review Gate 读取；默认不返工，避免一次分析被自动拉长。 */}
+        {/* 这是单次 run 的执行选项，由 Review Gate 读取；默认一轮返工，让可自动修复的问题进入闭环。 */}
         <select
           value={maxReviewReworkAttempts}
           onChange={(event) => onMaxReviewReworkAttemptsChange(Number(event.target.value))}
+          disabled={!scopeEditable}
         >
           <option value={0}>不自动返工</option>
           <option value={1}>最多 1 轮</option>
@@ -155,14 +163,19 @@ export function ScopeConfirmationPanel({
           <strong>等待范围确认内容</strong>
           <p>填写范围信息后，这里会展示待确认的问题和结构化范围。</p>
         </div>
-      ) : questions.length ? (
+      ) : isConfirmed ? (
+        <div className="question-box done">
+          <strong>范围已确认</strong>
+          <p>当前结构化范围已保存，可以开始或继续 Agent 分析。</p>
+        </div>
+      ) : pendingQuestions.length ? (
         <div className="question-box">
           <strong>范围确认建议</strong>
-          {questions.map((question) => (
+          {pendingQuestions.map((question) => (
             <p key={question}>{question}</p>
           ))}
         </div>
-      ) : clarificationItems.length ? (
+      ) : pendingClarificationItems.length ? (
         <div className="question-box">
           <strong>请确认下方澄清项</strong>
           <p>Clarifier 已生成可选澄清内容，请选择或调整后再确认范围。</p>
@@ -174,13 +187,14 @@ export function ScopeConfirmationPanel({
         </div>
       )}
 
-      {clarificationItems.length ? (
+      {pendingClarificationItems.length ? (
         <div className="clarification-items">
-          {clarificationItems.map((item) => (
+          {pendingClarificationItems.map((item) => (
             <ClarificationItemCard
               item={item}
               key={`${item.field}-${item.question}`}
               onApply={onApplyClarificationOption}
+              disabled={!scopeEditable}
             />
           ))}
         </div>
@@ -210,6 +224,8 @@ export function ScopeConfirmationPanel({
 
       {!run ? (
         <p className="scope-hint"><ClipboardCheck size={14} /> 直接填写范围信息，生成确认内容后再启动分析。</p>
+      ) : !scopeEditable ? (
+        <p className="scope-hint"><ClipboardCheck size={14} /> 分析开始后范围已锁定，避免执行产物与分析范围不一致。</p>
       ) : null}
     </section>
   );
@@ -217,10 +233,12 @@ export function ScopeConfirmationPanel({
 
 function ClarificationItemCard({
   item,
-  onApply
+  onApply,
+  disabled
 }: {
   item: ClarificationItem;
   onApply: (field: string, values: string[]) => void;
+  disabled?: boolean;
 }) {
   return (
     <div className="clarification-item">
@@ -236,6 +254,7 @@ function ClarificationItemCard({
             option={option}
             key={`${option.label}-${option.values.join("|")}`}
             onApply={onApply}
+            disabled={disabled}
           />
         ))}
       </div>
@@ -246,17 +265,20 @@ function ClarificationItemCard({
 function ClarificationOptionButton({
   field,
   option,
-  onApply
+  onApply,
+  disabled
 }: {
   field: string;
   option: ClarificationOption;
   onApply: (field: string, values: string[]) => void;
+  disabled?: boolean;
 }) {
   return (
     <button
       className={option.recommended ? "clarification-option recommended" : "clarification-option"}
       type="button"
       onClick={() => onApply(field, option.values ?? [])}
+      disabled={disabled}
     >
       <span>{option.label}</span>
       {option.description ? <small>{option.description}</small> : null}

@@ -3,12 +3,16 @@ package com.aiinsight.agent.node;
 import com.aiinsight.agent.AgentNode;
 import com.aiinsight.model.enums.AgentName;
 import com.aiinsight.model.enums.ArtifactType;
+import com.aiinsight.model.enums.ReviewAction;
 import com.aiinsight.model.enums.ReviewSeverity;
 import com.aiinsight.model.run.AnalysisArtifact;
 import com.aiinsight.model.run.AnalysisRun;
+import com.aiinsight.model.run.WorkflowTransition;
 import org.springframework.stereotype.Component;
 
 import java.util.List;
+import java.util.Optional;
+import java.util.stream.Collectors;
 
 @Component
 public class FinalizerNode implements AgentNode {
@@ -30,8 +34,6 @@ public class FinalizerNode implements AgentNode {
             return run;
         }
 
-        // Finalizer 是自动流程的收口节点：不重新采集事实、不重写 Writer 正文。
-        // 它只把 Reviewer 的整体决策和证据限制写回最终报告；详细 findings 留在 REVIEW_FINDINGS 产物中。
         AnalysisArtifact finalReport = new AnalysisArtifact(
                 ArtifactType.FINAL_REPORT,
                 "可溯源竞品分析报告（最终封版）",
@@ -49,6 +51,8 @@ public class FinalizerNode implements AgentNode {
                 ## 复核状态
                 %s
 
+                %s
+
                 ## 定向修复计划
 
                 %s
@@ -58,6 +62,7 @@ public class FinalizerNode implements AgentNode {
                 %s
                 """.formatted(
                 decisionSummary(run),
+                reworkLimitNote(run),
                 repairPlanSummary(run),
                 evidenceLimitations(run)
         );
@@ -79,6 +84,20 @@ public class FinalizerNode implements AgentNode {
         );
     }
 
+    private String reworkLimitNote(AnalysisRun run) {
+        if (!finalizedBecauseReworkLimitReached(run)) {
+            return "";
+        }
+        long reworkCount = run.getWorkflowTransitions().stream()
+                .filter(transition -> transition.getRoute() != null && !"finish".equals(transition.getRoute()))
+                .count();
+        return """
+                ## 自动返工上限说明
+
+                自动返工已达到本次运行上限，流程已封版进入最终报告；但最后一次 ReviewDecision 仍为 `%s`，说明仍有未完全解决的复核项。当前报告不得被理解为“质检已通过”，请人工复核下方补证/修复计划，或手动从目标 Agent 继续重跑下游链路后再对外发布。已执行自动返工次数：%d。
+                """.formatted(run.getReviewDecision().getAction(), reworkCount);
+    }
+
     private String repairPlanSummary(AnalysisRun run) {
         if (run.getReviewDecision().getRepairInstructions().isEmpty()
                 && run.getReviewDecision().getRepairTasks().isEmpty()) {
@@ -89,18 +108,19 @@ public class FinalizerNode implements AgentNode {
                 : run.getReviewDecision().getRepairScopeSummary();
         String instructions = run.getReviewDecision().getRepairInstructions().stream()
                 .map(instruction -> "- " + instruction)
-                .collect(java.util.stream.Collectors.joining("\n"));
+                .collect(Collectors.joining("\n"));
         String tasks = run.getReviewDecision().getRepairTasks().isEmpty()
                 ? "暂无结构化修复任务。"
                 : run.getReviewDecision().getRepairTasks().stream()
-                .map(task -> "- `%s` -> %s；claim=%s；citation=%s；验收：%s".formatted(
+                .map(task -> "- `%s` -> %s，Claim=%s，Citation=%s；指令：%s；验收：%s".formatted(
                         task.getAction(),
                         task.getTargetAgent(),
                         textOrDefault(task.getClaimId(), "-"),
                         textOrDefault(task.getCitationKey(), "-"),
+                        textOrDefault(task.getInstruction(), "-"),
                         textOrDefault(task.getAcceptanceCriteria(), "-")
                 ))
-                .collect(java.util.stream.Collectors.joining("\n"));
+                .collect(Collectors.joining("\n"));
         return scope + "\n\n修复指令：\n" + instructions + "\n\n结构化修复任务：\n" + tasks;
     }
 
@@ -121,6 +141,9 @@ public class FinalizerNode implements AgentNode {
     }
 
     private String recommendedAction(AnalysisRun run) {
+        if (finalizedBecauseReworkLimitReached(run)) {
+            return "自动返工已达到本次运行上限，但 ReviewDecision 仍要求继续处理；请人工复核未解决项，或手动从目标 Agent 继续重跑下游链路后再对外发布。";
+        }
         if (run.getReviewFindings().stream().anyMatch(finding -> finding.getSeverity() == ReviewSeverity.HIGH)) {
             return "最终报告仍包含 HIGH 质检项，请按 ReviewDecision 指向的 Agent 继续处理后再对外发布。";
         }
@@ -128,6 +151,25 @@ public class FinalizerNode implements AgentNode {
             return "最终报告仅包含中低风险质检提醒，可进入人工确认并视情况补充证据。";
         }
         return "最终报告已通过 Reviewer 高风险检查，可进入人工确认。";
+    }
+
+    private boolean finalizedBecauseReworkLimitReached(AnalysisRun run) {
+        if (run.getReviewDecision() == null || run.getReviewDecision().getAction() == ReviewAction.PASS) {
+            return false;
+        }
+        return latestTransition(run)
+                .map(transition -> "finish".equals(transition.getRoute())
+                        && AgentName.FINALIZER.name().equals(transition.getTargetNode())
+                        && "auto-review-gate".equals(transition.getTrigger()))
+                .orElse(false);
+    }
+
+    private Optional<WorkflowTransition> latestTransition(AnalysisRun run) {
+        List<WorkflowTransition> transitions = run.getWorkflowTransitions();
+        if (transitions.isEmpty()) {
+            return Optional.empty();
+        }
+        return Optional.of(transitions.get(transitions.size() - 1));
     }
 
     private long countBySeverity(AnalysisRun run, ReviewSeverity severity) {

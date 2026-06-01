@@ -18,8 +18,10 @@ import org.bsc.langgraph4j.action.AsyncNodeAction;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
+import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.EnumMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -78,7 +80,19 @@ public class AnalysisLangGraphWorkflow {
         if (node == null) {
             throw new IllegalArgumentException("Unsupported agent: " + agentName);
         }
-        return nodeExecutor.executeNode(runId, node, "Manual rerun requested for " + agentName);
+        AnalysisRun run = null;
+        for (AgentNode cascadeNode : rerunCascade(agentName)) {
+            run = nodeExecutor.executeNode(
+                    runId,
+                    cascadeNode,
+                    "Manual cascade rerun requested from " + agentName
+            );
+            if (cascadeNode.name() == AgentName.REVIEWER) {
+                run = repository.findById(runId).orElseThrow(() -> new RunNotFoundException(runId));
+                recordTransition(run, ROUTE_FINISH, manualRerunAttempt(run), "manual-rerun-from-" + agentName);
+            }
+        }
+        return run == null ? repository.findById(runId).orElseThrow(() -> new RunNotFoundException(runId)) : run;
     }
 
     private CompiledGraph<AnalysisGraphState> buildGraph() {
@@ -131,7 +145,7 @@ public class AnalysisLangGraphWorkflow {
         // 这里把结构化 action 映射成 LangGraph 路由，并把选择持久化给前端回放。
         String route = nextRoute(run, attempts);
         // 每一次条件边选择都落库，前端才能解释“Reviewer 为什么打回到某个 Agent”。
-        recordTransition(run, route, attempts);
+        recordTransition(run, route, attempts, "auto-review-gate");
         if (!ROUTE_FINISH.equals(route)) {
             attempts++;
             eventBroker.publish(run, "review_rework_started", "复核 Agent 请求打回路径：" + route);
@@ -144,16 +158,26 @@ public class AnalysisLangGraphWorkflow {
         );
     }
 
-    private void recordTransition(AnalysisRun run, String route, int attempt) {
+    private void recordTransition(AnalysisRun run, String route, int attempt, String trigger) {
         ReviewDecision decision = run.getReviewDecision();
-        run.getWorkflowTransitions().add(new WorkflowTransition(
+        WorkflowTransition previous = latestTransition(run);
+        WorkflowTransition transition = new WorkflowTransition(
                 REVIEW_GATE,
                 targetNodeFor(route),
                 route,
                 decision.getAction(),
                 decision.getReason(),
                 attempt
-        ));
+        );
+        transition.setTrigger(trigger);
+        transition.setBlockingFindingIds(new ArrayList<>(decision.getBlockingFindingIds() == null
+                ? List.of()
+                : decision.getBlockingFindingIds()));
+        transition.setBlockingFindingSignatures(blockingFindingSignatures(run));
+        transition.setResolvedFindingSignatures(resolvedFindingSignatures(previous, transition.getBlockingFindingSignatures()));
+        transition.setUnresolvedFindingSignatures(unresolvedFindingSignatures(previous, transition.getBlockingFindingSignatures()));
+        transition.setResolutionStatus(resolutionStatus(previous, transition));
+        run.getWorkflowTransitions().add(transition);
         repository.save(run);
     }
 
@@ -197,6 +221,93 @@ public class AnalysisLangGraphWorkflow {
             return AgentName.WRITER.name();
         }
         return AgentName.FINALIZER.name();
+    }
+
+    private List<AgentNode> rerunCascade(AgentName agentName) {
+        List<AgentName> order = switch (agentName) {
+            case CLARIFIER -> List.of(AgentName.CLARIFIER);
+            case RESEARCHER -> List.of(AgentName.RESEARCHER, AgentName.EXTRACTOR, AgentName.ANALYST,
+                    AgentName.WRITER, AgentName.REVIEWER, AgentName.FINALIZER);
+            case EXTRACTOR -> List.of(AgentName.EXTRACTOR, AgentName.ANALYST, AgentName.WRITER,
+                    AgentName.REVIEWER, AgentName.FINALIZER);
+            case ANALYST -> List.of(AgentName.ANALYST, AgentName.WRITER, AgentName.REVIEWER, AgentName.FINALIZER);
+            case WRITER -> List.of(AgentName.WRITER, AgentName.REVIEWER, AgentName.FINALIZER);
+            case REVIEWER -> List.of(AgentName.REVIEWER, AgentName.FINALIZER);
+            case FINALIZER -> List.of(AgentName.FINALIZER);
+        };
+        return order.stream()
+                .map(nodesByName::get)
+                .filter(node -> node != null)
+                .toList();
+    }
+
+    private int manualRerunAttempt(AnalysisRun run) {
+        return run.getWorkflowTransitions().stream()
+                .mapToInt(WorkflowTransition::getAttempt)
+                .max()
+                .orElse(-1) + 1;
+    }
+
+    private WorkflowTransition latestTransition(AnalysisRun run) {
+        List<WorkflowTransition> transitions = run.getWorkflowTransitions();
+        if (transitions == null || transitions.isEmpty()) {
+            return null;
+        }
+        return transitions.get(transitions.size() - 1);
+    }
+
+    private List<String> blockingFindingSignatures(AnalysisRun run) {
+        LinkedHashSet<String> decisionIds = new LinkedHashSet<>(run.getReviewDecision().getBlockingFindingIds() == null
+                ? List.of()
+                : run.getReviewDecision().getBlockingFindingIds());
+        return run.getReviewFindings().stream()
+                .filter(finding -> decisionIds.contains(finding.getId().toString()))
+                .map(finding -> "%s|%s|%s".formatted(
+                        textOrDash(finding.getCategory()),
+                        textOrDash(finding.getClaimId()),
+                        textOrDash(finding.getCitationKey())
+                ))
+                .distinct()
+                .toList();
+    }
+
+    private List<String> resolvedFindingSignatures(WorkflowTransition previous, List<String> currentSignatures) {
+        if (previous == null || previousSignatures(previous).isEmpty()) {
+            return List.of();
+        }
+        return previousSignatures(previous).stream()
+                .filter(signature -> !currentSignatures.contains(signature))
+                .toList();
+    }
+
+    private List<String> unresolvedFindingSignatures(WorkflowTransition previous, List<String> currentSignatures) {
+        if (previous == null || previousSignatures(previous).isEmpty()) {
+            return List.of();
+        }
+        return previousSignatures(previous).stream()
+                .filter(currentSignatures::contains)
+                .toList();
+    }
+
+    private String resolutionStatus(WorkflowTransition previous, WorkflowTransition current) {
+        if (previous == null || previousSignatures(previous).isEmpty()) {
+            return current.getBlockingFindingSignatures().isEmpty() ? "NO_BLOCKERS" : "NEW_BLOCKERS";
+        }
+        if (current.getBlockingFindingSignatures().isEmpty()) {
+            return "RESOLVED";
+        }
+        if (!current.getUnresolvedFindingSignatures().isEmpty()) {
+            return "PARTIALLY_UNRESOLVED";
+        }
+        return "REPLACED_BY_NEW_BLOCKERS";
+    }
+
+    private List<String> previousSignatures(WorkflowTransition previous) {
+        return previous.getBlockingFindingSignatures() == null ? List.of() : previous.getBlockingFindingSignatures();
+    }
+
+    private String textOrDash(String value) {
+        return value == null || value.isBlank() ? "-" : value.trim();
     }
 
     private String inputSummary(AnalysisGraphState state) {

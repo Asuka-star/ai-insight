@@ -22,7 +22,11 @@ export function latestStepByAgent(run?: AnalysisRun): Map<AgentName, AgentStep[]
 }
 
 export function isActiveRun(run?: AnalysisRun | null): boolean {
-  return run?.status === "PENDING" || run?.status === "RUNNING" || run?.status === "REVIEWING" || run?.status === "REVISING";
+  return run?.status === "PENDING"
+    || run?.status === "RUNNING"
+    || run?.status === "REVIEWING"
+    || run?.status === "REVISING"
+    || Boolean(run?.steps?.some((step) => step.status === "RUNNING"));
 }
 
 export function resolveRunPhase(run?: AnalysisRun | null): AnalysisStatus | string {

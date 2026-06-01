@@ -29,7 +29,9 @@ import com.aiinsight.model.run.EvidenceChunk;
 import com.aiinsight.model.run.AnalysisRequirement;
 import com.aiinsight.model.run.AnalysisRun;
 import com.aiinsight.model.run.EvidenceSource;
+import com.aiinsight.model.run.WorkflowTransition;
 import com.aiinsight.model.review.ReviewFinding;
+import com.aiinsight.model.review.ReviewRepairTask;
 import com.aiinsight.model.schema.AnalysisClaim;
 import com.aiinsight.model.schema.CompetitorProfile;
 import com.aiinsight.model.schema.InterviewGuide;
@@ -115,6 +117,21 @@ class AnalysisWorkflowServiceTest {
 
         assertThat(finished.getStatus()).isEqualTo(AnalysisStatus.SUCCEEDED);
         assertThat(finished.getSteps()).isNotEmpty();
+    }
+
+    @Test
+    void createDraftAsyncReturnsRunBeforeClarifierCompletes() {
+        AnalysisWorkflowService service = newService(new TaskExecutorAdapter(command -> {
+        }));
+        CreateAnalysisRunRequest request = new CreateAnalysisRunRequest();
+        request.setPrompt("Analyze Cursor and Claude Code.");
+
+        AnalysisRun draft = service.createDraftAsync(request);
+
+        assertThat(draft.getStatus()).isEqualTo(AnalysisStatus.AWAITING_CONFIRMATION);
+        assertThat(draft.getId()).isNotNull();
+        assertThat(draft.getSteps()).isEmpty();
+        assertThat(draft.getTraces()).isEmpty();
     }
 
     @Test
@@ -458,7 +475,8 @@ class AnalysisWorkflowServiceTest {
         assertThat(finished.getEvidenceChunks()).hasSizeGreaterThanOrEqualTo(4);
         assertThat(service.retrieveEvidence(finished.getId(), "Notion", 3)).isNotEmpty();
         assertThat(finished.getResearchPackage().getSources()).hasSizeGreaterThanOrEqualTo(4);
-        assertThat(finished.getResearchPackage().getMissingEvidenceTypes()).contains("survey_result", "interview_note");
+        assertThat(finished.getResearchPackage().getMissingEvidenceTypes())
+                .doesNotContain("survey_result", "interview_note");
         assertThat(finished.getResearchPackage().getResearchPlan().getQuestionnaire().getQuestions()).isNotEmpty();
         assertThat(finished.getResearchPackage().getResearchPlan().getInterviewGuide().getQuestions()).isNotEmpty();
         assertThat(finished.getResearchPackage().getResearchPlan().getPublicSourceTasks()).isNotEmpty();
@@ -581,6 +599,38 @@ class AnalysisWorkflowServiceTest {
     }
 
     @Test
+    void writerRemovesInternalClaimIdsAndReportMetadataFromLlmOutput() {
+        LlmClient writerLlm = new LlmClient() {
+            @Override
+            public boolean isAvailable() {
+                return true;
+            }
+
+            @Override
+            public String complete(com.aiinsight.llm.ChatRequest request) {
+                return """
+                        报告编号： COMP-AI-2024-001
+                        生成日期： 2024-07-30
+                        # 报告草稿
+
+                        核心路径差异可以作为规划输入 [C-77b41f42-9373-423c-84d3-c681d7d08f43] [S1]。
+                        报告草稿结束
+                        """;
+            }
+        };
+        AnalysisRun run = writerReadyRun();
+
+        new WriterNode(writerLlm, new FallbackReportDraftFactory()).execute(run);
+
+        assertThat(run.getArtifacts())
+                .filteredOn(artifact -> artifact.getType() == ArtifactType.REPORT_DRAFT)
+                .last()
+                .satisfies(artifact -> assertThat(artifact.getContent())
+                        .contains("结构化结论", "[S1]")
+                        .doesNotContain("报告编号", "生成日期", "报告草稿结束", "[C-77b41f42"));
+    }
+
+    @Test
     void writerLlmPromptIncludesStructuredInputs() {
         StringBuilder promptCapture = new StringBuilder();
         LlmClient writerLlm = new LlmClient() {
@@ -616,6 +666,8 @@ class AnalysisWorkflowServiceTest {
 
         assertThat(promptCapture.toString())
                 .contains("结构化结论:", "竞品画像摘要:", "竞品矩阵:", "SWOT 分析:", "采集包缺口与一手洞察:", "证据索引:")
+                .contains("结论先行", "建议优先级", "不要输出报告编号", "不要在正文使用 [C-...] Claim ID")
+                .contains("报告主体只写“已验证/可初步判断”的内容", "不要出现 Analyst、Reviewer、Researcher、Writer")
                 .contains("Notion 的 AI 搜索能力可作为产品规划参考。", "AI 知识协作工具", "证据缺口", "Notion AI search")
                 .doesNotContain("相关证据切片", "S1-C1");
     }
@@ -732,7 +784,8 @@ class AnalysisWorkflowServiceTest {
                     assertThat(artifact.getCitationKeys()).containsExactly("S1");
                 });
         assertThat(promptCapture.toString())
-                .contains("证据索引", "[S1] Notion permission audit", "结构化 Claims", "应优先围绕权限审计和 AI 搜索做差异化产品规划")
+                .contains("证据索引", "按维度整理的证据覆盖", "不要把“证据不足”本身当成主要洞察")
+                .contains("[S1] Notion permission audit", "结构化 Claims", "应优先围绕权限审计和 AI 搜索做差异化产品规划")
                 .doesNotContain("相关证据切片", "S1-C1", "enterprise governance");
     }
 
@@ -874,6 +927,8 @@ class AnalysisWorkflowServiceTest {
         assertThat(run.getClaims()).extracting(AnalysisClaim::getContent)
                 .anyMatch(content -> content.contains("价格策略"))
                 .anyMatch(content -> content.contains("AI 搜索"));
+        assertThat(run.getClaims()).extracting(AnalysisClaim::getContent)
+                .allMatch(content -> !content.contains("Reviewer") && !content.contains("可重跑") && !content.contains("打回采集"));
     }
 
     @Test
@@ -886,21 +941,30 @@ class AnalysisWorkflowServiceTest {
 
             @Override
             public String complete(com.aiinsight.llm.ChatRequest request) {
+                String prompt = request.getMessages().get(1).getContent();
+                if (prompt.contains("matrixMarkdown")) {
+                    return """
+                            {"matrixMarkdown":"| 维度 | 竞品 | 判断 | 证据 |\\n| --- | --- | --- | --- |\\n| AI 搜索 | Notion | 有可验证线索，也有未知引用 | [S1] [S404] |"}
+                            """;
+                }
+                if (prompt.contains("swotMarkdown")) {
+                    return """
+                            {"swotMarkdown":"| 维度 | 结论 | 证据 |\\n| --- | --- | --- |\\n| Threats 威胁 | 错误引用应被清理 | [S404] |"}
+                            """;
+                }
                 return """
-                        {
-                          "claims": [
                             {
-                              "type": "COMPARISON",
-                              "content": "Notion 在 AI 搜索方向有可验证线索。",
-                              "confidence": "MEDIUM",
-                              "competitorNames": ["Notion"],
-                              "evidenceIds": ["S1"]
+                              "claims": [
+                                {
+                                  "type": "COMPARISON",
+                                  "content": "Notion 在 AI 搜索方向有可验证线索。",
+                                  "confidence": "MEDIUM",
+                                  "competitorNames": ["Notion"],
+                                  "evidenceIds": ["S1"]
+                                }
+                              ]
                             }
-                          ],
-                          "competitiveMatrixMarkdown": "| 维度 | 竞品 | 判断 | 证据 |\\n| --- | --- | --- | --- |\\n| AI 搜索 | Notion | 有可验证线索，也有未知引用 | [S1] [S404] |",
-                          "swotMarkdown": "| 维度 | 结论 | 证据 |\\n| --- | --- | --- |\\n| Threats 威胁 | 错误引用应被清理 | [S404] |"
-                        }
-                        """;
+                            """;
             }
         };
         AnalysisRun run = new AnalysisRun(new AnalysisRequirement(
@@ -1421,10 +1485,55 @@ class AnalysisWorkflowServiceTest {
         var run = service.start(request);
         var rerun = service.rerunAgent(run.getId(), AgentName.WRITER);
 
+        assertThat(rerun.getSteps().subList(rerun.getSteps().size() - 3, rerun.getSteps().size()))
+                .extracting(step -> step.getAgentName())
+                .containsExactly(AgentName.WRITER, AgentName.REVIEWER, AgentName.FINALIZER);
         assertThat(rerun.getArtifacts())
                 .filteredOn(artifact -> artifact.getType() == ArtifactType.REPORT_DRAFT)
                 .extracting(artifact -> artifact.getVersion())
                 .containsExactly(1, 2);
+        assertThat(rerun.getArtifacts())
+                .filteredOn(artifact -> artifact.getType() == ArtifactType.REVIEW_FINDINGS)
+                .extracting(artifact -> artifact.getVersion())
+                .containsExactly(1, 2);
+        assertThat(rerun.getArtifacts())
+                .filteredOn(artifact -> artifact.getType() == ArtifactType.FINAL_REPORT)
+                .extracting(artifact -> artifact.getVersion())
+                .containsExactly(1, 2);
+        assertThat(rerun.getWorkflowTransitions())
+                .last()
+                .satisfies(transition -> {
+                    assertThat(transition.getTrigger()).isEqualTo("manual-rerun-from-WRITER");
+                    assertThat(transition.getResolutionStatus()).isNotBlank();
+                });
+    }
+
+    @Test
+    void rerunResearcherContinuesThroughEveryDownstreamAgent() {
+        AnalysisWorkflowService service = newService();
+        CreateAnalysisRunRequest request = new CreateAnalysisRunRequest();
+        request.setPrompt("Analyze Cursor and Claude Code for developer workflow.");
+
+        var run = service.start(request);
+        var rerun = service.rerunAgent(run.getId(), AgentName.RESEARCHER);
+
+        assertThat(rerun.getSteps().subList(rerun.getSteps().size() - 6, rerun.getSteps().size()))
+                .extracting(step -> step.getAgentName())
+                .containsExactly(
+                        AgentName.RESEARCHER,
+                        AgentName.EXTRACTOR,
+                        AgentName.ANALYST,
+                        AgentName.WRITER,
+                        AgentName.REVIEWER,
+                        AgentName.FINALIZER
+                );
+        assertThat(rerun.getArtifacts())
+                .filteredOn(artifact -> artifact.getType() == ArtifactType.REPORT_DRAFT)
+                .extracting(artifact -> artifact.getVersion())
+                .containsExactly(1, 2);
+        assertThat(rerun.getWorkflowTransitions())
+                .last()
+                .satisfies(transition -> assertThat(transition.getTrigger()).isEqualTo("manual-rerun-from-RESEARCHER"));
     }
 
     @Test
@@ -1440,6 +1549,45 @@ class AnalysisWorkflowServiceTest {
         assertThatThrownBy(() -> service.rerunAgent(run.getId(), AgentName.WRITER))
                 .isInstanceOf(InvalidRunStateException.class)
                 .hasMessageContaining("agent cannot be rerun while workflow is RUNNING");
+    }
+
+    @Test
+    void nodeExecutorPersistsRunningTraceBeforeAgentCompletes() {
+        AnalysisRunRepository repository = new CopyingTestAnalysisRunRepository();
+        WorkflowNodeExecutor executor = new WorkflowNodeExecutor(repository, new AnalysisEventBroker());
+        AnalysisRun run = new AnalysisRun(new AnalysisRequirement());
+        repository.save(run);
+        AnalysisRun[] snapshot = new AnalysisRun[1];
+        AgentNode inspectingNode = new AgentNode() {
+            @Override
+            public AgentName name() {
+                return AgentName.CLARIFIER;
+            }
+
+            @Override
+            public String title() {
+                return "Inspect trace persistence";
+            }
+
+            @Override
+            public AnalysisRun execute(AnalysisRun currentRun) {
+                snapshot[0] = repository.findById(currentRun.getId()).orElseThrow();
+                return currentRun;
+            }
+        };
+
+        AnalysisRun completed = executor.executeNode(run.getId(), inspectingNode, "trace should be visible while running");
+
+        assertThat(snapshot[0].getTraces())
+                .singleElement()
+                .satisfies(trace -> {
+                    assertThat(trace.getAgentName()).isEqualTo(AgentName.CLARIFIER);
+                    assertThat(trace.getStatus()).isEqualTo(StepStatus.RUNNING);
+                    assertThat(trace.getInputSnapshot()).contains("澄清原始需求");
+                });
+        assertThat(completed.getTraces())
+                .singleElement()
+                .satisfies(trace -> assertThat(trace.getStatus()).isEqualTo(StepStatus.SUCCEEDED));
     }
 
     @Test
@@ -1512,6 +1660,51 @@ class AnalysisWorkflowServiceTest {
     }
 
     @Test
+    void reviewerDoesNotSendManualOnlyResearchGapsToPublicSearch() {
+        AnalysisRun run = new AnalysisRun();
+        run.getResearchPackage().getMissingEvidenceTypes().addAll(List.of("survey_result", "interview_note"));
+        run.addArtifact(new AnalysisArtifact(
+                ArtifactType.REPORT_DRAFT,
+                "draft",
+                "机会点是优化用户画像和采购访谈链路。",
+                List.of()
+        ));
+
+        new ReviewerNode(new CitationCoverageEvaluator(), noopLlmClient(), new FallbackReviewReportFactory()).execute(run);
+
+        assertThat(run.getReviewDecision().getAction()).isEqualTo(ReviewAction.REVISE_REPORT);
+        assertThat(run.getReviewDecision().getTargetAgent()).isEqualTo(AgentName.WRITER);
+        assertThat(run.getReviewDecision().getRequiredEvidenceTypes())
+                .containsExactly("survey_result", "interview_note");
+        assertThat(run.getReviewDecision().getReason())
+                .contains("一手调研缺口", "不能由公开搜索自动补齐");
+        assertThat(run.getRecommendedActions())
+                .anyMatch(action -> action.contains("公开搜索不能自动生成真实问卷或访谈"));
+    }
+
+    @Test
+    void reviewerOnlyRecollectsAutoCollectableEvidenceWhenManualGapsAreMixedIn() {
+        AnalysisRun run = new AnalysisRun();
+        run.getResearchPackage().getMissingEvidenceTypes().addAll(List.of("pricing_page", "survey_result"));
+        run.addArtifact(new AnalysisArtifact(
+                ArtifactType.REPORT_DRAFT,
+                "draft",
+                "机会点是优化企业版价格策略。",
+                List.of()
+        ));
+
+        new ReviewerNode(new CitationCoverageEvaluator(), noopLlmClient(), new FallbackReviewReportFactory()).execute(run);
+
+        assertThat(run.getReviewDecision().getAction()).isEqualTo(ReviewAction.RECOLLECT_EVIDENCE);
+        assertThat(run.getReviewDecision().getTargetAgent()).isEqualTo(AgentName.RESEARCHER);
+        assertThat(run.getReviewDecision().getRequiredEvidenceTypes()).containsExactly("pricing_page");
+        assertThat(run.getReviewDecision().getReason())
+                .contains("pricing_page")
+                .contains("survey_result")
+                .contains("人工补证");
+    }
+
+    @Test
     void reviewerRoutesStructuredClaimProblemsBackToAnalyst() {
         AnalysisRun run = new AnalysisRun();
         run.getEvidenceSources().add(new EvidenceSource(
@@ -1563,8 +1756,46 @@ class AnalysisWorkflowServiceTest {
     }
 
     @Test
+    void downstreamRepairPlansIncludeSpecificTaskInstruction() throws Exception {
+        AnalysisRun run = new AnalysisRun();
+        run.getReviewDecision().setAction(ReviewAction.REWORK_ANALYSIS);
+        run.getReviewDecision().setTargetAgent(AgentName.ANALYST);
+        run.getReviewDecision().setAffectedClaimIds(List.of("C-1"));
+        run.getReviewDecision().setFindingCategories(List.of("claim_evidence_mismatch"));
+        run.getReviewDecision().setRepairInstructions(List.of("repair affected claim only"));
+        ReviewRepairTask analystTask = new ReviewRepairTask();
+        analystTask.setTargetAgent(AgentName.ANALYST);
+        analystTask.setAction("REPAIR_CLAIM_EVIDENCE");
+        analystTask.setClaimId("C-1");
+        analystTask.setInstruction("narrow this claim to pricing evidence");
+        analystTask.setAcceptanceCriteria("claim confidence is downgraded or evidence is rebound");
+        run.getReviewDecision().getRepairTasks().add(analystTask);
+
+        String analystPlan = invokeRepairPlanBlock(
+                new AnalystNode(noopLlmClient(), new ObjectMapper(), new FallbackAnalysisDraftFactory()),
+                run
+        );
+
+        run.getReviewDecision().setAction(ReviewAction.REVISE_REPORT);
+        run.getReviewDecision().setTargetAgent(AgentName.WRITER);
+        ReviewRepairTask writerTask = new ReviewRepairTask();
+        writerTask.setTargetAgent(AgentName.WRITER);
+        writerTask.setAction("REVISE_REPORT_TEXT");
+        writerTask.setCitationKey("S1");
+        writerTask.setInstruction("rewrite paragraph 2 as a tentative finding");
+        writerTask.setAcceptanceCriteria("paragraph has source and uncertainty marker");
+        run.getReviewDecision().getRepairTasks().clear();
+        run.getReviewDecision().getRepairTasks().add(writerTask);
+
+        String writerPlan = invokeRepairPlanBlock(new WriterNode(noopLlmClient(), new FallbackReportDraftFactory()), run);
+
+        assertThat(analystPlan).contains("narrow this claim to pricing evidence");
+        assertThat(writerPlan).contains("rewrite paragraph 2 as a tentative finding");
+    }
+
+    @Test
     void reviewerMergesStructuredLlmFindingsIntoDecision() {
-        StringBuilder promptCapture = new StringBuilder();
+        List<String> promptCapture = new java.util.concurrent.CopyOnWriteArrayList<>();
         LlmClient reviewerLlm = new LlmClient() {
             @Override
             public boolean isAvailable() {
@@ -1573,7 +1804,7 @@ class AnalysisWorkflowServiceTest {
 
             @Override
             public String complete(com.aiinsight.llm.ChatRequest request) {
-                promptCapture.append(request.getMessages().get(1).getContent());
+                promptCapture.add(request.getMessages().get(1).getContent());
                 return """
                         {
                           "summary": "发现一个语义层面的高风险过度推断。",
@@ -1628,7 +1859,8 @@ class AnalysisWorkflowServiceTest {
 
         new ReviewerNode(new CitationCoverageEvaluator(), reviewerLlm, new FallbackReviewReportFactory()).execute(run);
 
-        assertThat(promptCapture.toString()).contains("只输出可解析 JSON", "Claim 与证据:", "C-LLM-1");
+        assertThat(promptCapture).anySatisfy(prompt -> assertThat(prompt)
+                .contains("只输出可解析 JSON", "Claim 与证据:", "C-LLM-1"));
         assertThat(run.getReviewFindings())
                 .anySatisfy(finding -> {
                     assertThat(finding.getCategory()).isEqualTo("llm_overclaim");
@@ -1913,7 +2145,8 @@ class AnalysisWorkflowServiceTest {
         new ReviewerNode(new CitationCoverageEvaluator(), reviewerLlm, new FallbackReviewReportFactory()).execute(run);
 
         assertThat(promptCapture.toString())
-                .contains("claim-evidence Reviewer", "report-overclaim Reviewer", "schema-consistency Reviewer", "source-quality Reviewer");
+                .contains("claim-evidence Reviewer", "report-overclaim Reviewer", "schema-consistency Reviewer",
+                        "source-quality Reviewer", "report-actionability Reviewer");
         assertThat(run.getReviewFindings())
                 .anySatisfy(finding -> {
                     assertThat(finding.getCategory()).isEqualTo("claim_evidence_mismatch");
@@ -1936,6 +2169,74 @@ class AnalysisWorkflowServiceTest {
                 .filteredOn(artifact -> artifact.getType() == ArtifactType.REVIEW_FINDINGS)
                 .last()
                 .satisfies(artifact -> assertThat(artifact.getContent()).contains("LLM 并发语义质检", "结构化新增问题：2", "定向修复计划", "结构化修复任务"));
+    }
+
+    @Test
+    void reviewerRoutesPoorActionabilityReportsBackToWriter() {
+        LlmClient reviewerLlm = new LlmClient() {
+            @Override
+            public boolean isAvailable() {
+                return true;
+            }
+
+            @Override
+            public String complete(com.aiinsight.llm.ChatRequest request) {
+                String prompt = request.getMessages().get(1).getContent();
+                if (prompt.contains("report-actionability Reviewer")) {
+                    return """
+                            {
+                              "summary": "report is too generic",
+                              "findings": [
+                                {
+                                  "severity": "HIGH",
+                                  "category": "report_quality_insufficient",
+                                  "message": "report lacks a decision summary and prioritized recommendation",
+                                  "recommendation": "rewrite the opening into a conclusion-first recommendation with tradeoffs",
+                                  "paragraphIndex": 1,
+                                  "excerpt": "Cursor and Claude Code both have AI capabilities"
+                                }
+                              ]
+                            }
+                            """;
+                }
+                return "{\"summary\":\"ok\",\"findings\":[]}";
+            }
+        };
+        AnalysisRun run = new AnalysisRun();
+        AnalysisClaim claim = new AnalysisClaim();
+        claim.setId("C-ACT-1");
+        claim.setType(ClaimType.RECOMMENDATION);
+        claim.setContent("Cursor and Claude Code should be compared by workflow fit.");
+        claim.setEvidenceIds(List.of("S1"));
+        run.getClaims().add(claim);
+        run.getEvidenceSources().add(new EvidenceSource(
+                "S1",
+                "Official comparison",
+                "https://example.test/comparison",
+                "official_site",
+                "FETCHED",
+                "LIVE_FETCHED",
+                "Cursor and Claude Code both have AI capabilities.",
+                "Cursor and Claude Code both have AI capabilities.",
+                "test evidence"
+        ));
+        run.addArtifact(new AnalysisArtifact(
+                ArtifactType.REPORT_DRAFT,
+                "draft",
+                "Cursor and Claude Code both have AI capabilities [S1].",
+                List.of("S1")
+        ));
+
+        new ReviewerNode(new CitationCoverageEvaluator(), reviewerLlm, new FallbackReviewReportFactory()).execute(run);
+
+        assertThat(run.getReviewDecision().getAction()).isEqualTo(ReviewAction.REVISE_REPORT);
+        assertThat(run.getReviewDecision().getTargetAgent()).isEqualTo(AgentName.WRITER);
+        assertThat(run.getReviewDecision().getFindingCategories()).contains("report_quality_insufficient");
+        assertThat(run.getReviewDecision().getRepairTasks())
+                .anySatisfy(task -> {
+                    assertThat(task.getTargetAgent()).isEqualTo(AgentName.WRITER);
+                    assertThat(task.getInstruction()).contains("paragraph=1");
+                });
     }
 
     @Test
@@ -1991,6 +2292,60 @@ class AnalysisWorkflowServiceTest {
                 .satisfies(artifact -> assertThat(artifact.getContent()).contains("claim_missing_evidence"));
         assertThat(run.getRecommendedActions())
                 .anyMatch(action -> action.contains("HIGH 质检项"));
+    }
+
+    @Test
+    void finalizerExplainsWhenReworkLimitStopsOpenReviewDecision() {
+        AnalysisRun run = new AnalysisRun();
+        run.addArtifact(new AnalysisArtifact(
+                ArtifactType.REPORT_DRAFT,
+                "draft",
+                "# 报告草稿\n\n定价页证据仍不足 [S1]。",
+                List.of("S1")
+        ));
+        ReviewFinding finding = new ReviewFinding(
+                ReviewSeverity.HIGH,
+                "citation_missing",
+                "缺少官方定价页证据。",
+                "补采 pricing_page。"
+        );
+        finding.setClaimId("C-1");
+        run.getReviewFindings().add(finding);
+        run.getReviewDecision().setAction(ReviewAction.RECOLLECT_EVIDENCE);
+        run.getReviewDecision().setTargetAgent(AgentName.RESEARCHER);
+        run.getReviewDecision().setRequiredEvidenceTypes(List.of("pricing_page"));
+        run.getReviewDecision().setAffectedClaimIds(List.of("C-1"));
+        run.getReviewDecision().setRepairScopeSummary("目标 Agent=RESEARCHER；证据类型=pricing_page。");
+        WorkflowTransition transition = new WorkflowTransition(
+                "REVIEW_GATE",
+                AgentName.FINALIZER.name(),
+                "finish",
+                ReviewAction.RECOLLECT_EVIDENCE,
+                "仍需补证，但已达到返工上限。",
+                1
+        );
+        transition.setTrigger("auto-review-gate");
+        run.getWorkflowTransitions().add(transition);
+
+        new FinalizerNode().execute(run);
+
+        assertThat(run.getArtifacts())
+                .filteredOn(artifact -> artifact.getType() == ArtifactType.FINAL_REPORT)
+                .last()
+                .satisfies(artifact -> assertThat(artifact.getContent())
+                        .contains("自动返工上限说明")
+                        .contains("最后一次 ReviewDecision 仍为 `RECOLLECT_EVIDENCE`")
+                        .contains("不得被理解为“质检已通过”")
+                        .contains("已执行自动返工次数：0"));
+        assertThat(run.getRecommendedActions())
+                .anyMatch(action -> action.contains("自动返工已达到本次运行上限")
+                        && action.contains("ReviewDecision 仍要求继续处理"));
+    }
+
+    private String invokeRepairPlanBlock(Object node, AnalysisRun run) throws Exception {
+        java.lang.reflect.Method method = node.getClass().getDeclaredMethod("repairPlanBlock", AnalysisRun.class);
+        method.setAccessible(true);
+        return (String) method.invoke(node, run);
     }
 
     private LlmClient noopLlmClient() {

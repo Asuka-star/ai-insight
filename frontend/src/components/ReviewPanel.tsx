@@ -1,12 +1,15 @@
 import { useState } from "react";
 import { AlertTriangle, CheckCircle2, ChevronDown, LocateFixed, RefreshCw, ShieldCheck } from "lucide-react";
-import type { AgentName, ReviewDecision, ReviewFinding } from "../types";
+import type { AgentName, AnalysisStatus, ReviewDecision, ReviewFinding, WorkflowTransition } from "../types";
 import { AGENT_LABELS } from "../constants";
 import { CollapsiblePanel } from "./CollapsiblePanel";
 
 interface ReviewPanelProps {
   findings: ReviewFinding[];
   decision?: ReviewDecision;
+  status?: AnalysisStatus;
+  workflowTransitions?: WorkflowTransition[];
+  maxReviewReworkAttempts?: number;
   onRerunTarget: (agent: AgentName) => void;
   onLocateFinding?: (finding: ReviewFinding) => void;
   disabled?: boolean;
@@ -44,6 +47,9 @@ const REVIEW_SEVERITIES = ["HIGH", "MEDIUM", "LOW"] as const;
 export function ReviewPanel({
   findings,
   decision,
+  status,
+  workflowTransitions,
+  maxReviewReworkAttempts,
   onRerunTarget,
   onLocateFinding,
   disabled,
@@ -54,6 +60,7 @@ export function ReviewPanel({
   const decisionAction = decision?.action || "PASS";
   const targetAgent = decision?.targetAgent;
   const quality = qualityProfile(groupedFindings);
+  const reworkLimit = reworkLimitProfile(status, decision, workflowTransitions, maxReviewReworkAttempts);
   const [collapsedSeverityGroups, setCollapsedSeverityGroups] = useState<Record<ReviewFinding["severity"], boolean>>({
     HIGH: false,
     MEDIUM: false,
@@ -89,12 +96,13 @@ export function ReviewPanel({
         </div>
       </div>
       {decision ? (
-        <div className={`decision-box ${decisionClass(decisionAction)}`}>
+        <div className={`decision-box ${decisionClass(decisionAction, Boolean(reworkLimit))}`}>
           <div className="decision-header">
-            <span>{decisionActionLabel(decisionAction)}</span>
+            <span>{reworkLimit ? "已封版需人工处理" : decisionActionLabel(decisionAction)}</span>
             {targetAgent ? <strong>{AGENT_LABELS[targetAgent] ?? targetAgent}</strong> : <strong>{TEXT.noTarget}</strong>}
           </div>
           <small className="decision-action-code">{decisionAction}</small>
+          {reworkLimit ? <p className="decision-warning">{reworkLimit}</p> : null}
           <p>{decision.reason || TEXT.waitingReason}</p>
           <div className="decision-meta-grid">
             <DecisionMeta label={TEXT.affectedClaim} values={decision.affectedClaimIds} empty={TEXT.noClaim} />
@@ -213,8 +221,27 @@ function groupFindings(findings: ReviewFinding[]) {
   );
 }
 
-function decisionClass(action: string) {
+function decisionClass(action: string, reworkLimitReached = false) {
+  if (reworkLimitReached) return "limited";
   return action === "PASS" ? "pass" : "blocked";
+}
+
+function reworkLimitProfile(
+  status?: AnalysisStatus,
+  decision?: ReviewDecision,
+  workflowTransitions: WorkflowTransition[] = [],
+  maxReviewReworkAttempts?: number
+) {
+  if (status !== "SUCCEEDED" || !decision?.action || decision.action === "PASS") {
+    return "";
+  }
+  const latestTransition = workflowTransitions.at(-1);
+  if (latestTransition?.route !== "finish" || latestTransition.targetNode !== "FINALIZER" || latestTransition.trigger !== "auto-review-gate") {
+    return "";
+  }
+  const reworkCount = workflowTransitions.filter((transition) => transition.route && transition.route !== "finish").length;
+  const limitText = maxReviewReworkAttempts === undefined ? "本次设置的" : `${maxReviewReworkAttempts} 次`;
+  return `自动返工已达到${limitText}上限，流程已封版；但 ReviewDecision 仍是 ${decisionActionLabel(decision.action)}，说明仍有未完全解决的复核项。请人工复核，或手动从目标 Agent 继续重跑下游链路。已自动返工 ${reworkCount} 次。`;
 }
 
 function decisionActionLabel(action: string) {

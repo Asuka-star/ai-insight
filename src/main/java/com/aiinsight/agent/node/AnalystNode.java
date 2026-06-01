@@ -155,13 +155,15 @@ public class AnalystNode implements AgentNode {
 
                 输出约束：
                 1. 只输出 JSON，不要 Markdown 代码块。
-                2. claims 必须是数组，最多 6 条；每条 claim 包含 type、content、confidence、competitorNames、evidenceIds。
+                2. claims 必须是数组，最多 8 条；每条 claim 包含 type、content、confidence、competitorNames、evidenceIds。
                 3. type 只能取 FACT、COMPARISON、STRENGTH、WEAKNESS、OPPORTUNITY、RISK、RECOMMENDATION。
                 4. confidence 只能取 LOW、MEDIUM、HIGH。
                 5. content 不超过 120 字，必须围绕用户关注维度、业务目标或已采集证据生成。
                 6. evidenceIds 只能使用已知证据编号；证据不足时可以为空，但 content 必须明确写“待验证”或“证据不足”。
                 7. 不要输出 competitiveMatrixMarkdown 或 swotMarkdown。
                 8. 不要编造价格、营收、客户案例、市场份额或证据中没有的信息。
+                9. 不要把“证据不足”本身当成主要洞察；RISK 类型最多 1 条，其余优先产出有证据支撑的差异、取舍和建议。
+                10. 对已有 strong/medium 证据覆盖的维度，不要写“待验证”；应给出保守但可行动的判断。
 
                 JSON 结构：
                 {
@@ -185,6 +187,9 @@ public class AnalystNode implements AgentNode {
                 证据索引：
                 %s
 
+                按维度整理的证据覆盖：
+                %s
+
                 证据缺口与一手洞察：
                 %s
 
@@ -194,6 +199,7 @@ public class AnalystNode implements AgentNode {
                 context.requirementSummary(),
                 context.profileBlock(),
                 context.evidenceIndex(),
+                context.dimensionEvidence(),
                 context.researchContext(),
                 context.repairPlan()
         );
@@ -222,15 +228,19 @@ public class AnalystNode implements AgentNode {
 
                 约束：
                 1. 必须是 Markdown 表格，覆盖所有竞品。
-                2. 列必须贴合用户关注维度，至少包含竞品、核心定位、关键能力、短板/风险、证据。
-                3. 证据列只能使用已知 citation，如 [S1]；证据不足写“证据不足，待验证”。
+                2. 列必须贴合用户关注维度，建议包含：竞品、已验证优势、已验证短板/限制、关键取舍、待补证项、证据。
+                3. 证据列只能使用已知 citation，如 [S1]；证据不足只写入“待补证项”，不要在主体单元格反复铺陈“待验证”。
                 4. 不要编造价格、客户、市场份额或证据外事实。
                 5. 必须尽量复用“结构化 Claims”中的判断、置信度和 evidenceIds。
+                6. 表格应突出可比较差异；不要输出每个维度一列且大面积填“待验证”的矩阵。
 
                 分析需求：
                 %s
 
                 结构化竞品画像：
+                %s
+
+                按维度整理的证据覆盖：
                 %s
 
                 结构化 Claims：
@@ -244,6 +254,7 @@ public class AnalystNode implements AgentNode {
                 """.formatted(
                 context.requirementSummary(),
                 context.profileBlock(),
+                context.dimensionEvidence(),
                 claimsBlock(claims),
                 context.evidenceIndex(),
                 context.repairPlan()
@@ -269,10 +280,11 @@ public class AnalystNode implements AgentNode {
 
                 约束：
                 1. 必须包含 Strengths、Weaknesses、Opportunities、Threats 四行。
-                2. 每行结论不超过 120 字，并绑定证据 citation；证据不足写“证据不足，待验证”。
+                2. 每行结论不超过 120 字，并绑定证据 citation；证据不足只在 Threats 或补证语气里呈现。
                 3. 机会和威胁必须面向用户输出目标，不要泛泛而谈。
                 4. 不要编造价格、客户、市场份额或证据外事实。
                 5. 优先从“结构化 Claims”的 STRENGTH、WEAKNESS、OPPORTUNITY、RISK、RECOMMENDATION 中归纳。
+                6. Strengths/Opportunities 必须优先使用已有证据支持的内容，不要被证据缺口淹没。
 
                 分析需求：
                 %s
@@ -560,6 +572,7 @@ public class AnalystNode implements AgentNode {
                 requirementSummary(run),
                 compactProfileBlock(run),
                 evidenceIndexBlock(run),
+                dimensionEvidenceBlock(run),
                 researchContextBlock(run),
                 repairPlanBlock(run)
         );
@@ -597,6 +610,67 @@ public class AnalystNode implements AgentNode {
                         abbreviate(source.getSnippet(), 180)
                 ))
                 .collect(Collectors.joining("\n"));
+    }
+
+    private String dimensionEvidenceBlock(AnalysisRun run) {
+        if (run.getRequirement() == null || run.getRequirement().getDimensions().isEmpty()) {
+            return "用户未指定分析维度。";
+        }
+        List<EvidenceSource> sources = selectedEvidenceSources(run);
+        return run.getRequirement().getDimensions().stream()
+                .filter(this::hasText)
+                .map(dimension -> {
+                    List<EvidenceSource> matched = sources.stream()
+                            .filter(source -> dimensionMatchesSource(dimension, source))
+                            .limit(4)
+                            .toList();
+                    if (matched.isEmpty()) {
+                        return "- %s：暂无直接命中的公开证据，放入补证清单，不要作为主体结论。".formatted(dimension);
+                    }
+                    String evidence = matched.stream()
+                            .map(source -> "[%s] %s (%s)".formatted(
+                                    source.getCitationKey(),
+                                    abbreviate(source.getTitle(), 60),
+                                    evidenceTier(source)
+                            ))
+                            .collect(Collectors.joining("；"));
+                    return "- %s：%s".formatted(dimension, evidence);
+                })
+                .collect(Collectors.joining("\n"));
+    }
+
+    private boolean dimensionMatchesSource(String dimension, EvidenceSource source) {
+        List<String> keywords = keywordsForDimension(dimension);
+        String text = "%s %s %s %s %s".formatted(
+                nullToEmpty(source.getTitle()),
+                nullToEmpty(source.getSourceType()),
+                nullToEmpty(source.getUrl()),
+                nullToEmpty(source.getSnippet()),
+                nullToEmpty(source.getRawText())
+        ).toLowerCase(Locale.ROOT);
+        return keywords.stream().anyMatch(keyword -> text.contains(keyword.toLowerCase(Locale.ROOT)));
+    }
+
+    private List<String> keywordsForDimension(String dimension) {
+        LinkedHashSet<String> keywords = new LinkedHashSet<>();
+        keywords.add(dimension);
+        String normalized = normalizeLower(dimension);
+        if (containsAny(normalized, "价格", "定价", "pricing", "套餐", "商业模式")) {
+            keywords.addAll(List.of("价格", "定价", "pricing", "plan", "套餐", "billing"));
+        }
+        if (containsAny(normalized, "用户", "评价", "口碑", "访谈", "痛点", "满意", "review")) {
+            keywords.addAll(List.of("用户", "评价", "review", "feedback", "interview", "访谈", "pain", "满意"));
+        }
+        if (containsAny(normalized, "权限", "治理", "安全", "合规", "审计", "security")) {
+            keywords.addAll(List.of("权限", "安全", "security", "permission", "governance", "合规", "审计", "sso", "scim", "rbac"));
+        }
+        if (containsAny(normalized, "ai", "智能", "搜索", "生成", "总结", "代码", "agent")) {
+            keywords.addAll(List.of("ai", "智能", "搜索", "生成", "summary", "agent", "code", "代码"));
+        }
+        if (containsAny(normalized, "功能", "协作", "文档", "知识", "流程", "集成", "ide", "终端")) {
+            keywords.addAll(List.of("功能", "协作", "文档", "知识", "workflow", "integration", "集成", "ide", "terminal", "cli"));
+        }
+        return new ArrayList<>(keywords);
     }
 
     private List<EvidenceSource> selectedEvidenceSources(AnalysisRun run) {
@@ -688,7 +762,7 @@ public class AnalystNode implements AgentNode {
             case "pricing_page" -> 5;
             case "official_site" -> 4;
             case "release_notes", "technical_blog" -> 3;
-            case "authoritative_media" -> 2;
+            case "authoritative_media", "third_party_docs", "pricing_reference" -> 2;
             case "public_review", "public_reviews" -> 1;
             default -> 0;
         };
@@ -733,10 +807,11 @@ public class AnalystNode implements AgentNode {
                 ? "暂无结构化修复任务。"
                 : run.getReviewDecision().getRepairTasks().stream()
                 .filter(task -> task.getTargetAgent() == AgentName.ANALYST)
-                .map(task -> "- action=%s claim=%s citation=%s criteria=%s".formatted(
+                .map(task -> "- action=%s claim=%s citation=%s instruction=%s criteria=%s".formatted(
                         task.getAction(),
                         nullToEmpty(task.getClaimId()),
                         nullToEmpty(task.getCitationKey()),
+                        nullToEmpty(task.getInstruction()),
                         nullToEmpty(task.getAcceptanceCriteria())
                 ))
                 .collect(Collectors.joining("\n"));
@@ -794,6 +869,15 @@ public class AnalystNode implements AgentNode {
         return nullToEmpty(text).trim().toLowerCase(Locale.ROOT);
     }
 
+    private boolean containsAny(String text, String... patterns) {
+        for (String pattern : patterns) {
+            if (text != null && pattern != null && text.contains(pattern.toLowerCase(Locale.ROOT))) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     private String abbreviate(String value, int maxLength) {
         String normalized = nullToEmpty(value).replaceAll("\\s+", " ").trim();
         if (normalized.length() <= maxLength) {
@@ -815,6 +899,7 @@ public class AnalystNode implements AgentNode {
             String requirementSummary,
             String profileBlock,
             String evidenceIndex,
+            String dimensionEvidence,
             String researchContext,
             String repairPlan
     ) {

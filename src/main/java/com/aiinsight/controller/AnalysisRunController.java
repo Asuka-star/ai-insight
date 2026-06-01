@@ -41,7 +41,7 @@ public class AnalysisRunController {
 
     @PostMapping
     public AnalysisRun create(@Valid @RequestBody CreateAnalysisRunRequest request) {
-        return workflowService.createDraft(request);
+        return workflowService.createDraftAsync(request);
     }
 
     @GetMapping

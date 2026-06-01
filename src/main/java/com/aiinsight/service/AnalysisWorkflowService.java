@@ -83,6 +83,24 @@ public class AnalysisWorkflowService {
     }
 
     public AnalysisRun createDraft(CreateAnalysisRunRequest request) {
+        AnalysisRun run = initializeDraft(request);
+        run = executeClarifier(run.getId(), "preflight clarification", "澄清草稿已生成");
+        return run;
+    }
+
+    public AnalysisRun createDraftAsync(CreateAnalysisRunRequest request) {
+        AnalysisRun run = initializeDraft(request);
+        UUID runId = run.getId();
+        analysisTaskExecutor.execute(() -> executeClarifier(runId, "preflight clarification", "澄清草稿已生成"));
+        return get(runId);
+    }
+
+    public AnalysisRun start(CreateAnalysisRunRequest request) {
+        AnalysisRun run = createDraft(request);
+        return startExecution(run.getId());
+    }
+
+    private AnalysisRun initializeDraft(CreateAnalysisRunRequest request) {
         AnalysisRun run = new AnalysisRun(normalizer.normalize(request));
         // 自动返工是运行级策略，不属于用户需求语义；创建 Clarifier 草稿时先持久化，启动时直接读取。
         run.setMaxReviewReworkAttempts(normalizeReviewReworkAttempts(request.getMaxReviewReworkAttempts()));
@@ -91,14 +109,31 @@ public class AnalysisWorkflowService {
         run.setClarificationDraft(buildClarificationDraft(run.getRequirement()));
         repository.save(run);
         eventBroker.publish(run, "run_created", "分析任务已创建");
-        run = nodeExecutor.executeNode(run.getId(), clarifierNode, "preflight clarification");
-        eventBroker.publish(run, "clarification_ready", "澄清草稿已生成");
         return run;
     }
 
-    public AnalysisRun start(CreateAnalysisRunRequest request) {
-        AnalysisRun run = createDraft(request);
-        return startExecution(run.getId());
+    private AnalysisRun executeClarifier(UUID runId, String inputSummary, String readyMessage) {
+        AnalysisRun run = get(runId);
+        try {
+            run = nodeExecutor.executeNode(runId, clarifierNode, inputSummary);
+            eventBroker.publish(run, "clarification_ready", readyMessage);
+            return run;
+        } catch (CancellationException ex) {
+            run = repository.findById(runId).orElse(run);
+            if (run.getStatus() != AnalysisStatus.CANCELLED) {
+                run.setStatus(AnalysisStatus.CANCELLED);
+                repository.save(run);
+            }
+            eventBroker.publish(run, "run_cancelled", "澄清流程已取消");
+            return run;
+        } catch (RuntimeException ex) {
+            run = repository.findById(runId).orElse(run);
+            run.setStatus(AnalysisStatus.FAILED);
+            run.setErrorMessage(ex.getMessage());
+            repository.save(run);
+            eventBroker.publish(run, "run_failed", ex.getMessage());
+            return run;
+        }
     }
 
     public AnalysisRun get(UUID runId) {
@@ -210,8 +245,7 @@ public class AnalysisWorkflowService {
         run.setStatus(AnalysisStatus.AWAITING_CONFIRMATION);
         repository.save(run);
         eventBroker.publish(run, "clarification_requested", "范围重新澄清已请求");
-        run = nodeExecutor.executeNode(run.getId(), clarifierNode, "preflight clarification rerun");
-        eventBroker.publish(run, "clarification_ready", "澄清草稿已更新");
+        run = executeClarifier(run.getId(), "preflight clarification rerun", "澄清草稿已更新");
         return run;
     }
 
@@ -454,7 +488,7 @@ public class AnalysisWorkflowService {
 
     private int normalizeReviewReworkAttempts(Integer attempts) {
         if (attempts == null) {
-            return 0;
+            return 1;
         }
         return Math.max(0, Math.min(attempts, 2));
     }

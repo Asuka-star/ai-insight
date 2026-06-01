@@ -6,6 +6,8 @@ import lombok.NoArgsConstructor;
 import lombok.Setter;
 
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.UUID;
 
 @Getter
@@ -21,6 +23,12 @@ public class WorkflowTransition {
     private ReviewAction reviewAction;
     private String reason;
     private int attempt;
+    private String trigger;
+    private String resolutionStatus;
+    private List<String> blockingFindingIds = new ArrayList<>();
+    private List<String> blockingFindingSignatures = new ArrayList<>();
+    private List<String> resolvedFindingSignatures = new ArrayList<>();
+    private List<String> unresolvedFindingSignatures = new ArrayList<>();
     private Instant createdAt = Instant.now();
 
     public WorkflowTransition(String sourceNode,

@@ -163,8 +163,7 @@ public class ExtractorNode implements AgentNode {
         try {
             JsonNode root = objectMapper.readTree(extractJson(raw));
             JsonNode profilesNode = root.has("profiles") ? root.get("profiles") : root;
-            List<ProfileDraft> drafts = objectMapper.convertValue(profilesNode, new TypeReference<>() {
-            });
+            List<ProfileDraft> drafts = profileDrafts(profilesNode);
             Map<String, ProfileDraft> draftByName = (drafts == null ? List.<ProfileDraft>of() : drafts).stream()
                     .filter(draft -> StringUtils.hasText(draft.productName))
                     .collect(Collectors.toMap(
@@ -182,6 +181,28 @@ public class ExtractorNode implements AgentNode {
         } catch (IllegalArgumentException | JsonProcessingException ex) {
             throw new IllegalStateException("无法解析 Extractor JSON", ex);
         }
+    }
+
+    private List<ProfileDraft> profileDrafts(JsonNode profilesNode) {
+        if (profilesNode == null || profilesNode.isNull()) {
+            return List.of();
+        }
+        if (profilesNode.isObject()) {
+            Map<String, ProfileDraft> draftByKey = objectMapper.convertValue(profilesNode, new TypeReference<>() {
+            });
+            return draftByKey.entrySet().stream()
+                    .map(entry -> {
+                        ProfileDraft draft = entry.getValue();
+                        if (draft != null && !StringUtils.hasText(draft.productName)) {
+                            draft.productName = entry.getKey();
+                        }
+                        return draft;
+                    })
+                    .filter(draft -> draft != null)
+                    .toList();
+        }
+        return objectMapper.convertValue(profilesNode, new TypeReference<>() {
+        });
     }
 
     private CompetitorProfile toProfile(ProfileDraft draft, CompetitorProfile fallback, AnalysisRun run) {
@@ -304,7 +325,7 @@ public class ExtractorNode implements AgentNode {
                 .collect(Collectors.toCollection(LinkedHashSet::new));
         List<String> ids = (candidateIds == null ? List.<String>of() : candidateIds).stream()
                 .filter(StringUtils::hasText)
-                .map(String::trim)
+                .map(this::normalizeEvidenceId)
                 .filter(known::contains)
                 .distinct()
                 .toList();
@@ -313,9 +334,18 @@ public class ExtractorNode implements AgentNode {
         }
         return fallback == null ? List.of() : fallback.stream()
                 .filter(StringUtils::hasText)
+                .map(this::normalizeEvidenceId)
                 .filter(known::contains)
                 .distinct()
                 .toList();
+    }
+
+    private String normalizeEvidenceId(String value) {
+        String normalized = value.trim();
+        if (normalized.startsWith("[") && normalized.endsWith("]") && normalized.length() > 2) {
+            normalized = normalized.substring(1, normalized.length() - 1).trim();
+        }
+        return normalized;
     }
 
     private CompetitorProfile fallbackFor(List<CompetitorProfile> fallbackProfiles, String competitor) {

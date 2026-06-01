@@ -11,8 +11,8 @@ import org.springframework.stereotype.Component;
 @ConfigurationProperties("ai-insight.workflow")
 public class AnalysisWorkflowProperties {
 
-    // 后端默认不自动返工；前端可为单次 run 开启 1-2 轮，避免旧配置让分析时间失控。
-    private int maxReviewReworkAttempts = 0;
+    // 默认允许一轮自动返工，让 Reviewer 发现的可修复问题进入闭环；前端仍可为单次 run 调整为 0-2 轮。
+    private int maxReviewReworkAttempts = 1;
 
     int maxReviewReworkAttempts() {
         return Math.max(0, Math.min(maxReviewReworkAttempts, 2));

@@ -33,6 +33,7 @@ import java.util.stream.Collectors;
 public class WriterNode implements AgentNode {
 
     private static final Pattern CITATION_PATTERN = Pattern.compile("\\[(S\\d+)]");
+    private static final Pattern CLAIM_REFERENCE_PATTERN = Pattern.compile("\\[C-[^\\]]+]");
 
     private final LlmClient llmClient;
     private final FallbackReportDraftFactory fallbackReportDraftFactory;
@@ -79,7 +80,7 @@ public class WriterNode implements AgentNode {
         }
         // Writer 是最终 Markdown 的入口，必须在 artifact 落库前清理未知 citation；
         // 否则 Reviewer 会发现不存在的来源，且前端 citation 定位也会失效。
-        content = sanitizeCitationText(run, content);
+        content = sanitizeReportText(run, content);
         List<String> citations = extractKnownCitationKeys(run, content);
         AnalysisArtifact artifact = new AnalysisArtifact(ArtifactType.REPORT_DRAFT, "竞品分析报告草稿", content, citations);
         run.addArtifact(artifact);
@@ -96,9 +97,15 @@ public class WriterNode implements AgentNode {
                 1. 输出 Markdown。
                 2. 关键结论必须使用 evidenceIds 中已有的 [S1]、[S2] 证据编号。
                 3. 不确定的内容要标为“待验证”，不要编造价格、营收、客户案例。
-                4. 保留一个“需补充证据”小节，列出证据覆盖不足的点。
-                5. 必须优先使用“结构化结论”、竞品矩阵和 SWOT；证据索引只用于引用定位，不用于重新分析。
-                6. 建议结构：执行摘要、分析范围与证据说明、竞品定位概览、核心发现、能力/策略对比、SWOT/机会风险、对 AI Insight 的借鉴建议、需补充证据。
+                4. 报告要“结论先行”：先给可行动判断、取舍和下一步建议，再解释证据限制；不要把证据不足写成主体。
+                5. 不要输出报告编号、生成日期、撰写 Agent、免责声明、"报告草稿结束" 这类元信息。
+                6. 不要在正文使用 [C-...] Claim ID；Claim ID 只供内部追踪，面向用户只展示自然语言结论和 [S] 证据编号。
+                7. 总字数控制在 1200-1800 字。至少包含一个“建议优先级”表，列出：建议、理由、证据、置信度、下一步。
+                8. 必须优先使用“结构化结论”、竞品矩阵和 SWOT；证据索引只用于引用定位，不用于重新分析。
+                9. 建议结构：一句话结论、建议优先级、关键洞察、竞品对比、风险与证据缺口、下一步补证清单。
+                10. 报告主体只写“已验证/可初步判断”的内容；“待验证/证据不足”集中放到“风险与证据缺口”或“下一步补证清单”，不要铺满对比表。
+                11. 如果某个维度只有公开说明而没有体验证据，请写成“公开资料显示...”而不是直接判定体验优劣。
+                12. 不要出现 Analyst、Reviewer、Researcher、Writer、打回采集、重跑 Agent 等内部流程措辞。
 
                 用户需求:
                 %s
@@ -154,10 +161,26 @@ public class WriterNode implements AgentNode {
         ));
     }
 
-    private String sanitizeCitationText(AnalysisRun run, String text) {
+    private String sanitizeReportText(AnalysisRun run, String text) {
         if (text == null || text.isBlank()) {
             return "";
         }
+        String cleaned = removeReportMetadata(text);
+        cleaned = CLAIM_REFERENCE_PATTERN.matcher(cleaned).replaceAll("结构化结论");
+        return sanitizeCitationText(run, cleaned);
+    }
+
+    private String removeReportMetadata(String text) {
+        return text.lines()
+                .filter(line -> !line.matches("^\\s*报告编号[:：].*"))
+                .filter(line -> !line.matches("^\\s*撰写Agent[:：].*"))
+                .filter(line -> !line.matches("^\\s*生成日期[:：].*"))
+                .filter(line -> !line.matches("^\\s*报告草稿结束\\s*$"))
+                .collect(Collectors.joining("\n"))
+                .trim();
+    }
+
+    private String sanitizeCitationText(AnalysisRun run, String text) {
         Set<String> known = knownCitationKeys(run);
         Matcher matcher = CITATION_PATTERN.matcher(text);
         StringBuffer sanitized = new StringBuffer();
@@ -284,10 +307,11 @@ public class WriterNode implements AgentNode {
                 ? "暂无结构化修复任务。"
                 : run.getReviewDecision().getRepairTasks().stream()
                 .filter(task -> task.getTargetAgent() == AgentName.WRITER)
-                .map(task -> "- action=%s claim=%s citation=%s criteria=%s".formatted(
+                .map(task -> "- action=%s claim=%s citation=%s instruction=%s criteria=%s".formatted(
                         task.getAction(),
                         textOrDefault(task.getClaimId(), "-"),
                         textOrDefault(task.getCitationKey(), "-"),
+                        textOrDefault(task.getInstruction(), "-"),
                         textOrDefault(task.getAcceptanceCriteria(), "-")
                 ))
                 .collect(Collectors.joining("\n"));

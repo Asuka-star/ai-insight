@@ -48,6 +48,7 @@ public class WorkflowNodeExecutor {
         // executeNode 结束时再把这些观测数据合并进当前 step 对应的 AgentTrace。
         AgentTraceContext.start(trace);
         run.getSteps().add(step);
+        addTraceIfAbsent(run, trace);
         repository.save(run);
         eventBroker.publish(run, "agent_started", node.name() + " started");
         log.info("Agent node started: runId={}, agent={}, stepId={}, inputSummary={}",
@@ -257,7 +258,7 @@ public class WorkflowNodeExecutor {
         if (routeSummary == null || routeSummary.isBlank()) {
             return "";
         }
-        if (routeSummary.contains("Manual rerun")) {
+        if (routeSummary.contains("Manual rerun") || routeSummary.contains("Manual cascade rerun")) {
             return "手动重跑：";
         }
         if (routeSummary.contains("复核") || routeSummary.contains("重跑")) {

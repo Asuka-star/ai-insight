@@ -114,18 +114,23 @@ public class ResearcherNode implements AgentNode {
         if (!hasEvidenceType(run, "feedback") && !hasEvidenceType(run, "review")) {
             missing.add("user_review");
         }
-        if (needsFieldResearch(run) && !hasEvidenceType(run, "survey")) {
+        if (needsSurveyResearch(run) && !hasEvidenceType(run, "survey")) {
             missing.add("survey_result");
         }
-        if (needsFieldResearch(run) && !hasEvidenceType(run, "interview")) {
+        if (needsInterviewResearch(run) && !hasEvidenceType(run, "interview")) {
             missing.add("interview_note");
         }
         return missing;
     }
 
-    private boolean needsFieldResearch(AnalysisRun run) {
-        return mentionsAny(run.getRequirement().getDimensions(), "用户", "评价", "痛点", "画像", "满意度", "调研", "访谈", "问卷")
-                || mentionsAny(run.getRequirement().getSourcePreferences(), "public_reviews", "review", "survey", "interview", "访谈", "问卷");
+    private boolean needsSurveyResearch(AnalysisRun run) {
+        return mentionsAny(run.getRequirement().getDimensions(), "调研", "问卷", "survey")
+                || mentionsAny(run.getRequirement().getSourcePreferences(), "survey", "问卷", "调研");
+    }
+
+    private boolean needsInterviewResearch(AnalysisRun run) {
+        return mentionsAny(run.getRequirement().getDimensions(), "访谈", "interview")
+                || mentionsAny(run.getRequirement().getSourcePreferences(), "interview", "访谈");
     }
 
     private boolean hasEvidenceType(AnalysisRun run, String keyword) {

@@ -104,6 +104,7 @@ public class LlmSearchQueryPlanner {
                 4. 首轮采集必须尽量覆盖每个竞品；复核重跑时优先围绕 repairTasks 和 requiredEvidenceTypes 补证据，不要泛泛重搜。
                 5. query 要短而精准，不要超过 %d 个字符。
                 6. 不要编造 URL，不要输出已经采集到的证据结论。
+                7. 公开搜索不能生成真实问卷或访谈；如需要用户反馈，只规划 public_review 或 article 类型的公开评价、案例、行业报告查询。
 
                 是否复核补采：%s
                 用户课题：%s

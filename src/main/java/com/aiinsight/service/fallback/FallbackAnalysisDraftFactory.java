@@ -104,10 +104,11 @@ public class FallbackAnalysisDraftFactory {
         String goal = hasText(run.getRequirement().getOutputGoal())
                 ? run.getRequirement().getOutputGoal()
                 : "实际业务决策";
-        List<String> evidenceIds = evidenceIdsForDimension(run, "可溯源 复核 重跑 证据 用户需求 " + goal);
+        String dimensionFocus = dimensionFocus(run);
+        List<String> evidenceIds = evidenceIdsForDimension(run, dimensionFocus + " " + goal);
         AnalysisClaim claim = baseClaim(run, evidenceIds);
         claim.setType(ClaimType.OPPORTUNITY);
-        claim.setContent("面向%s，机会点应从用户关注维度和证据缺口出发，把可溯源结论、Reviewer 复核和可重跑流程做成稳定能力，而不是只输出一次性报告。".formatted(goal));
+        claim.setContent("面向%s，建议优先围绕%s形成产品取舍：先采用已有公开证据支撑的差异判断，再把体验型问题列入补证清单。".formatted(goal, dimensionFocus));
         claim.setConfidence(evidenceIds.isEmpty() ? ConfidenceLevel.LOW : ConfidenceLevel.MEDIUM);
         return claim;
     }
@@ -116,9 +117,17 @@ public class FallbackAnalysisDraftFactory {
         List<String> gaps = run.getResearchPackage().getMissingEvidenceTypes();
         AnalysisClaim claim = baseClaim(run, List.of());
         claim.setType(ClaimType.RISK);
-        claim.setContent("当前仍存在证据缺口：%s；相关结论必须保持待验证，优先打回采集或补充用户资料。".formatted(String.join("、", gaps)));
+        claim.setContent("当前仍存在证据缺口：%s；相关强结论应降级为假设，并在发布前补充公开来源或一手用户资料。".formatted(String.join("、", gaps)));
         claim.setConfidence(ConfidenceLevel.LOW);
         return claim;
+    }
+
+    private String dimensionFocus(AnalysisRun run) {
+        List<String> dimensions = requestedDimensions(run);
+        if (dimensions.isEmpty()) {
+            return "关键选型维度";
+        }
+        return dimensions.stream().limit(3).collect(Collectors.joining("、"));
     }
 
     private AnalysisClaim baseClaim(AnalysisRun run, List<String> evidenceIds) {

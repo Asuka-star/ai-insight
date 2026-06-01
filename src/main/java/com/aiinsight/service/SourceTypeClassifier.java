@@ -14,17 +14,21 @@ public class SourceTypeClassifier {
         String normalizedTitle = normalize(title);
         String combined = normalizedUrl + " " + normalizedTitle;
 
-        if (containsAny(combined, "/pricing", "/plans", " pricing", " plans", "价格", "定价")) {
-            return "pricing_page";
+        if (isVideoHost(url)) {
+            return "video";
         }
-        if (containsAny(combined, "/docs", "/doc", "/help", "/reference", "/guide", " documentation", " docs", "文档")) {
-            return "docs";
-        }
-        if (containsAny(combined, "/release", "/changelog", "release notes", "changelog", "更新日志")) {
-            return "release_notes";
-        }
-        if (containsAny(combined, "reddit.", "forum", "community", "discuss", "review", "reviews", "g2.com", "capterra")) {
+        if (isPublicReviewHost(url)
+                || containsAny(combined, "reddit.", "forum", "community", "discuss", "review", "reviews", "g2.com", "capterra")) {
             return "public_review";
+        }
+        if (containsAny(combined, "/pricing", "/plans", " pricing", " plans")) {
+            return isFirstPartyReferenceUrl(url) ? "pricing_page" : "pricing_reference";
+        }
+        if (containsAny(combined, "/docs", "/doc", "/help", "/reference", "/guide", " documentation", " docs")) {
+            return isFirstPartyReferenceUrl(url) ? "docs" : "third_party_docs";
+        }
+        if (containsAny(combined, "/release", "/changelog", "release notes", "changelog")) {
+            return isFirstPartyReferenceUrl(url) ? "release_notes" : "article";
         }
         if (looksLikeOfficialHost(url)) {
             return "official_site";
@@ -46,38 +50,44 @@ public class SourceTypeClassifier {
                     ? "INTERNAL_ONLY"
                     : "MEDIUM";
         }
-        if (containsAny(normalizedType, "official_site", "docs", "pricing_page", "release_notes")) {
-            return "HIGH";
+        return switch (normalizedType) {
+            case "official_site", "docs", "product_docs", "pricing_page", "release_notes" -> "HIGH";
+            case "public_review", "public_reviews", "forum", "search_result_snippet", "video" -> "LOW";
+            default -> "MEDIUM";
+        };
+    }
+
+    private boolean isFirstPartyReferenceUrl(String url) {
+        ParsedUrl parsed = parse(url);
+        if (parsed == null || !StringUtils.hasText(parsed.host())) {
+            return false;
         }
-        if (containsAny(normalizedType, "public_review", "forum", "search_result_snippet")) {
-            return "LOW";
+        if (isLocalHost(parsed.host())) {
+            return true;
         }
-        return "MEDIUM";
+        if (parsed.host().endsWith(".test") || isThirdPartyHost(parsed.host())) {
+            return false;
+        }
+        if (containsAny(parsed.host(), "docs.", "doc.", "help.", "support.", "developer.", "developers.", "api.", "reference.", "learn.")) {
+            return true;
+        }
+        String root = rootDomain(parsed.host());
+        if (containsAny(root, "-", "learn", "log", "tutorial", "guide", "unofficial", "awesome")) {
+            return false;
+        }
+        return looksLikeOfficialHost(url) || looksLikeReferencePath(parsed.path());
     }
 
     private boolean looksLikeOfficialHost(String url) {
-        if (!StringUtils.hasText(url)) {
+        ParsedUrl parsed = parse(url);
+        if (parsed == null) {
             return false;
         }
-        try {
-            URI uri = URI.create(url);
-            String host = normalize(uri.getHost());
-            String path = normalize(uri.getPath());
-            return StringUtils.hasText(host)
-                    && !host.equals("localhost")
-                    && !host.endsWith(".test")
-                    && !host.matches("\\d+\\.\\d+\\.\\d+\\.\\d+")
-                    && !containsAny(
-                            host,
-                            "medium.", "substack.", "reddit.", "github.", "forum", "community", "news.",
-                            "forbes.", "techcrunch.", "theverge.", "wired.", "bloomberg.", "reuters.",
-                            "businessinsider.", "zdnet.", "cnbc.", "crunchbase.", "wikipedia.",
-                            "youtube.", "linkedin.", "twitter.", "x.com", "facebook.", "g2.", "capterra."
-                    )
-                    && looksLikeOfficialPath(path);
-        } catch (RuntimeException ex) {
-            return false;
-        }
+        return StringUtils.hasText(parsed.host())
+                && !isLocalHost(parsed.host())
+                && !parsed.host().endsWith(".test")
+                && !isThirdPartyHost(parsed.host())
+                && looksLikeOfficialPath(parsed.path());
     }
 
     private boolean looksLikeOfficialPath(String path) {
@@ -99,6 +109,74 @@ public class SourceTypeClassifier {
         );
     }
 
+    private boolean looksLikeReferencePath(String path) {
+        if (!StringUtils.hasText(path)) {
+            return false;
+        }
+        String normalizedPath = path.replaceFirst("/+$", "");
+        if (!normalizedPath.startsWith("/")) {
+            return false;
+        }
+        String[] segments = normalizedPath.substring(1).split("/");
+        if (segments.length > 3) {
+            return false;
+        }
+        return containsAny(
+                "/" + segments[0],
+                "/docs", "/doc", "/help", "/support", "/reference", "/guide", "/guides",
+                "/pricing", "/plans", "/changelog", "/release", "/releases"
+        );
+    }
+
+    private boolean isVideoHost(String url) {
+        ParsedUrl parsed = parse(url);
+        return parsed != null && containsAny(parsed.host(), "youtube.", "youtu.be", "vimeo.", "bilibili.", "tiktok.");
+    }
+
+    private boolean isPublicReviewHost(String url) {
+        ParsedUrl parsed = parse(url);
+        return parsed != null && containsAny(parsed.host(), "reddit.", "g2.", "capterra.", "trustpilot.");
+    }
+
+    private boolean isThirdPartyHost(String host) {
+        return containsAny(
+                host,
+                "medium.", "substack.", "reddit.", "github.", "github.io", "gitbook.", "readthedocs.",
+                "forum", "community", "news.", "learn-", "claudelog.", "cursor101.", "aicursor.",
+                "forbes.", "techcrunch.", "theverge.", "wired.", "bloomberg.", "reuters.",
+                "businessinsider.", "zdnet.", "cnbc.", "crunchbase.", "wikipedia.",
+                "youtube.", "youtu.be", "vimeo.", "bilibili.", "linkedin.", "twitter.", "x.com",
+                "facebook.", "g2.", "capterra.", "trustpilot."
+        );
+    }
+
+    private boolean isLocalHost(String host) {
+        return "localhost".equals(host) || host.matches("\\d+\\.\\d+\\.\\d+\\.\\d+");
+    }
+
+    private ParsedUrl parse(String url) {
+        if (!StringUtils.hasText(url)) {
+            return null;
+        }
+        try {
+            URI uri = URI.create(url);
+            return new ParsedUrl(normalize(uri.getHost()), normalize(uri.getPath()));
+        } catch (RuntimeException ex) {
+            return null;
+        }
+    }
+
+    private String rootDomain(String host) {
+        if (!StringUtils.hasText(host)) {
+            return "";
+        }
+        String[] parts = host.split("\\.");
+        if (parts.length < 2) {
+            return host;
+        }
+        return parts[parts.length - 2];
+    }
+
     private boolean containsAny(String text, String... patterns) {
         for (String pattern : patterns) {
             if (text.contains(pattern)) {
@@ -110,5 +188,8 @@ public class SourceTypeClassifier {
 
     private String normalize(String value) {
         return value == null ? "" : value.toLowerCase(Locale.ROOT).trim();
+    }
+
+    private record ParsedUrl(String host, String path) {
     }
 }

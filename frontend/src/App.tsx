@@ -78,7 +78,7 @@ export function App() {
   const [outputGoal, setOutputGoal] = useState(() => initialScopeDraftRef.current?.outputGoal ?? "");
   const [sources, setSources] = useState<string[]>(() => initialScopeDraftRef.current?.sources ?? DEFAULT_SOURCE_VALUES);
   const [sourceUrls, setSourceUrls] = useState(() => initialScopeDraftRef.current?.sourceUrls ?? "");
-  const [maxReviewReworkAttempts, setMaxReviewReworkAttempts] = useState(() => initialScopeDraftRef.current?.maxReviewReworkAttempts ?? 0);
+  const [maxReviewReworkAttempts, setMaxReviewReworkAttempts] = useState(() => initialScopeDraftRef.current?.maxReviewReworkAttempts ?? 1);
   const [selectedArtifactId, setSelectedArtifactId] = useState<string>();
   const [artifactPinned, setArtifactPinned] = useState(false);
   const [selectedCitationKey, setSelectedCitationKey] = useState<string>();
@@ -127,7 +127,7 @@ export function App() {
       outputGoal: scope.outputGoal ?? "",
       sourcePreferences: scope.sourcePreferences ?? [],
       sourceUrls: scope.sourceUrls ?? [],
-      maxReviewReworkAttempts: run.maxReviewReworkAttempts ?? 0,
+      maxReviewReworkAttempts: run.maxReviewReworkAttempts ?? 1,
       confirmed: Boolean(run.clarificationDraft?.confirmed)
     });
   }, [run]);
@@ -346,7 +346,7 @@ export function App() {
     if (scope.sourcePreferences?.length) {
       setSources(scope.sourcePreferences);
     }
-    setMaxReviewReworkAttempts(run.maxReviewReworkAttempts ?? 0);
+    setMaxReviewReworkAttempts(run.maxReviewReworkAttempts ?? 1);
     setLocalScopeConfirmed(Boolean(run.clarificationDraft?.confirmed));
   }, [scopeSyncKey]);
 
@@ -438,7 +438,7 @@ export function App() {
     setOutputGoal(draft?.outputGoal ?? "");
     setSources(draft?.sources ?? DEFAULT_SOURCE_VALUES);
     setSourceUrls(draft?.sourceUrls ?? "");
-    setMaxReviewReworkAttempts(draft?.maxReviewReworkAttempts ?? 0);
+    setMaxReviewReworkAttempts(draft?.maxReviewReworkAttempts ?? 1);
     setSelectedArtifactId(undefined);
     setArtifactPinned(false);
     setSelectedCitationKey(undefined);
@@ -523,6 +523,8 @@ export function App() {
       if (requestToken !== workspaceRequestTokenRef.current) return;
       setBackendOk(true);
       setRun(nextRun);
+      setSelectedAgent("CLARIFIER");
+      requestRunRefresh(nextRun.id);
       removeScopeDraft();
       window.localStorage.setItem(CURRENT_RUN_STORAGE_KEY, nextRun.id);
       setHistoryRuns((runs) => upsertHistorySummary(runs, summaryFromRun(nextRun)));
@@ -539,6 +541,7 @@ export function App() {
 
   async function handleConfirmRequirement() {
     if (!run) return;
+    const requestToken = ++workspaceRequestTokenRef.current;
     setIsScopeBusy(true);
     setEventMessage("正在确认分析范围");
     try {
@@ -551,12 +554,16 @@ export function App() {
         outputGoal,
         maxReviewReworkAttempts
       });
+      if (requestToken !== workspaceRequestTokenRef.current) return;
       setRun(nextRun);
       setEventMessage("分析范围已确认");
     } catch (error) {
+      if (requestToken !== workspaceRequestTokenRef.current) return;
       setEventMessage(error instanceof Error ? `范围确认失败：${error.message}` : "范围确认失败");
     } finally {
-      setIsScopeBusy(false);
+      if (requestToken === workspaceRequestTokenRef.current) {
+        setIsScopeBusy(false);
+      }
     }
   }
 
@@ -581,7 +588,9 @@ export function App() {
 
   async function handleReclarifyScope() {
     if (!run) return;
+    const requestToken = ++workspaceRequestTokenRef.current;
     setIsScopeBusy(true);
+    setSelectedAgent("CLARIFIER");
     setEventMessage("正在重新澄清范围");
     try {
       const nextRun = await clarifyRequirement(run.id, {
@@ -593,18 +602,26 @@ export function App() {
         outputGoal,
         maxReviewReworkAttempts
       });
+      if (requestToken !== workspaceRequestTokenRef.current) return;
       setRun(nextRun);
+      if (hasAgentTrace(nextRun, "CLARIFIER")) {
+        setSelectedAgent("CLARIFIER");
+      }
       setLocalScopeConfirmed(Boolean(nextRun.clarificationDraft?.confirmed));
       setEventMessage("范围已重新澄清");
     } catch (error) {
+      if (requestToken !== workspaceRequestTokenRef.current) return;
       setEventMessage(error instanceof Error ? `重新澄清失败：${error.message}` : "重新澄清失败");
     } finally {
-      setIsScopeBusy(false);
+      if (requestToken === workspaceRequestTokenRef.current) {
+        setIsScopeBusy(false);
+      }
     }
   }
 
   async function handleStartAnalysis() {
     if (!run) return;
+    const requestToken = ++workspaceRequestTokenRef.current;
     setIsScopeBusy(true);
     setEventMessage("正在保存范围并启动 Agent 分析");
     try {
@@ -619,16 +636,20 @@ export function App() {
         maxReviewReworkAttempts
       });
       const nextRun = await startAnalysis(run.id);
+      if (requestToken !== workspaceRequestTokenRef.current) return;
       setRun(nextRun);
       setMainView("dag");
     } catch (error) {
+      if (requestToken !== workspaceRequestTokenRef.current) return;
       const phase = resolveRunPhase(run);
       setEventMessage(error instanceof Error ? `启动 Agent 分析失败：${error.message}` : "启动 Agent 分析失败");
       if (phase === "AWAITING_CONFIRMATION") {
         refreshRun(run.id).catch(() => undefined);
       }
     } finally {
-      setIsScopeBusy(false);
+      if (requestToken === workspaceRequestTokenRef.current) {
+        setIsScopeBusy(false);
+      }
     }
   }
 
@@ -684,11 +705,11 @@ export function App() {
 
   async function handleRerun(agentName: AgentName) {
     if (!run || runMutationDisabled) return;
-    setEventMessage(`正在重跑 ${AGENT_LABELS[agentName]}`);
+    setEventMessage(`正在从 ${AGENT_LABELS[agentName]} 继续重跑下游链路`);
     try {
       const nextRun = await rerunAgent(run.id, agentName);
       setRun(nextRun);
-      setEventMessage(`${AGENT_LABELS[agentName]} 已重跑`);
+      setEventMessage(`${AGENT_LABELS[agentName]} 及下游链路已重跑`);
     } catch (error) {
       setEventMessage(error instanceof Error ? `重跑失败：${error.message}` : "重跑失败");
     }
@@ -1016,6 +1037,9 @@ export function App() {
           <ReviewPanel
             findings={run?.reviewFindings ?? []}
             decision={run?.reviewDecision}
+            status={run?.status}
+            workflowTransitions={run?.workflowTransitions}
+            maxReviewReworkAttempts={run?.maxReviewReworkAttempts}
             onRerunTarget={handleRerun}
             onLocateFinding={handleLocateFinding}
             disabled={runMutationDisabled}
@@ -1127,7 +1151,7 @@ function normalizeScopeDraft(draft: Partial<ScopeDraft>): ScopeDraft {
     outputGoal: draft.outputGoal ?? "",
     sources: Array.isArray(draft.sources) ? draft.sources.filter((source): source is string => typeof source === "string") : DEFAULT_SOURCE_VALUES,
     sourceUrls: draft.sourceUrls ?? "",
-    maxReviewReworkAttempts: Number.isFinite(draft.maxReviewReworkAttempts) ? Number(draft.maxReviewReworkAttempts) : 0
+    maxReviewReworkAttempts: Number.isFinite(draft.maxReviewReworkAttempts) ? Number(draft.maxReviewReworkAttempts) : 1
   };
 }
 
@@ -1138,7 +1162,7 @@ function hasScopeDraftContent(draft: ScopeDraft) {
     || draft.dimensions.trim()
     || draft.outputGoal.trim()
     || draft.sourceUrls.trim()
-    || draft.maxReviewReworkAttempts > 0
+    || draft.maxReviewReworkAttempts !== 1
     || !sameStringArray(draft.sources, DEFAULT_SOURCE_VALUES)
   );
 }
@@ -1294,6 +1318,10 @@ function safeParseEvent(event: MessageEvent<string>): RunEvent | null {
   } catch {
     return null;
   }
+}
+
+function hasAgentTrace(run: AnalysisRun, agentName: AgentName) {
+  return (run.traces ?? []).some((trace) => trace.agentName === agentName);
 }
 
 function splitLines(value: string) {

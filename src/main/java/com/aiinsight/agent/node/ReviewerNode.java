@@ -7,6 +7,7 @@ import com.aiinsight.model.run.AnalysisRun;
 import com.aiinsight.model.enums.ArtifactType;
 import com.aiinsight.model.enums.ClaimType;
 import com.aiinsight.model.enums.ReviewAction;
+import com.aiinsight.model.run.AnalysisRequirement;
 import com.aiinsight.model.review.ReviewDecision;
 import com.aiinsight.model.review.ReviewFinding;
 import com.aiinsight.model.review.ReviewRepairTask;
@@ -47,6 +48,14 @@ public class ReviewerNode implements AgentNode {
     private static final Pattern CITATION_PATTERN = Pattern.compile("\\[(S\\d+)]");
     private static final Pattern CITATION_KEY_PATTERN = Pattern.compile("\\bS\\d+\\b");
     private static final int MAX_FINDING_CATEGORY_LENGTH = 128;
+    private static final Set<String> MANUAL_ONLY_EVIDENCE_TYPES = Set.of(
+            "survey_result",
+            "interview_note",
+            "user_survey",
+            "user_interview",
+            "first_party_survey",
+            "first_party_interview"
+    );
 
     private final CitationCoverageEvaluator citationCoverageEvaluator;
     private final LlmClient llmClient;
@@ -284,31 +293,67 @@ public class ReviewerNode implements AgentNode {
 
     private void applyBlockingDecision(AnalysisRun run, ReviewDecision decision, List<ReviewFinding> blockingFindings) {
         List<String> missingEvidenceTypes = run.getResearchPackage().getMissingEvidenceTypes();
+        List<String> autoCollectableEvidenceTypes = autoCollectableEvidenceTypes(missingEvidenceTypes);
+        List<String> manualOnlyEvidenceTypes = manualOnlyEvidenceTypes(missingEvidenceTypes);
         // 路由优先级：如果确实缺采集证据，先回 Researcher；否则结构化 claim 问题回 Analyst；
         // 剩下的引用写法、报告措辞或 LLM overclaim 交给 Writer 修订。
-        if (!missingEvidenceTypes.isEmpty() && blockingFindings.stream().anyMatch(this::needsMoreEvidence)) {
+        if (!autoCollectableEvidenceTypes.isEmpty() && blockingFindings.stream().anyMatch(this::needsMoreEvidence)) {
             decision.setAction(ReviewAction.RECOLLECT_EVIDENCE);
             decision.setTargetAgent(AgentName.RESEARCHER);
-            decision.setReason("质检发现高风险证据缺口（%s），需要 Researcher 优先补采：%s。".formatted(
+            decision.setReason("质检发现高风险公开证据缺口（%s），需要 Researcher 优先补采：%s%s。".formatted(
                     categorySummary(blockingFindings),
-                    String.join("、", missingEvidenceTypes)
+                    String.join("、", autoCollectableEvidenceTypes),
+                    manualOnlyEvidenceTypes.isEmpty()
+                            ? ""
+                            : "；一手资料缺口（%s）另列为人工补证，不交给公开搜索自动返工".formatted(String.join("、", manualOnlyEvidenceTypes))
             ));
-            decision.setRequiredEvidenceTypes(missingEvidenceTypes);
+            decision.setRequiredEvidenceTypes(autoCollectableEvidenceTypes);
             return;
+        }
+        if (!manualOnlyEvidenceTypes.isEmpty() && blockingFindings.stream().anyMatch(this::needsMoreEvidence)) {
+            decision.setRequiredEvidenceTypes(manualOnlyEvidenceTypes);
+            run.getRecommendedActions().add("质检发现一手调研证据缺口（%s）：公开搜索不能自动生成真实问卷或访谈，请上传对应资料；自动流程将改为降级相关结论或修订报告。"
+                    .formatted(String.join("、", manualOnlyEvidenceTypes)));
         }
         if (blockingFindings.stream().anyMatch(this::needsAnalysisRework)) {
             decision.setAction(ReviewAction.REWORK_ANALYSIS);
             decision.setTargetAgent(AgentName.ANALYST);
-            decision.setReason("质检发现结构化分析结论存在高风险问题（%s），需要 Analyst 重新绑定证据、调整置信度或降级结论。".formatted(
-                    categorySummary(blockingFindings)
+            decision.setReason("质检发现结构化分析结论存在高风险问题（%s），需要 Analyst 重新绑定证据、调整置信度或降级结论%s。".formatted(
+                    categorySummary(blockingFindings),
+                    manualOnlyEvidenceTypes.isEmpty()
+                            ? ""
+                            : "；其中 %s 属于一手调研缺口，不能由公开搜索自动补齐".formatted(String.join("、", manualOnlyEvidenceTypes))
             ));
             return;
         }
         decision.setAction(ReviewAction.REVISE_REPORT);
         decision.setTargetAgent(AgentName.WRITER);
-        decision.setReason("质检发现报告表达或引用存在高风险问题（%s），需要 Writer 补充引用、修正 citation 或降级过度推断。".formatted(
-                categorySummary(blockingFindings)
+        decision.setReason("质检发现报告表达或引用存在高风险问题（%s），需要 Writer 补充引用、修正 citation 或降级过度推断%s。".formatted(
+                categorySummary(blockingFindings),
+                manualOnlyEvidenceTypes.isEmpty()
+                        ? ""
+                        : "；其中 %s 属于一手调研缺口，不能由公开搜索自动补齐".formatted(String.join("、", manualOnlyEvidenceTypes))
         ));
+    }
+
+    private List<String> autoCollectableEvidenceTypes(List<String> evidenceTypes) {
+        return evidenceTypes.stream()
+                .filter(StringUtils::hasText)
+                .filter(type -> !isManualOnlyEvidenceType(type))
+                .distinct()
+                .toList();
+    }
+
+    private List<String> manualOnlyEvidenceTypes(List<String> evidenceTypes) {
+        return evidenceTypes.stream()
+                .filter(StringUtils::hasText)
+                .filter(this::isManualOnlyEvidenceType)
+                .distinct()
+                .toList();
+    }
+
+    private boolean isManualOnlyEvidenceType(String evidenceType) {
+        return MANUAL_ONLY_EVIDENCE_TYPES.contains(evidenceType.trim().toLowerCase(Locale.ROOT));
     }
 
     private boolean needsMoreEvidence(ReviewFinding finding) {
@@ -361,13 +406,17 @@ public class ReviewerNode implements AgentNode {
         CompletableFuture<LlmSubtaskResult> sourceQualityTask = CompletableFuture.supplyAsync(
                 AgentTraceContext.wrap(() -> runReviewSubtask(run, "source-quality", () -> reviewSourceQualityWithLlm(run)))
         );
-        CompletableFuture.allOf(claimEvidenceTask, reportOverclaimTask, schemaConsistencyTask, sourceQualityTask).join();
+        CompletableFuture<LlmSubtaskResult> reportActionabilityTask = CompletableFuture.supplyAsync(
+                AgentTraceContext.wrap(() -> runReviewSubtask(run, "report-actionability", () -> reviewReportActionabilityWithLlm(run, draft)))
+        );
+        CompletableFuture.allOf(claimEvidenceTask, reportOverclaimTask, schemaConsistencyTask, sourceQualityTask, reportActionabilityTask).join();
 
         List<LlmSubtaskResult> results = List.of(
                 claimEvidenceTask.join(),
                 reportOverclaimTask.join(),
                 schemaConsistencyTask.join(),
-                sourceQualityTask.join()
+                sourceQualityTask.join(),
+                reportActionabilityTask.join()
         );
         recordParallelReviewerTrace(results);
         results.stream()
@@ -502,6 +551,39 @@ public class ReviewerNode implements AgentNode {
                 """.formatted(
                 sourceQualityBlock(run),
                 compactRuleFindings(run)
+        );
+        return completeReviewSubtask(prompt);
+    }
+
+    private LlmReviewResult reviewReportActionabilityWithLlm(AnalysisRun run, AnalysisArtifact draft) {
+        String prompt = """
+                你是竞品分析工作流中的 report-actionability Reviewer。请检查最终报告是否真正能支持用户做竞品判断，而不是只做事实摘录。
+                输出要求:
+                1. 只输出可解析 JSON，不要 Markdown。
+                2. JSON 格式为 {"summary":"一句话总结","findings":[...]}。
+                3. findings 最多 4 项，每项包含 severity、category、message、recommendation。
+                4. category 优先使用 report_quality_insufficient、report_missing_decision_summary、report_dimension_coverage_gap、report_actionability_gap。
+                5. 如果报告缺少明确结论、优先级、维度覆盖、可执行建议，且会让用户无法据此选型或汇报，请给 HIGH。
+                6. 如果只是措辞可优化或局部不够丰满，请给 MEDIUM/LOW。
+                7. HIGH finding 必须填写 paragraphIndex 或 excerpt，方便 Writer 定向修订。
+                8. 不要要求补充真实问卷或访谈；公开资料无法补齐的一手洞察只列为人工补充建议。
+
+                用户需求:
+                %s
+
+                竞品画像:
+                %s
+
+                结构化 Claims:
+                %s
+
+                报告关键片段:
+                %s
+                """.formatted(
+                requirementSummary(run),
+                compactProfileBlock(run),
+                compactClaimsBlock(run),
+                abbreviate(draft.getContent(), 1800)
         );
         return completeReviewSubtask(prompt);
     }
@@ -662,6 +744,19 @@ public class ReviewerNode implements AgentNode {
                         claim.getContent()
                 ))
                 .collect(Collectors.joining("\n"));
+    }
+
+    private String requirementSummary(AnalysisRun run) {
+        AnalysisRequirement requirement = run.getRequirement();
+        if (requirement == null) {
+            return "暂无用户需求。";
+        }
+        return "行业=%s；竞品=%s；维度=%s；目标=%s".formatted(
+                nullToEmpty(requirement.getIndustry()),
+                requirement.getCompetitors(),
+                requirement.getDimensions(),
+                nullToEmpty(requirement.getOutputGoal())
+        );
     }
 
     private String compactClaimsBlock(AnalysisRun run) {

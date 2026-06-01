@@ -93,4 +93,130 @@ class ExtractorNodeTest {
                 .last()
                 .satisfies(artifact -> assertThat(artifact.getContent()).contains("Composer", "$20/month"));
     }
+
+    @Test
+    void skipsCitationMarkersBeforeJsonResponse() {
+        LlmClient llmClient = new LlmClient() {
+            @Override
+            public boolean isAvailable() {
+                return true;
+            }
+
+            @Override
+            public String complete(ChatRequest request) {
+                return """
+                        Based on [S1], here is the structured output:
+                        {
+                          "profiles": [
+                            {
+                              "productName": "Cursor",
+                              "companyName": "Cursor",
+                              "positioning": "AI code editor",
+                              "targetUsers": ["Developers"],
+                              "features": [
+                                {"name":"Composer","description":"Multi-file code editing","evidenceIds":["S1"]}
+                              ],
+                              "pricing": {
+                                "strategySummary": "Pro plan is available",
+                                "hasFreePlan": true,
+                                "plans": [
+                                  {"name":"Pro","priceText":"$20/month","billingCycle":"monthly","targetSegment":"Developers","includedFeatures":["Composer"],"evidenceIds":["S1"]}
+                                ],
+                                "evidenceIds": ["S1"]
+                              },
+                              "personas": [],
+                              "strengths": ["Multi-file editing"],
+                              "weaknesses": ["Enterprise controls need verification"],
+                              "evidenceIds": ["S1"]
+                            }
+                          ]
+                        }
+                        """;
+            }
+        };
+        AnalysisRun run = runWithCursorEvidence();
+
+        new ExtractorNode(llmClient, new FallbackExtractionFactory()).execute(run);
+
+        assertThat(run.getRecommendedActions()).noneMatch(action -> action.contains("LLM Schema"));
+        assertThat(run.getCompetitorProfiles()).hasSize(1);
+        assertThat(run.getCompetitorProfiles().get(0).getFeatureTree().getRoots())
+                .extracting(node -> node.getName())
+                .containsExactly("Composer");
+    }
+
+    @Test
+    void acceptsProfilesObjectAndBracketedEvidenceIds() {
+        LlmClient llmClient = new LlmClient() {
+            @Override
+            public boolean isAvailable() {
+                return true;
+            }
+
+            @Override
+            public String complete(ChatRequest request) {
+                return """
+                        {
+                          "profiles": {
+                            "Cursor": {
+                              "companyName": "Cursor",
+                              "positioning": "AI code editor",
+                              "targetUsers": ["Developers"],
+                              "features": [
+                                {"name":"Composer","description":"Multi-file code editing","evidenceIds":["[S1]"]}
+                              ],
+                              "pricing": {
+                                "strategySummary": "Pro plan is available",
+                                "hasFreePlan": true,
+                                "plans": [
+                                  {"name":"Pro","priceText":"$20/month","billingCycle":"monthly","targetSegment":"Developers","includedFeatures":["Composer"],"evidenceIds":["[S1]"]}
+                                ],
+                                "evidenceIds": ["[S1]"]
+                              },
+                              "personas": [],
+                              "strengths": ["Multi-file editing"],
+                              "weaknesses": ["Enterprise controls need verification"],
+                              "evidenceIds": ["[S1]"]
+                            }
+                          }
+                        }
+                        """;
+            }
+        };
+        AnalysisRun run = runWithCursorEvidence();
+
+        new ExtractorNode(llmClient, new FallbackExtractionFactory()).execute(run);
+
+        assertThat(run.getRecommendedActions()).noneMatch(action -> action.contains("LLM Schema"));
+        assertThat(run.getCompetitorProfiles()).hasSize(1);
+        assertThat(run.getCompetitorProfiles().get(0).getProductName()).isEqualTo("Cursor");
+        assertThat(run.getCompetitorProfiles().get(0).getEvidenceIds()).containsExactly("S1");
+        assertThat(run.getCompetitorProfiles().get(0).getFeatureTree().getRoots().get(0).getEvidenceIds())
+                .containsExactly("S1");
+    }
+
+    private AnalysisRun runWithCursorEvidence() {
+        AnalysisRun run = new AnalysisRun(new AnalysisRequirement(
+                "Analyze Cursor",
+                "AI coding tools",
+                List.of("Cursor"),
+                List.of("features"),
+                List.of("official_site"),
+                List.of()
+        ));
+        run.getEvidenceSources().add(new EvidenceSource(
+                "S1",
+                "Cursor product page",
+                "https://example.test/cursor",
+                "official_site",
+                "FETCHED",
+                "LIVE_FETCHED",
+                "HIGH",
+                "NONE",
+                "Cursor Composer supports multi-file code edits. Cursor Pro costs $20/month.",
+                "Cursor Composer supports multi-file code edits. Cursor Pro costs $20/month.",
+                "test evidence"
+        ));
+        return run;
+    }
 }
