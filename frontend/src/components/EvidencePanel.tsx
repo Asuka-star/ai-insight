@@ -1,3 +1,4 @@
+import { useEffect, useRef } from "react";
 import { Database, ExternalLink, Search, ShieldAlert } from "lucide-react";
 import type { EvidenceSource } from "../types";
 import { CollapsiblePanel } from "./CollapsiblePanel";
@@ -25,6 +26,16 @@ export function EvidencePanel({
   collapsed,
   onToggle
 }: EvidencePanelProps) {
+  const itemRefs = useRef<Record<string, HTMLElement | null>>({});
+
+  useEffect(() => {
+    if (!selectedCitationKey || collapsed) return;
+    itemRefs.current[selectedCitationKey]?.scrollIntoView({
+      block: "center",
+      behavior: "smooth"
+    });
+  }, [collapsed, selectedCitationKey, sources]);
+
   return (
     <CollapsiblePanel
       eyebrow={TEXT.eyebrow}
@@ -39,6 +50,9 @@ export function EvidencePanel({
           sources.map((source) => (
             <article
               key={source.id}
+              ref={(element) => {
+                itemRefs.current[source.citationKey] = element;
+              }}
               role="button"
               tabIndex={0}
               className={`evidence-item ${selectedCitationKey === source.citationKey ? "active" : ""}`}
@@ -50,7 +64,7 @@ export function EvidencePanel({
                 }
               }}
             >
-              <span className="evidence-key">[{source.citationKey}]</span>
+              <span className={`evidence-key ${sourceQualityClass(source.sourceQuality)}`}>[{source.citationKey}]</span>
               <strong>{source.title}</strong>
               <p>{source.snippet}</p>
               <div className="evidence-badges">
@@ -106,4 +120,9 @@ function displayComplianceNote(note?: string) {
     .replace(/\s*statusCode=.*$/i, "")
     .replace(/\s*cacheHit=true;.*$/i, "")
     .trim();
+}
+
+function sourceQualityClass(sourceQuality?: string) {
+  if (!sourceQuality) return "";
+  return `quality-${sourceQuality.toLowerCase()}`;
 }

@@ -41,7 +41,7 @@ export function ArtifactViewer({ artifact, sources = [], onSelectCitation }: Art
             const source = sourcesByKey.get(citationKey);
             return (
               <button
-                className="citation-chip"
+                className={`citation-chip ${citationQualityClass(source)}`}
                 type="button"
                 title={citationTitle(source)}
                 onClick={() => onSelectCitation(citationKey)}
@@ -59,7 +59,10 @@ export function ArtifactViewer({ artifact, sources = [], onSelectCitation }: Art
 }
 
 function linkifyCitations(markdown: string) {
-  return markdown.replace(/\[(S\d+)]/g, "[\\[$1\\]](#citation-$1)");
+  return markdown.replace(/\[((?:S\d+\s*(?:[,，、]\s*)?)+)]/g, (_, citationGroup: string) => {
+    const citationKeys = citationGroup.match(/S\d+/g) ?? [];
+    return citationKeys.map((citationKey) => `[\\[${citationKey}\\]](#citation-${citationKey})`).join("");
+  });
 }
 
 function citationKeyFromHref(href?: string) {
@@ -70,4 +73,10 @@ function citationKeyFromHref(href?: string) {
 function citationTitle(source?: EvidenceSource) {
   if (!source) return "未找到对应证据来源";
   return `${source.title}\n${source.url}\n${source.snippet}`;
+}
+
+function citationQualityClass(source?: EvidenceSource) {
+  const quality = source?.sourceQuality?.toLowerCase();
+  if (!quality) return "";
+  return `quality-${quality}`;
 }

@@ -66,7 +66,8 @@ export function SchemaPanel({
                   key={source.id ?? source.citationKey}
                   onClick={() => onSelectCitation?.(source.citationKey)}
                 >
-                  [{source.citationKey}] {source.title}
+                  <span className={`schema-source-key ${sourceQualityClass(source.sourceQuality)}`}>[{source.citationKey}]</span>
+                  <span className="schema-source-title">{source.title}</span>
                 </button>
               ))}
             </div>
@@ -388,6 +389,11 @@ function joinOrEmpty(values?: string[]) {
 function formatDateTime(value?: string) {
   if (!value) return "暂无";
   return new Date(value).toLocaleString("zh-CN", { hour12: false });
+}
+
+function sourceQualityClass(sourceQuality?: string) {
+  if (!sourceQuality) return "";
+  return `quality-${sourceQuality.toLowerCase()}`;
 }
 
 function EvidenceChips({

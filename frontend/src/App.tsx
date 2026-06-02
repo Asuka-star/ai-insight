@@ -9,16 +9,14 @@ import {
   History,
   Plus,
   RefreshCw,
-  RotateCcw,
   Search,
   ShieldCheck,
   Sparkles,
-  Trash2,
   UploadCloud
 } from "lucide-react";
 import type { AnalysisContextMessage, AgentName, AnalysisArtifact, AnalysisRun, AnalysisRunMetrics, AnalysisRunSummary, ContextIntent, ReviewFinding, RunEvent } from "./types";
 import { addContext, addEvidence, clarifyRequirement, createRun, deleteRun, getRun, getRunMetrics, listRunSummaries, rerunAgent, startAnalysis, updateRequirement } from "./api";
-import { AGENTS, AGENT_LABELS, ARTIFACT_LABELS, SOURCE_OPTIONS } from "./constants";
+import { AGENT_LABELS, ARTIFACT_LABELS, SOURCE_OPTIONS } from "./constants";
 import {
   calculateRunMetrics,
   countCitedClaims,
@@ -40,6 +38,7 @@ import { ScopeConfirmationPanel } from "./components/ScopeConfirmationPanel";
 import { ContextPanel } from "./components/ContextPanel";
 import { ArtifactVersionsPanel } from "./components/ArtifactVersionsPanel";
 import { HistoryDrawer } from "./components/HistoryDrawer";
+import { DeleteHistoryDialog } from "./components/DeleteHistoryDialog";
 
 type MainView = "dag" | "report" | "schema" | "matrix" | "versions";
 type RightPanelId = "timeline" | "evidence" | "review" | "metrics";
@@ -112,6 +111,7 @@ export function App() {
   const [leftRailWidth, setLeftRailWidth] = useState(286);
   const [rightRailWidth, setRightRailWidth] = useState(342);
   const refreshTimerRef = useRef<number>();
+  const refreshTimerRunIdRef = useRef<string>();
   const workspaceRequestTokenRef = useRef(0);
   // Requirement may change without changing run.id, for example after ADJUST_SCOPE context.
   // Keep a narrow sync key so the editable scope form follows backend scope updates.
@@ -186,6 +186,14 @@ export function App() {
     setHistoryRuns((runs) => upsertHistorySummary(runs, summaryFromRun(latest)));
   }, [loadHistory, run?.id]);
 
+  const clearPendingRunRefresh = useCallback(() => {
+    if (refreshTimerRef.current) {
+      window.clearTimeout(refreshTimerRef.current);
+      refreshTimerRef.current = undefined;
+    }
+    refreshTimerRunIdRef.current = undefined;
+  }, []);
+
   useEffect(() => {
     if (!run?.id) {
       setServerRunMetrics(null);
@@ -220,12 +228,23 @@ export function App() {
   ]);
 
   const requestRunRefresh = useCallback((runId: string) => {
-    if (refreshTimerRef.current) return;
+    if (refreshTimerRef.current) {
+      if (refreshTimerRunIdRef.current === runId) return;
+      clearPendingRunRefresh();
+    }
+    refreshTimerRunIdRef.current = runId;
     refreshTimerRef.current = window.setTimeout(() => {
+      const pendingRunId = runId;
       refreshTimerRef.current = undefined;
-      refreshRun(runId).catch((error) => setEventMessage(error.message));
+      refreshTimerRunIdRef.current = undefined;
+      if (!isCurrentWorkspaceRun(pendingRunId)) return;
+      refreshRun(pendingRunId).catch((error) => {
+        if (isCurrentWorkspaceRun(pendingRunId)) {
+          setEventMessage(error.message);
+        }
+      });
     }, 500);
-  }, [refreshRun]);
+  }, [clearPendingRunRefresh, refreshRun]);
 
   useEffect(() => {
     let cancelled = false;
@@ -302,11 +321,9 @@ export function App() {
 
   useEffect(() => {
     return () => {
-      if (refreshTimerRef.current) {
-        window.clearTimeout(refreshTimerRef.current);
-      }
+      clearPendingRunRefresh();
     };
-  }, []);
+  }, [clearPendingRunRefresh]);
 
   const selectedArtifact = useMemo(() => {
     const artifacts = run?.artifacts ?? [];
@@ -316,11 +333,16 @@ export function App() {
     return artifacts.find((artifact) => artifact.id === selectedArtifactId) ?? findDefaultArtifact(artifacts);
   }, [artifactPinned, run?.artifacts, selectedArtifactId]);
 
+  const reportArtifacts = useMemo(() => {
+    return (run?.artifacts ?? []).filter(isReportArtifact);
+  }, [run?.artifacts]);
+
   const reportDisplayArtifact = useMemo(() => {
-    return selectedArtifact
-      ?? [...(run?.artifacts ?? [])].reverse().find((artifact) => artifact.type === "FINAL_REPORT")
-      ?? undefined;
-  }, [run?.artifacts, selectedArtifact]);
+    return selectedArtifact && isReportArtifact(selectedArtifact)
+      ? selectedArtifact
+      : [...reportArtifacts].reverse().find((artifact) => artifact.type === "FINAL_REPORT")
+        ?? reportArtifacts.at(-1);
+  }, [reportArtifacts, selectedArtifact]);
 
   const matrixArtifact = useMemo(() => {
     return [...(run?.artifacts ?? [])].reverse().find((artifact) => artifact.type === "COMPETITIVE_MATRIX");
@@ -384,6 +406,17 @@ export function App() {
     }));
   }, []);
 
+  const handleSelectCitation = useCallback((citationKey: string) => {
+    setSelectedCitationKey(citationKey);
+    setCollapsedRightPanels((current) => {
+      if (!current.evidence) return current;
+      return {
+        ...current,
+        evidence: false
+      };
+    });
+  }, []);
+
   const startRailResize = useCallback((
     side: "left" | "right",
     event: ReactPointerEvent<HTMLButtonElement>
@@ -428,6 +461,7 @@ export function App() {
 
   function handleNewRun() {
     workspaceRequestTokenRef.current += 1;
+    clearPendingRunRefresh();
     window.localStorage.removeItem(CURRENT_RUN_STORAGE_KEY);
     const draft = readScopeDraft();
     setRun(null);
@@ -655,6 +689,7 @@ export function App() {
 
   async function handleSubmitContext() {
     if (!run || !contextText.trim()) return;
+    const runId = run.id;
     // 先乐观展示用户补充，后端写入成功后再以服务端状态为准，保证弱网下交互不显得断档。
     const optimisticMessage: AnalysisContextMessage = {
       id: `local-${Date.now()}`,
@@ -668,30 +703,34 @@ export function App() {
     setContextText("");
     setEventMessage("正在提交上下文补充");
     try {
-      const nextRun = await addContext(run.id, {
+      const nextRun = await addContext(runId, {
         content: optimisticMessage.content,
         intent: contextIntent,
         targetAgent: contextTargetAgent
       });
+      if (!isCurrentWorkspaceRun(runId)) return;
       setRun(nextRun);
       setLocalContextMessages([]);
       setEventMessage("上下文已写入任务");
     } catch (error) {
+      if (!isCurrentWorkspaceRun(runId)) return;
       setEventMessage(error instanceof Error ? `上下文提交失败，已在前端暂存：${error.message}` : "上下文提交失败，已在前端暂存");
     }
   }
 
   async function handleAddEvidence() {
     if (!run || !evidenceTitle.trim() || !evidenceContent.trim()) return;
+    const runId = run.id;
     setEventMessage("正在加入用户资料");
     try {
-      const nextRun = await addEvidence(run.id, {
+      const nextRun = await addEvidence(runId, {
         title: evidenceTitle.trim(),
         sourceType: evidenceSourceType,
         content: evidenceContent.trim(),
         url: evidenceUrl.trim() || undefined,
         sensitive: evidenceSensitive
       });
+      if (!isCurrentWorkspaceRun(runId)) return;
       setRun(nextRun);
       setEvidenceTitle("");
       setEvidenceUrl("");
@@ -699,18 +738,22 @@ export function App() {
       setEvidenceSensitive(false);
       setEventMessage("用户资料已加入证据链");
     } catch (error) {
+      if (!isCurrentWorkspaceRun(runId)) return;
       setEventMessage(error instanceof Error ? `资料加入失败：${error.message}` : "资料加入失败");
     }
   }
 
   async function handleRerun(agentName: AgentName) {
     if (!run || runMutationDisabled) return;
+    const runId = run.id;
     setEventMessage(`正在从 ${AGENT_LABELS[agentName]} 继续重跑下游链路`);
     try {
-      const nextRun = await rerunAgent(run.id, agentName);
+      const nextRun = await rerunAgent(runId, agentName);
+      if (!isCurrentWorkspaceRun(runId)) return;
       setRun(nextRun);
       setEventMessage(`${AGENT_LABELS[agentName]} 及下游链路已重跑`);
     } catch (error) {
+      if (!isCurrentWorkspaceRun(runId)) return;
       setEventMessage(error instanceof Error ? `重跑失败：${error.message}` : "重跑失败");
     }
   }
@@ -719,7 +762,7 @@ export function App() {
     // Prefer the most structured target first: claim -> schema, otherwise fall back to the report artifact.
     // Citation selection is independent so EvidencePanel can still highlight the source.
     if (finding.citationKey) {
-      setSelectedCitationKey(finding.citationKey);
+      handleSelectCitation(finding.citationKey);
     }
     if (finding.claimId) {
       setSelectedClaimId(finding.claimId);
@@ -937,7 +980,7 @@ export function App() {
                       setArtifactPinned(true);
                     }}
                   >
-                    {(run?.artifacts ?? []).map((artifact) => (
+                    {reportArtifacts.map((artifact) => (
                       <option key={artifact.id} value={artifact.id}>
                         {artifact.title || ARTIFACT_LABELS[artifact.type]} · v{artifact.version || 1}
                       </option>
@@ -948,7 +991,7 @@ export function App() {
                   <ArtifactViewer
                     artifact={reportDisplayArtifact}
                     sources={run?.evidenceSources ?? []}
-                    onSelectCitation={setSelectedCitationKey}
+                    onSelectCitation={handleSelectCitation}
                   />
                 </Suspense>
               </div>
@@ -964,7 +1007,7 @@ export function App() {
                     claims={run?.claims ?? []}
                     transitions={run?.workflowTransitions ?? []}
                     selectedClaimId={selectedClaimId}
-                    onSelectCitation={setSelectedCitationKey}
+                    onSelectCitation={handleSelectCitation}
                   />
                 </Suspense>
               </div>
@@ -973,7 +1016,7 @@ export function App() {
             {mainView === "matrix" ? (
               <div className="tab-content">
                 <Suspense fallback={<PanelLoading label="正在加载矩阵阅读器" />}>
-                  <ArtifactViewer artifact={matrixArtifact} sources={run?.evidenceSources ?? []} onSelectCitation={setSelectedCitationKey} />
+                  <ArtifactViewer artifact={matrixArtifact} sources={run?.evidenceSources ?? []} onSelectCitation={handleSelectCitation} />
                 </Suspense>
               </div>
             ) : null}
@@ -983,9 +1026,10 @@ export function App() {
                 artifacts={run?.artifacts ?? []}
                 selectedArtifactId={selectedArtifact?.id}
                 onSelectArtifact={(artifactId) => {
+                  const artifact = run?.artifacts.find((item) => item.id === artifactId);
                   setSelectedArtifactId(artifactId);
                   setArtifactPinned(true);
-                  setMainView("report");
+                  setMainView(artifact && isReportArtifact(artifact) ? "report" : "versions");
                 }}
               />
             ) : null}
@@ -1017,19 +1061,12 @@ export function App() {
               onSelectAgent={setSelectedAgent}
               pendingClarification={isCreating}
             />
-            <div className="rerun-grid">
-              {AGENTS.map((agent) => (
-                <button key={agent} type="button" onClick={() => handleRerun(agent)} disabled={runMutationDisabled}>
-                  <RotateCcw size={14} /> {AGENT_LABELS[agent]}
-                </button>
-              ))}
-            </div>
           </CollapsiblePanel>
 
           <EvidencePanel
             sources={run?.evidenceSources ?? []}
             selectedCitationKey={selectedCitationKey}
-            onSelectCitation={setSelectedCitationKey}
+            onSelectCitation={handleSelectCitation}
             collapsed={collapsedRightPanels.evidence}
             onToggle={() => toggleRightPanel("evidence")}
           />
@@ -1112,6 +1149,10 @@ function statusTone(status?: string) {
   return "neutral";
 }
 
+function isReportArtifact(artifact?: AnalysisArtifact) {
+  return artifact?.type === "FINAL_REPORT" || artifact?.type === "REPORT_DRAFT";
+}
+
 function readScopeDraft(): ScopeDraft | null {
   try {
     const raw = window.localStorage.getItem(SCOPE_DRAFT_STORAGE_KEY);
@@ -1181,98 +1222,6 @@ function PanelLoading({ label }: { label: string }) {
   );
 }
 
-function DeleteHistoryDialog({
-  summary,
-  deleting,
-  onCancel,
-  onConfirm
-}: {
-  summary?: AnalysisRunSummary;
-  deleting: boolean;
-  onCancel: () => void;
-  onConfirm: () => void;
-}) {
-  const dialogRef = useRef<HTMLElement>(null);
-
-  useEffect(() => {
-    if (!summary) return;
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape" && !deleting) {
-        event.stopPropagation();
-        onCancel();
-      }
-    };
-    window.addEventListener("keydown", handleKeyDown, true);
-    return () => window.removeEventListener("keydown", handleKeyDown, true);
-  }, [deleting, onCancel, summary]);
-
-  useEffect(() => {
-    if (summary) {
-      dialogRef.current?.focus();
-    }
-  }, [summary]);
-
-  if (!summary) return null;
-
-  const title = historyTitle(summary);
-  const counts = [
-    summary.competitors.length ? `${summary.competitors.length} 个竞品` : "",
-    summary.evidenceCount ? `${summary.evidenceCount} 条证据` : "",
-    summary.findingCount ? `${summary.findingCount} 个质检项` : "",
-    summary.stepCount ? `${summary.stepCount} 个步骤` : ""
-  ].filter(Boolean);
-
-  return (
-    <div
-      className="confirm-overlay"
-      role="presentation"
-      onMouseDown={(event) => {
-        if (event.currentTarget === event.target && !deleting) {
-          onCancel();
-        }
-      }}
-    >
-      <section
-        ref={dialogRef}
-        className="confirm-dialog"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="delete-history-title"
-        aria-describedby="delete-history-description"
-        tabIndex={-1}
-        onMouseDown={(event) => event.stopPropagation()}
-      >
-        <div className="confirm-head">
-          <div className="confirm-icon danger">
-            <AlertTriangle size={20} />
-          </div>
-          <div>
-            <p className="eyebrow">删除历史会话</p>
-            <h2 id="delete-history-title">确认删除这次分析？</h2>
-          </div>
-        </div>
-        <p id="delete-history-description" className="confirm-copy">
-          删除后，后端保存的运行数据、执行步骤、Trace、证据与产物记录都会一并移除。
-        </p>
-        <div className="confirm-target">
-          <strong>{title}</strong>
-          <span>{displayRunPhase(summary.status)}</span>
-          {counts.length ? <small>{counts.join(" · ")}</small> : null}
-        </div>
-        <div className="confirm-actions">
-          <button className="ghost-button" type="button" onClick={onCancel} disabled={deleting}>
-            取消
-          </button>
-          <button className="danger-button" type="button" onClick={onConfirm} disabled={deleting}>
-            {deleting ? <RefreshCw size={14} /> : <Trash2 size={14} />}
-            {deleting ? "正在删除" : "删除会话"}
-          </button>
-        </div>
-      </section>
-    </div>
-  );
-}
-
 function upsertHistorySummary(runs: AnalysisRunSummary[], latest: AnalysisRunSummary) {
   const exists = runs.some((item) => item.id === latest.id);
   const nextRuns = exists
@@ -1299,13 +1248,6 @@ function summaryFromRun(run: AnalysisRun): AnalysisRunSummary {
   };
 }
 
-function historyTitle(summary: AnalysisRunSummary) {
-  if (summary.industry?.trim()) return summary.industry.trim();
-  if (summary.competitors?.length) return summary.competitors.slice(0, 3).join(", ");
-  if (summary.originalPrompt?.trim()) return summary.originalPrompt.trim().slice(0, 28);
-  return summary.id;
-}
-
 function timestampValue(value?: string) {
   if (!value) return 0;
   const time = new Date(value).getTime();
@@ -1318,6 +1260,10 @@ function safeParseEvent(event: MessageEvent<string>): RunEvent | null {
   } catch {
     return null;
   }
+}
+
+function isCurrentWorkspaceRun(runId: string) {
+  return window.localStorage.getItem(CURRENT_RUN_STORAGE_KEY) === runId;
 }
 
 function hasAgentTrace(run: AnalysisRun, agentName: AgentName) {
