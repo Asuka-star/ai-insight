@@ -5,11 +5,13 @@ import com.aiinsight.llm.LlmClient;
 import com.aiinsight.model.enums.ArtifactType;
 import com.aiinsight.model.run.AnalysisRequirement;
 import com.aiinsight.model.run.AnalysisRun;
+import com.aiinsight.model.run.EvidenceChunk;
 import com.aiinsight.model.run.EvidenceSource;
 import com.aiinsight.service.fallback.FallbackExtractionFactory;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -92,6 +94,95 @@ class ExtractorNodeTest {
                 .filteredOn(artifact -> artifact.getType() == ArtifactType.COMPETITOR_PROFILE)
                 .last()
                 .satisfies(artifact -> assertThat(artifact.getContent()).contains("Composer", "$20/month"));
+    }
+
+    @Test
+    void sendsDimensionGroupedRagEvidencePackToLlm() {
+        AtomicReference<String> userPrompt = new AtomicReference<>();
+        LlmClient llmClient = new LlmClient() {
+            @Override
+            public boolean isAvailable() {
+                return true;
+            }
+
+            @Override
+            public String complete(ChatRequest request) {
+                userPrompt.set(request.getMessages().get(1).getContent());
+                return """
+                        {
+                          "profiles": [
+                            {
+                              "productName": "Cursor",
+                              "companyName": "Cursor",
+                              "positioning": "AI code editor",
+                              "targetUsers": ["Developers"],
+                              "features": [
+                                {"name":"Composer","description":"Multi-file editing","evidenceIds":["S1"]}
+                              ],
+                              "pricing": {
+                                "strategySummary": "Pro plan is available",
+                                "hasFreePlan": true,
+                                "plans": [
+                                  {"name":"Pro","priceText":"$20/month","billingCycle":"monthly","targetSegment":"Developers","includedFeatures":["Composer"],"evidenceIds":["S1"]}
+                                ],
+                                "evidenceIds": ["S1"]
+                              },
+                              "personas": [],
+                              "strengths": ["Multi-file editing"],
+                              "weaknesses": [],
+                              "evidenceIds": ["S1"]
+                            }
+                          ]
+                        }
+                        """;
+            }
+        };
+        AnalysisRun run = new AnalysisRun(new AnalysisRequirement(
+                "Analyze Cursor",
+                "AI coding tools",
+                List.of("Cursor"),
+                List.of("pricing"),
+                List.of("official_site"),
+                List.of()
+        ));
+        run.getEvidenceSources().add(new EvidenceSource(
+                "S1",
+                "Cursor Pricing",
+                "https://www.cursor.com/pricing",
+                "pricing_page",
+                "FETCHED",
+                "LIVE_FETCHED",
+                "HIGH",
+                "NONE",
+                "Cursor Pro costs $20/month.",
+                "Cursor Pro costs $20/month. Composer is included.",
+                "test evidence"
+        ));
+        EvidenceChunk chunk = new EvidenceChunk(
+                "S1-C1",
+                "S1",
+                1,
+                "Cursor Pricing",
+                "https://www.cursor.com/pricing",
+                "Cursor Pro costs $20/month. Composer is included."
+        );
+        chunk.setHeadingPath(List.of("Cursor Pricing", "Pricing"));
+        chunk.setContentKind("pricing");
+        chunk.setSourceAuthority("FIRST_PARTY_OFFICIAL");
+        chunk.setSourceQuality("HIGH");
+        run.getEvidenceChunks().add(chunk);
+
+        new ExtractorNode(llmClient, new FallbackExtractionFactory()).execute(run);
+
+        assertThat(userPrompt.get()).contains(
+                "Competitor: Cursor",
+                "Dimension: pricing",
+                "[S1-C1]",
+                "source=[S1]",
+                "kind=pricing",
+                "authority=FIRST_PARTY_OFFICIAL"
+        );
+        assertThat(userPrompt.get()).doesNotContain("raw=");
     }
 
     @Test

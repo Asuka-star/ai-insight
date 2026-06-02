@@ -9,6 +9,7 @@ import com.aiinsight.model.enums.AgentName;
 import com.aiinsight.model.enums.ArtifactType;
 import com.aiinsight.model.run.AnalysisArtifact;
 import com.aiinsight.model.run.AnalysisRun;
+import com.aiinsight.model.run.EvidenceChunk;
 import com.aiinsight.model.run.EvidenceSource;
 import com.aiinsight.model.schema.CompetitorProfile;
 import com.aiinsight.model.schema.FeatureNode;
@@ -17,6 +18,7 @@ import com.aiinsight.model.schema.PricingModel;
 import com.aiinsight.model.schema.PricingPlan;
 import com.aiinsight.model.schema.UserPersona;
 import com.aiinsight.observability.AgentTraceContext;
+import com.aiinsight.service.EvidenceRetrievalService;
 import com.aiinsight.service.fallback.FallbackExtractionFactory;
 import com.aiinsight.util.JsonResponseExtractor;
 import com.fasterxml.jackson.core.JsonProcessingException;
@@ -43,6 +45,7 @@ public class ExtractorNode implements AgentNode {
 
     private final LlmClient llmClient;
     private final FallbackExtractionFactory fallbackExtractionFactory;
+    private final EvidenceRetrievalService evidenceRetrievalService = new EvidenceRetrievalService();
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     @Override
@@ -112,6 +115,7 @@ public class ExtractorNode implements AgentNode {
                 5. 不确定字段请写“待验证”，不要用营销话术补空。
                 6. features、pricing、personas、strengths、weaknesses 都必须绑定 evidenceIds；只能使用证据片段里出现过的 S 编号。
                 7. Extractor 只抽事实，不要写“建议”“机会”“风险”“应该”等分析性结论。
+                8. 证据包可能包含 S1-C2 这样的 chunkKey，但 JSON evidenceIds 只能使用 S1 这样的来源编号。
 
                 profile 字段：
                 {
@@ -302,6 +306,11 @@ public class ExtractorNode implements AgentNode {
     }
 
     private String evidenceBlock(AnalysisRun run) {
+        if (!run.getEvidenceChunks().isEmpty()) {
+            String pack = ragEvidencePack(run);
+            AgentTraceContext.recordProcessSummary("Extractor RAG evidence pack selected:\n" + abbreviate(pack, 4000));
+            return pack;
+        }
         return run.getEvidenceSources().stream()
                 .limit(24)
                 .map(source -> """
@@ -317,6 +326,83 @@ public class ExtractorNode implements AgentNode {
                         abbreviate(source.getRawText(), 500)
                 ))
                 .collect(Collectors.joining("\n"));
+    }
+
+    private String ragEvidencePack(AnalysisRun run) {
+        List<String> dimensions = extractionDimensions(run);
+        StringBuilder pack = new StringBuilder();
+        int pairCount = 0;
+        for (String competitor : run.getRequirement().getCompetitors()) {
+            for (String dimension : dimensions) {
+                List<EvidenceChunk> chunks = evidenceRetrievalService.retrieve(
+                        run,
+                        competitor + " " + dimension,
+                        competitor,
+                        dimension,
+                        3
+                );
+                if (chunks.isEmpty()) {
+                    continue;
+                }
+                if (!pack.isEmpty()) {
+                    pack.append("\n");
+                }
+                pack.append("Competitor: ").append(competitor).append("\n");
+                pack.append("Dimension: ").append(dimension).append("\n");
+                for (EvidenceChunk chunk : chunks) {
+                    pack.append(formatChunk(chunk)).append("\n");
+                }
+                pairCount++;
+                if (pairCount >= 30 || pack.length() > 24_000) {
+                    return pack.toString();
+                }
+            }
+        }
+        if (!pack.isEmpty()) {
+            return pack.toString();
+        }
+        return run.getEvidenceChunks().stream()
+                .limit(24)
+                .map(this::formatChunk)
+                .collect(Collectors.joining("\n"));
+    }
+
+    private List<String> extractionDimensions(AnalysisRun run) {
+        LinkedHashSet<String> dimensions = new LinkedHashSet<>();
+        if (run.getRequirement().getDimensions() != null) {
+            run.getRequirement().getDimensions().stream()
+                    .filter(StringUtils::hasText)
+                    .map(String::trim)
+                    .limit(8)
+                    .forEach(dimensions::add);
+        }
+        dimensions.add("product positioning and core features");
+        dimensions.add("pricing and plans");
+        dimensions.add("security permissions and enterprise controls");
+        dimensions.add("target users and use cases");
+        return new ArrayList<>(dimensions).stream()
+                .limit(8)
+                .toList();
+    }
+
+    private String formatChunk(EvidenceChunk chunk) {
+        String sourceId = StringUtils.hasText(chunk.getSourceCitationKey())
+                ? chunk.getSourceCitationKey()
+                : chunk.getChunkKey();
+        return """
+                - [%s] source=[%s] title=%s | heading=%s | kind=%s | authority=%s | quality=%s | score=%.2f
+                  text=%s
+                """.formatted(
+                chunk.getChunkKey(),
+                sourceId,
+                abbreviate(chunk.getTitle(), 100),
+                abbreviate(String.join(" > ", chunk.getHeadingPath() == null ? List.of() : chunk.getHeadingPath()), 140),
+                textOrDash(chunk.getContentKind()),
+                textOrDash(chunk.getSourceAuthority()),
+                textOrDash(chunk.getSourceQuality()),
+                chunk.getScore(),
+                abbreviate(chunk.getText(), 620)
+        );
     }
 
     private List<String> knownEvidenceIds(AnalysisRun run, List<String> candidateIds, List<String> fallback) {
@@ -473,6 +559,10 @@ public class ExtractorNode implements AgentNode {
 
     private String textOrDefault(String value, String fallback) {
         return StringUtils.hasText(value) ? value.trim() : fallback;
+    }
+
+    private String textOrDash(String value) {
+        return StringUtils.hasText(value) ? value.trim() : "-";
     }
 
     private String normalizeName(String value) {

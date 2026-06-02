@@ -22,7 +22,13 @@ public class SourceTypeClassifier {
             return "public_review";
         }
         if (containsAny(combined, "/pricing", "/plans", " pricing", " plans")) {
-            return isFirstPartyReferenceUrl(url) ? "pricing_page" : "pricing_reference";
+            return isFirstPartyReferenceUrl(url) ? "pricing_page" : "third_party_pricing_reference";
+        }
+        if (containsAny(combined, "/security", "/trust", "/privacy", " security", " compliance", " permissions")) {
+            return isFirstPartyReferenceUrl(url) ? "security_docs" : "third_party_article";
+        }
+        if (containsAny(combined, "/integrations", "/integration", " integrations", " api ")) {
+            return isFirstPartyReferenceUrl(url) ? "integration_docs" : "third_party_article";
         }
         if (containsAny(combined, "/docs", "/doc", "/help", "/reference", "/guide", " documentation", " docs")) {
             return isFirstPartyReferenceUrl(url) ? "docs" : "third_party_docs";
@@ -51,10 +57,58 @@ public class SourceTypeClassifier {
                     : "MEDIUM";
         }
         return switch (normalizedType) {
-            case "official_site", "docs", "product_docs", "pricing_page", "release_notes" -> "HIGH";
+            case "official_site", "docs", "product_docs", "pricing_page", "release_notes", "security_docs", "integration_docs" -> "HIGH";
             case "public_review", "public_reviews", "forum", "search_result_snippet", "video" -> "LOW";
             default -> "MEDIUM";
         };
+    }
+
+    public String authorityFor(String url, String sourceType) {
+        String normalizedType = normalize(sourceType);
+        ParsedUrl parsed = parse(url);
+        String host = parsed == null ? "" : parsed.host();
+        if (normalizedType.startsWith("user_")) {
+            return "USER_PROVIDED";
+        }
+        if ("search_result_snippet".equals(normalizedType)) {
+            return "SEARCH_SNIPPET";
+        }
+        if (containsAny(normalizedType, "public_review", "community", "forum") || isPublicReviewHost(url)) {
+            return "COMMUNITY";
+        }
+        if (!StringUtils.hasText(host)) {
+            return "UNKNOWN";
+        }
+        if (isThirdPartyHost(host) || normalizedType.startsWith("third_party")) {
+            return "THIRD_PARTY_GENERAL";
+        }
+        if (containsAny(host, "docs.", "doc.", "help.", "support.", "developer.", "developers.", "api.", "reference.")) {
+            return "FIRST_PARTY_DOCS";
+        }
+        if ("release_notes".equals(normalizedType) || "technical_blog".equals(normalizedType)) {
+            return "FIRST_PARTY_BLOG";
+        }
+        if (containsAny(normalizedType, "docs", "security", "integration")) {
+            return "FIRST_PARTY_DOCS";
+        }
+        if (looksLikeOfficialHost(url) || "pricing_page".equals(normalizedType)) {
+            return "FIRST_PARTY_OFFICIAL";
+        }
+        return "UNKNOWN";
+    }
+
+    public String canonicalHost(String url) {
+        ParsedUrl parsed = parse(url);
+        return parsed == null ? "" : parsed.host();
+    }
+
+    public String publisherName(String url) {
+        String host = canonicalHost(url);
+        if (!StringUtils.hasText(host)) {
+            return "";
+        }
+        String root = rootDomain(host);
+        return StringUtils.hasText(root) ? root : host;
     }
 
     private boolean isFirstPartyReferenceUrl(String url) {

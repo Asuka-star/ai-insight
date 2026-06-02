@@ -17,6 +17,10 @@ public class EvidenceSource {
     private String title;
     private String url;
     private String sourceType;
+    private String sourceAuthority;
+    private String canonicalHost;
+    private String publisherName;
+    private String contentLanguage;
     private String collectionStatus;
     private String freshness;
     private String sourceQuality;
@@ -46,6 +50,10 @@ public class EvidenceSource {
         this.title = title;
         this.url = url;
         this.sourceType = sourceType;
+        this.sourceAuthority = "UNKNOWN";
+        this.canonicalHost = "";
+        this.publisherName = "";
+        this.contentLanguage = "";
         this.collectionStatus = "UNKNOWN";
         this.freshness = "UNKNOWN";
         this.sourceQuality = "UNKNOWN";
@@ -70,6 +78,10 @@ public class EvidenceSource {
         this.title = title;
         this.url = url;
         this.sourceType = sourceType;
+        this.sourceAuthority = "UNKNOWN";
+        this.canonicalHost = "";
+        this.publisherName = "";
+        this.contentLanguage = "";
         this.collectionStatus = collectionStatus;
         this.freshness = freshness;
         this.sourceQuality = "UNKNOWN";
@@ -96,6 +108,10 @@ public class EvidenceSource {
         this.title = title;
         this.url = url;
         this.sourceType = sourceType;
+        this.sourceAuthority = "UNKNOWN";
+        this.canonicalHost = "";
+        this.publisherName = "";
+        this.contentLanguage = "";
         this.collectionStatus = collectionStatus;
         this.freshness = freshness;
         this.sourceQuality = sourceQuality;

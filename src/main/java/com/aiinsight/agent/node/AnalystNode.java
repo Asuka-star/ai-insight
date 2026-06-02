@@ -855,7 +855,7 @@ public class AnalystNode implements AgentNode {
             case "pricing_page" -> 5;
             case "official_site" -> 4;
             case "release_notes", "technical_blog" -> 3;
-            case "authoritative_media", "third_party_docs", "pricing_reference" -> 2;
+            case "authoritative_media", "third_party_docs", "third_party_pricing_reference", "pricing_reference" -> 2;
             case "public_review", "public_reviews" -> 1;
             default -> 0;
         };

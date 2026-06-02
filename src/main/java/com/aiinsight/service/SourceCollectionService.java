@@ -136,7 +136,7 @@ public class SourceCollectionService {
         if (StringUtils.hasText(researchNote)) {
             complianceNote = complianceNote + " " + researchNote;
         }
-        return new EvidenceSource(
+        EvidenceSource source = new EvidenceSource(
                 citationKey,
                 evidence.getTitle(),
                 url,
@@ -149,6 +149,9 @@ public class SourceCollectionService {
                 evidence.getContent(),
                 complianceNote
         );
+        applySourceMetadata(source);
+        source.setSourceAuthority(evidence.isSensitive() ? "INTERNAL_ONLY" : "USER_PROVIDED");
+        return source;
     }
 
     private String firstPartyResearchNote(String sourceType) {
@@ -596,7 +599,7 @@ public class SourceCollectionService {
             case "docs", "product_docs" -> 10;
             case "release_notes" -> 20;
             case "official_site" -> 30;
-            case "pricing_reference" -> 65;
+            case "third_party_pricing_reference", "pricing_reference" -> 65;
             case "public_review", "public_reviews", "forum", "video" -> 80;
             default -> 70;
         };
@@ -677,6 +680,7 @@ public class SourceCollectionService {
         );
         source.setContentHash(page.getContentHash());
         source.setCacheHit(page.isCacheHit());
+        applySourceMetadata(source);
         return new OfficialSeed(source, page.getInternalLinks());
     }
 
@@ -688,7 +692,7 @@ public class SourceCollectionService {
         String normalizedStatus = StringUtils.hasText(status) ? status : "FETCH_FAILED";
         String normalizedReason = StringUtils.hasText(failureReason) ? failureReason : normalizedStatus;
         String message = userUrlFailureMessage(url, normalizedStatus, normalizedReason);
-        return new EvidenceSource(
+        EvidenceSource source = new EvidenceSource(
                 citationKey,
                 url,
                 url,
@@ -701,6 +705,8 @@ public class SourceCollectionService {
                 "",
                 complianceNote
         );
+        applySourceMetadata(source);
+        return source;
     }
 
     private boolean userUrlNeedsAttention(EvidenceSource source) {
@@ -811,7 +817,35 @@ public class SourceCollectionService {
         );
         source.setContentHash(page.getContentHash());
         source.setCacheHit(page.isCacheHit());
+        applySourceMetadata(source);
         return source;
+    }
+
+    private void applySourceMetadata(EvidenceSource source) {
+        if (source == null) {
+            return;
+        }
+        String sourceType = StringUtils.hasText(source.getSourceType()) ? source.getSourceType() : "unknown";
+        source.setSourceAuthority(sourceTypeClassifier.authorityFor(source.getUrl(), sourceType));
+        source.setCanonicalHost(sourceTypeClassifier.canonicalHost(source.getUrl()));
+        source.setPublisherName(sourceTypeClassifier.publisherName(source.getUrl()));
+        source.setContentLanguage(inferContentLanguage(source.getTitle() + " " + source.getSnippet() + " " + source.getRawText()));
+    }
+
+    private String inferContentLanguage(String text) {
+        if (!StringUtils.hasText(text)) {
+            return "unknown";
+        }
+        String normalized = text.trim();
+        int hanCount = normalized.replaceAll("[^\\p{IsHan}]", "").length();
+        int asciiLetterCount = normalized.replaceAll("[^A-Za-z]", "").length();
+        if (hanCount >= 8 && hanCount >= asciiLetterCount / 3) {
+            return "zh";
+        }
+        if (asciiLetterCount >= 20) {
+            return "en";
+        }
+        return "unknown";
     }
 
     private String searchFetchedContentIssue(WebPageFetchService.FetchedPage page) {

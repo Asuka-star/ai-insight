@@ -60,15 +60,33 @@ class SourceTypeClassifierTest {
                 .isEqualTo("pricing_page");
 
         assertThat(classifier.classify("https://cursor.com/integrations", "Cursor integrations"))
-                .isEqualTo("official_site");
+                .isEqualTo("integration_docs");
+        assertThat(classifier.qualityFor("integration_docs", "FETCHED", "LIVE_FETCHED"))
+                .isEqualTo("HIGH");
+        assertThat(classifier.authorityFor("https://www.cursor.com/pricing", "pricing_page"))
+                .isEqualTo("FIRST_PARTY_OFFICIAL");
     }
 
     @Test
     void downgradesThirdPartyPricingReferences() {
         String sourceType = classifier.classify("https://learn-cursor.com/docs/pricing", "Cursor pricing guide");
 
-        assertThat(sourceType).isEqualTo("pricing_reference");
+        assertThat(sourceType).isEqualTo("third_party_pricing_reference");
         assertThat(classifier.qualityFor(sourceType, "FETCHED", "LIVE_FETCHED"))
                 .isEqualTo("MEDIUM");
+        assertThat(classifier.authorityFor("https://learn-cursor.com/docs/pricing", sourceType))
+                .isEqualTo("THIRD_PARTY_GENERAL");
+    }
+
+    @Test
+    void doesNotPromoteThirdPartyPricingUrlToOfficialPricingAuthority() {
+        String sourceType = classifier.classify(
+                "https://example-blog.com/notion-pricing-comparison",
+                "Notion pricing comparison"
+        );
+
+        assertThat(sourceType).isEqualTo("third_party_pricing_reference");
+        assertThat(classifier.authorityFor("https://example-blog.com/notion-pricing-comparison", sourceType))
+                .isEqualTo("THIRD_PARTY_GENERAL");
     }
 }

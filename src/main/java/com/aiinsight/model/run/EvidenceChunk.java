@@ -5,6 +5,7 @@ import lombok.NoArgsConstructor;
 import lombok.Setter;
 
 import java.time.Instant;
+import java.util.List;
 import java.util.UUID;
 
 @Getter
@@ -18,6 +19,14 @@ public class EvidenceChunk {
     private int chunkIndex;
     private String title;
     private String url;
+    private List<String> headingPath = List.of();
+    private String contentKind;
+    private String sourceType;
+    private String sourceAuthority;
+    private String sourceQuality;
+    private String textHash;
+    private String embeddingModel;
+    private Instant embeddedAt;
     private String text;
     private double score;
     private Instant createdAt = Instant.now();
