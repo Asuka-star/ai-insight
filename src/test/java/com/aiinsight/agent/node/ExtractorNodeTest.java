@@ -6,9 +6,12 @@ import com.aiinsight.model.enums.ArtifactType;
 import com.aiinsight.model.enums.FactType;
 import com.aiinsight.model.run.AnalysisRequirement;
 import com.aiinsight.model.run.AnalysisRun;
+import com.aiinsight.model.run.AgentTrace;
 import com.aiinsight.model.run.EvidenceChunk;
 import com.aiinsight.model.run.EvidenceSource;
+import com.aiinsight.observability.AgentTraceContext;
 import com.aiinsight.service.fallback.FallbackExtractionFactory;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -17,6 +20,11 @@ import java.util.concurrent.atomic.AtomicReference;
 import static org.assertj.core.api.Assertions.assertThat;
 
 class ExtractorNodeTest {
+
+    @AfterEach
+    void clearTrace() {
+        AgentTraceContext.clear();
+    }
 
     @Test
     void acceptsJsonResponseWithTrailingCommentary() {
@@ -296,6 +304,237 @@ class ExtractorNodeTest {
         assertThat(run.getCompetitorProfiles().get(0).getEvidenceIds()).containsExactly("S1");
         assertThat(run.getCompetitorProfiles().get(0).getFeatureTree().getRoots().get(0).getEvidenceIds())
                 .containsExactly("S1");
+    }
+
+    @Test
+    void acceptsTopLevelProfilesArray() {
+        LlmClient llmClient = new LlmClient() {
+            @Override
+            public boolean isAvailable() {
+                return true;
+            }
+
+            @Override
+            public String complete(ChatRequest request) {
+                return """
+                        [
+                          {
+                            "productName": "Cursor",
+                            "companyName": "Cursor",
+                            "positioning": "AI code editor",
+                            "targetUsers": ["Developers"],
+                            "features": [
+                              {"name":"Composer","description":"Multi-file code editing","evidenceIds":["S1"]}
+                            ],
+                            "pricing": {
+                              "strategySummary": "Pro plan is available",
+                              "hasFreePlan": true,
+                              "plans": [],
+                              "evidenceIds": ["S1"]
+                            },
+                            "personas": [],
+                            "strengths": ["Multi-file editing"],
+                            "weaknesses": [],
+                            "evidenceIds": ["S1"]
+                          }
+                        ]
+                        """;
+            }
+        };
+        AnalysisRun run = runWithCursorEvidence();
+
+        new ExtractorNode(llmClient, new FallbackExtractionFactory()).execute(run);
+
+        assertThat(run.getRecommendedActions()).noneMatch(action -> action.contains("LLM Schema"));
+        assertThat(run.getCompetitorProfiles()).hasSize(1);
+        assertThat(run.getCompetitorProfiles().get(0).getProductName()).isEqualTo("Cursor");
+        assertThat(run.getCompetitorProfiles().get(0).getFeatureTree().getRoots())
+                .extracting(node -> node.getName())
+                .containsExactly("Composer");
+    }
+
+    @Test
+    void acceptsCompetitorsWrapperWithMetadata() {
+        LlmClient llmClient = new LlmClient() {
+            @Override
+            public boolean isAvailable() {
+                return true;
+            }
+
+            @Override
+            public String complete(ChatRequest request) {
+                return """
+                        {
+                          "summary": "Structured profiles extracted from the evidence.",
+                          "competitors": [
+                            {
+                              "productName": "Cursor",
+                              "companyName": "Cursor",
+                              "positioning": "AI code editor",
+                              "targetUsers": ["Developers"],
+                              "features": [
+                                {"name":"Composer","description":"Multi-file code editing","evidenceIds":["S1"]}
+                              ],
+                              "pricing": {
+                                "strategySummary": "Pro plan is available",
+                                "hasFreePlan": true,
+                                "plans": [],
+                                "evidenceIds": ["S1"]
+                              },
+                              "personas": [],
+                              "strengths": ["Multi-file editing"],
+                              "weaknesses": [],
+                              "evidenceIds": ["S1"]
+                            }
+                          ]
+                        }
+                        """;
+            }
+        };
+        AnalysisRun run = runWithCursorEvidence();
+
+        new ExtractorNode(llmClient, new FallbackExtractionFactory()).execute(run);
+
+        assertThat(run.getRecommendedActions()).noneMatch(action -> action.contains("LLM Schema"));
+        assertThat(run.getCompetitorProfiles()).hasSize(1);
+        assertThat(run.getCompetitorProfiles().get(0).getFeatureTree().getRoots())
+                .extracting(node -> node.getName())
+                .containsExactly("Composer");
+    }
+
+    @Test
+    void acceptsProductMapWithMetadataFields() {
+        LlmClient llmClient = new LlmClient() {
+            @Override
+            public boolean isAvailable() {
+                return true;
+            }
+
+            @Override
+            public String complete(ChatRequest request) {
+                return """
+                        {
+                          "Cursor": {
+                            "companyName": "Cursor",
+                            "positioning": "AI code editor",
+                            "targetUsers": ["Developers"],
+                            "features": [
+                              {"name":"Composer","description":"Multi-file code editing","evidenceIds":["S1"]}
+                            ],
+                            "pricing": {
+                              "strategySummary": "Pro plan is available",
+                              "hasFreePlan": true,
+                              "plans": [],
+                              "evidenceIds": ["S1"]
+                            },
+                            "personas": [],
+                            "strengths": ["Multi-file editing"],
+                            "weaknesses": [],
+                            "evidenceIds": ["S1"]
+                          },
+                          "notes": "Only object-valued fields should be treated as profiles."
+                        }
+                        """;
+            }
+        };
+        AnalysisRun run = runWithCursorEvidence();
+
+        new ExtractorNode(llmClient, new FallbackExtractionFactory()).execute(run);
+
+        assertThat(run.getRecommendedActions()).noneMatch(action -> action.contains("LLM Schema"));
+        assertThat(run.getCompetitorProfiles()).hasSize(1);
+        assertThat(run.getCompetitorProfiles().get(0).getProductName()).isEqualTo("Cursor");
+        assertThat(run.getCompetitorProfiles().get(0).getFeatureTree().getRoots())
+                .extracting(node -> node.getName())
+                .containsExactly("Composer");
+    }
+
+    @Test
+    void ignoresUnknownLlmFieldsInsideProfileDrafts() {
+        LlmClient llmClient = new LlmClient() {
+            @Override
+            public boolean isAvailable() {
+                return true;
+            }
+
+            @Override
+            public String complete(ChatRequest request) {
+                return """
+                        {
+                          "profiles": [
+                            {
+                              "productName": "Cursor",
+                              "companyName": "Cursor",
+                              "website": "https://cursor.com",
+                              "marketShare": "not in schema",
+                              "positioning": "AI code editor",
+                              "targetUsers": ["Developers"],
+                              "features": [
+                                {"name":"Composer","description":"Multi-file code editing","category":"editing","evidenceIds":["S1"]}
+                              ],
+                              "pricing": {
+                                "strategySummary": "Pro plan is available",
+                                "hasFreePlan": true,
+                                "currency": "USD",
+                                "plans": [
+                                  {"name":"Pro","priceText":"$20/month","billingCycle":"monthly","targetSegment":"Developers","limits":"unknown","includedFeatures":["Composer"],"evidenceIds":["S1"]}
+                                ],
+                                "evidenceIds": ["S1"]
+                              },
+                              "personas": [],
+                              "strengths": ["Multi-file editing"],
+                              "weaknesses": [],
+                              "evidenceIds": ["S1"]
+                            }
+                          ]
+                        }
+                        """;
+            }
+        };
+        AnalysisRun run = runWithCursorEvidence();
+
+        new ExtractorNode(llmClient, new FallbackExtractionFactory()).execute(run);
+
+        assertThat(run.getRecommendedActions()).noneMatch(action -> action.contains("LLM Schema"));
+        assertThat(run.getCompetitorProfiles()).hasSize(1);
+        assertThat(run.getCompetitorProfiles().get(0).getFeatureTree().getRoots())
+                .extracting(node -> node.getName())
+                .containsExactly("Composer");
+    }
+
+    @Test
+    void recordsParseDiagnosticsWhenLlmJsonCannotBeConverted() {
+        LlmClient llmClient = new LlmClient() {
+            @Override
+            public boolean isAvailable() {
+                return true;
+            }
+
+            @Override
+            public String complete(ChatRequest request) {
+                return """
+                        {
+                          "profiles": "not a profiles array or object",
+                          "notes": "This shape used to be hard to diagnose."
+                        }
+                        """;
+            }
+        };
+        AnalysisRun run = runWithCursorEvidence();
+        AgentTrace trace = new AgentTrace();
+        AgentTraceContext.start(trace);
+
+        new ExtractorNode(llmClient, new FallbackExtractionFactory()).execute(run);
+
+        assertThat(run.getRecommendedActions()).anyMatch(action -> action.contains("LLM Schema"));
+        assertThat(trace.getFallbackUsed()).isTrue();
+        assertThat(trace.getProcessSnapshot())
+                .contains(
+                        "Extractor JSON parse failed",
+                        "profilesShape=string",
+                        "rawPreview=",
+                        "not a profiles array or object"
+                );
     }
 
     @Test

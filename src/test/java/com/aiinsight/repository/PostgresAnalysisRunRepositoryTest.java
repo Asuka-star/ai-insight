@@ -5,6 +5,7 @@ import com.aiinsight.model.enums.AnalysisStatus;
 import com.aiinsight.model.enums.ReviewSeverity;
 import com.aiinsight.model.review.ReviewFinding;
 import com.aiinsight.model.run.AnalysisRun;
+import com.aiinsight.model.run.EmbeddingCacheEntry;
 import com.aiinsight.model.run.EvidenceChunk;
 import com.aiinsight.model.run.EvidenceSource;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -15,6 +16,7 @@ import org.springframework.jdbc.core.RowMapper;
 
 import java.sql.ResultSet;
 import java.sql.Timestamp;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.Collection;
 import java.util.List;
@@ -186,6 +188,56 @@ class PostgresAnalysisRunRepositoryTest {
                 "[1.000000000,0.000000000]",
                 3
         );
+    }
+
+    @Test
+    void saveCachedEmbeddingWritesContentAddressedEmbeddingEntry() {
+        JdbcTemplate jdbcTemplate = mock(JdbcTemplate.class);
+        PostgresAnalysisRunRepository repository = new PostgresAnalysisRunRepository(
+                jdbcTemplate,
+                new ObjectMapper().findAndRegisterModules()
+        );
+        Instant embeddedAt = Instant.parse("2026-06-02T08:00:00Z");
+        EmbeddingCacheEntry entry = new EmbeddingCacheEntry(
+                "input-hash-1",
+                "text-hash-1",
+                "test-embedding-model",
+                0,
+                List.of(0.1, 0.2),
+                embeddedAt,
+                embeddedAt,
+                1
+        );
+
+        repository.saveCachedEmbedding(entry);
+
+        ArgumentCaptor<Object[]> argsCaptor = ArgumentCaptor.forClass(Object[].class);
+        verify(jdbcTemplate).update(contains("insert into embedding_cache"), argsCaptor.capture());
+        Object[] args = argsCaptor.getValue();
+        assertThat(args[0]).isEqualTo("input-hash-1");
+        assertThat(args[1]).isEqualTo("test-embedding-model");
+        assertThat(args[2]).isEqualTo(0);
+        assertThat(args[3]).isEqualTo("text-hash-1");
+        assertThat(args[4]).isEqualTo("[0.1,0.2]");
+        assertThat(args[5]).isEqualTo(Timestamp.from(embeddedAt));
+        assertThat(args[6]).isEqualTo(Timestamp.from(embeddedAt));
+        assertThat(args[7]).isEqualTo(1);
+    }
+
+    @Test
+    void deleteExpiredEmbeddingCacheRemovesRowsOlderThanTtl() {
+        JdbcTemplate jdbcTemplate = mock(JdbcTemplate.class);
+        PostgresAnalysisRunRepository repository = new PostgresAnalysisRunRepository(
+                jdbcTemplate,
+                new ObjectMapper().findAndRegisterModules()
+        );
+        when(jdbcTemplate.update(eq("delete from embedding_cache where last_used_at < ?"), any(Timestamp.class)))
+                .thenReturn(4);
+
+        int deleted = repository.deleteExpiredEmbeddingCache(Duration.ofDays(90));
+
+        assertThat(deleted).isEqualTo(4);
+        verify(jdbcTemplate).update(eq("delete from embedding_cache where last_used_at < ?"), any(Timestamp.class));
     }
 
     @Test

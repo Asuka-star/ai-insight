@@ -1,3 +1,4 @@
+import { memo, useCallback, useEffect, useState } from "react";
 import { CheckCircle2, ClipboardCheck, PlayCircle, RefreshCw } from "lucide-react";
 import type { AnalysisRun, ClarificationItem, ClarificationOption } from "../types";
 import { SOURCE_OPTIONS } from "../constants";
@@ -54,6 +55,7 @@ export function ScopeConfirmationPanel({
   creating,
   busy
 }: ScopeConfirmationPanelProps) {
+  const [formEditVersion, setFormEditVersion] = useState(0);
   const phase = resolveRunPhase(run);
   const draft = run?.clarificationDraft;
   const questions = draft?.clarificationQuestions ?? [];
@@ -78,6 +80,11 @@ export function ScopeConfirmationPanel({
     && (isConfirmed || canStartWithoutConfirm)
     && ["AWAITING_CONFIRMATION", "PENDING", "NEEDS_USER_INPUT"].includes(phaseText);
 
+  const handleManualEdit = useCallback((update: () => void) => {
+    setFormEditVersion((version) => version + 1);
+    update();
+  }, []);
+
   return (
     <section className="panel scope-panel">
       <div className="section-title">
@@ -91,19 +98,19 @@ export function ScopeConfirmationPanel({
       <div className="scope-grid">
         <label>
           行业方向
-          <input value={industry} onChange={(event) => onIndustryChange(event.target.value)} placeholder="请输入行业或业务方向" disabled={!scopeEditable} />
+          <input value={industry} onChange={(event) => handleManualEdit(() => onIndustryChange(event.target.value))} placeholder="请输入行业或业务方向" disabled={!scopeEditable} />
         </label>
         <label>
           报告用途
-          <input value={outputGoal} onChange={(event) => onOutputGoalChange(event.target.value)} placeholder="请输入报告使用场景" disabled={!scopeEditable} />
+          <input value={outputGoal} onChange={(event) => handleManualEdit(() => onOutputGoalChange(event.target.value))} placeholder="请输入报告使用场景" disabled={!scopeEditable} />
         </label>
         <label>
           竞品列表
-          <input value={competitors} onChange={(event) => onCompetitorsChange(event.target.value)} placeholder="请输入竞品名称，多个用逗号分隔" disabled={!scopeEditable} />
+          <input value={competitors} onChange={(event) => handleManualEdit(() => onCompetitorsChange(event.target.value))} placeholder="请输入竞品名称，多个用逗号分隔" disabled={!scopeEditable} />
         </label>
         <label>
           分析维度
-          <input value={dimensions} onChange={(event) => onDimensionsChange(event.target.value)} placeholder="请输入关注维度，多个用逗号分隔" disabled={!scopeEditable} />
+          <input value={dimensions} onChange={(event) => handleManualEdit(() => onDimensionsChange(event.target.value))} placeholder="请输入关注维度，多个用逗号分隔" disabled={!scopeEditable} />
         </label>
       </div>
 
@@ -120,11 +127,13 @@ export function ScopeConfirmationPanel({
                 checked={sources.includes(source.value)}
                 disabled={!scopeEditable}
                 onChange={(event) => {
-                  onSourcesChange(
-                    event.target.checked
-                      ? [...sources, source.value]
-                      : sources.filter((value) => value !== source.value)
-                  );
+                  handleManualEdit(() => {
+                    onSourcesChange(
+                      event.target.checked
+                        ? [...sources, source.value]
+                        : sources.filter((value) => value !== source.value)
+                    );
+                  });
                 }}
               />
               {source.label}
@@ -137,7 +146,7 @@ export function ScopeConfirmationPanel({
         公开来源 URL
         <textarea
           value={sourceUrls}
-          onChange={(event) => onSourceUrlsChange(event.target.value)}
+          onChange={(event) => handleManualEdit(() => onSourceUrlsChange(event.target.value))}
           placeholder="每行一个公开网页 URL，例如官网、价格页、产品文档"
           rows={3}
           disabled={!scopeEditable}
@@ -193,6 +202,15 @@ export function ScopeConfirmationPanel({
             <ClarificationItemCard
               item={item}
               key={`${item.field}-${item.question}`}
+              selectedValues={selectedValuesForField(item.field, {
+                industry,
+                competitors,
+                dimensions,
+                outputGoal,
+                sources,
+                sourceUrls
+              }, item.selectedValues)}
+              selectionSyncVersion={formEditVersion}
               onApply={onApplyClarificationOption}
               disabled={!scopeEditable}
             />
@@ -231,15 +249,32 @@ export function ScopeConfirmationPanel({
   );
 }
 
-function ClarificationItemCard({
+const ClarificationItemCard = memo(function ClarificationItemCard({
   item,
+  selectedValues,
+  selectionSyncVersion,
   onApply,
   disabled
 }: {
   item: ClarificationItem;
+  selectedValues: string[];
+  selectionSyncVersion: number;
   onApply: (field: string, values: string[]) => void;
   disabled?: boolean;
 }) {
+  const computedSelectedIndex = selectedIndexForOptions(item.options, selectedValues);
+  const itemSelectionKey = clarificationItemSelectionKey(item);
+  const [selectedOptionIndex, setSelectedOptionIndex] = useState(computedSelectedIndex);
+
+  useEffect(() => {
+    setSelectedOptionIndex(computedSelectedIndex);
+  }, [itemSelectionKey, selectionSyncVersion]);
+
+  const handleSelectOption = useCallback((index: number, values: string[]) => {
+    setSelectedOptionIndex(index);
+    onApply(item.field, values);
+  }, [item.field, onApply]);
+
   return (
     <div className="clarification-item">
       <div className="clarification-item-header">
@@ -248,36 +283,66 @@ function ClarificationItemCard({
       </div>
       {item.reason ? <p>{item.reason}</p> : null}
       <div className="clarification-options">
-        {item.options.map((option) => (
+        {item.options.map((option, index) => (
           <ClarificationOptionButton
-            field={item.field}
             option={option}
             key={`${option.label}-${option.values.join("|")}`}
-            onApply={onApply}
+            index={index}
+            selected={index === selectedOptionIndex}
+            onSelect={handleSelectOption}
             disabled={disabled}
           />
         ))}
       </div>
     </div>
   );
+}, areClarificationItemsEqual);
+
+function areClarificationItemsEqual(
+  previous: {
+    item: ClarificationItem;
+    selectedValues: string[];
+    selectionSyncVersion: number;
+    onApply: (field: string, values: string[]) => void;
+    disabled?: boolean;
+  },
+  next: {
+    item: ClarificationItem;
+    selectedValues: string[];
+    selectionSyncVersion: number;
+    onApply: (field: string, values: string[]) => void;
+    disabled?: boolean;
+  }
+) {
+  return previous.item === next.item
+    && previous.selectionSyncVersion === next.selectionSyncVersion
+    && previous.disabled === next.disabled
+    && previous.onApply === next.onApply;
 }
 
 function ClarificationOptionButton({
-  field,
   option,
-  onApply,
+  index,
+  selected,
+  onSelect,
   disabled
 }: {
-  field: string;
   option: ClarificationOption;
-  onApply: (field: string, values: string[]) => void;
+  index: number;
+  selected: boolean;
+  onSelect: (index: number, values: string[]) => void;
   disabled?: boolean;
 }) {
   return (
     <button
-      className={option.recommended ? "clarification-option recommended" : "clarification-option"}
+      className={[
+        "clarification-option",
+        option.recommended ? "recommended" : "",
+        selected ? "selected" : ""
+      ].filter(Boolean).join(" ")}
       type="button"
-      onClick={() => onApply(field, option.values ?? [])}
+      aria-pressed={selected}
+      onClick={() => onSelect(index, option.values ?? [])}
       disabled={disabled}
     >
       <span>{option.label}</span>
@@ -285,4 +350,73 @@ function ClarificationOptionButton({
       {option.values?.length ? <em>{option.values.join("、")}</em> : null}
     </button>
   );
+}
+
+function selectedValuesForField(
+  field: string,
+  values: {
+    industry: string;
+    competitors: string;
+    dimensions: string;
+    outputGoal: string;
+    sources: string[];
+    sourceUrls: string;
+  },
+  fallbackValues?: string[]
+) {
+  const selected = (() => {
+    if (field === "industry") return singleValue(values.industry);
+    if (field === "competitors") return splitFieldValues(values.competitors);
+    if (field === "dimensions") return splitFieldValues(values.dimensions);
+    if (field === "sourcePreferences") return values.sources;
+    if (field === "sourceUrls") return splitFieldValues(values.sourceUrls);
+    if (field === "outputGoal") return singleValue(values.outputGoal);
+    return [];
+  })();
+  return selected.length ? selected : fallbackValues ?? [];
+}
+
+function selectedIndexForOptions(options: ClarificationOption[], selectedValues: string[]) {
+  const normalizedSelected = normalizeValues(selectedValues);
+  const exactMatchIndexes = options
+    .map((option, index) => ({ index, values: normalizeValues(option.values ?? []), recommended: option.recommended }))
+    .filter((candidate) => sameNormalizedValues(candidate.values, normalizedSelected));
+  if (exactMatchIndexes.length) {
+    return exactMatchIndexes.find((candidate) => candidate.recommended)?.index ?? exactMatchIndexes[0].index;
+  }
+  const recommendedIndex = options.findIndex((option) => option.recommended);
+  if (recommendedIndex >= 0) return recommendedIndex;
+  return options.length ? 0 : -1;
+}
+
+function clarificationItemSelectionKey(item: ClarificationItem) {
+  return [
+    item.field,
+    item.question,
+    item.options.map((option) => `${option.label}:${normalizeValues(option.values ?? []).join("|")}:${option.recommended}`).join(";")
+  ].join("::");
+}
+
+function sameNormalizedValues(left: string[], right: string[]) {
+  if (left.length !== right.length) return false;
+  return left.every((value, index) => value === right[index]);
+}
+
+function singleValue(value: string) {
+  const trimmed = value.trim();
+  return trimmed ? [trimmed] : [];
+}
+
+function splitFieldValues(value: string) {
+  return value
+    .split(/[\r\n,，、]+/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function normalizeValues(values: string[]) {
+  return values
+    .map((value) => value.trim().toLowerCase())
+    .filter(Boolean)
+    .sort();
 }

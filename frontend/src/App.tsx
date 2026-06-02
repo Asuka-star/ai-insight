@@ -86,6 +86,7 @@ export function App() {
   const [contextText, setContextText] = useState("");
   const [contextIntent, setContextIntent] = useState<ContextIntent>("ADJUST_SCOPE");
   const [contextTargetAgent, setContextTargetAgent] = useState<AgentName>();
+  const [rerunningAgent, setRerunningAgent] = useState<AgentName | null>(null);
   const [evidenceTitle, setEvidenceTitle] = useState("");
   const [evidenceSourceType, setEvidenceSourceType] = useState("note");
   const [evidenceUrl, setEvidenceUrl] = useState("");
@@ -155,6 +156,7 @@ export function App() {
       setSelectedCitationKey(undefined);
       setSelectedClaimId(undefined);
       setSelectedAgent(null);
+      setRerunningAgent(null);
       setMainView("dag");
       setLocalContextMessages([]);
       setEventMessage("历史会话已恢复");
@@ -278,8 +280,9 @@ export function App() {
 
   useEffect(() => {
     if (!run?.id) return;
+    const activeRunId = run.id;
     // SSE 用于驱动演示中的实时回放；失败时保留轮询兜底，避免浏览器或代理不支持事件流时页面停住。
-    const events = new EventSource(`/api/analysis-runs/${run.id}/events`);
+    const events = new EventSource(`/api/analysis-runs/${activeRunId}/events`);
     const eventTypes = [
       "subscribed",
       "run_created",
@@ -293,7 +296,9 @@ export function App() {
       "agent_succeeded",
       "agent_failed",
       "agent_cancelled",
+      "agent_rerun_started",
       "agent_rerun_completed",
+      "agent_rerun_failed",
       "review_rework_started",
       "review_rework_completed",
       "run_cancelled",
@@ -301,16 +306,23 @@ export function App() {
       "run_succeeded",
       "run_failed"
     ];
+    events.addEventListener("run_snapshot", (event) => {
+      const snapshot = safeParseRunSnapshot(event);
+      if (!snapshot || snapshot.id !== activeRunId || !isCurrentWorkspaceRun(snapshot.id)) return;
+      setBackendOk(true);
+      setRun(snapshot);
+      setHistoryRuns((runs) => upsertHistorySummary(runs, summaryFromRun(snapshot)));
+    });
     eventTypes.forEach((type) => {
       events.addEventListener(type, (event) => {
         const data = safeParseEvent(event);
         setEventMessage(data?.message || type);
-        requestRunRefresh(run.id);
+        requestRunRefresh(activeRunId);
       });
     });
     events.onerror = () => setEventMessage("SSE 暂不可用，使用轮询刷新");
     return () => events.close();
-  }, [run?.id, requestRunRefresh]);
+  }, [run?.id]);
 
   useEffect(() => {
     if (!run || !isActiveRun(run)) return;
@@ -483,6 +495,7 @@ export function App() {
     setContextText("");
     setContextIntent("ADJUST_SCOPE");
     setContextTargetAgent(undefined);
+    setRerunningAgent(null);
     setEvidenceTitle("");
     setEvidenceUrl("");
     setEvidenceContent("");
@@ -540,6 +553,7 @@ export function App() {
     setEventMessage("正在生成范围确认内容");
     setArtifactPinned(false);
     setSelectedCitationKey(undefined);
+    setSelectedAgent(null);
     setLocalContextMessages([]);
     try {
       const competitorList = splitList(competitors);
@@ -559,7 +573,6 @@ export function App() {
       if (requestToken !== workspaceRequestTokenRef.current) return;
       setBackendOk(true);
       setRun(nextRun);
-      setSelectedAgent("CLARIFIER");
       requestRunRefresh(nextRun.id);
       removeScopeDraft();
       window.localStorage.setItem(CURRENT_RUN_STORAGE_KEY, nextRun.id);
@@ -603,7 +616,7 @@ export function App() {
     }
   }
 
-  function handleApplyClarificationOption(field: string, values: string[]) {
+  const handleApplyClarificationOption = useCallback((field: string, values: string[]) => {
     const normalizedValues = values.filter((value) => value.trim());
     if (field === "industry") {
       setIndustry(normalizedValues[0] ?? "");
@@ -620,13 +633,13 @@ export function App() {
     }
     setLocalScopeConfirmed(false);
     setEventMessage("已应用澄清选项，请确认范围");
-  }
+  }, []);
 
   async function handleReclarifyScope() {
     if (!run) return;
     const requestToken = ++workspaceRequestTokenRef.current;
     setIsScopeBusy(true);
-    setSelectedAgent("CLARIFIER");
+    setSelectedAgent(null);
     setEventMessage("正在重新澄清范围");
     try {
       const nextRun = await clarifyRequirement(run.id, {
@@ -640,9 +653,6 @@ export function App() {
       });
       if (requestToken !== workspaceRequestTokenRef.current) return;
       setRun(nextRun);
-      if (hasAgentTrace(nextRun, "CLARIFIER")) {
-        setSelectedAgent("CLARIFIER");
-      }
       setLocalScopeConfirmed(Boolean(nextRun.clarificationDraft?.confirmed));
       setEventMessage("范围已重新澄清");
     } catch (error) {
@@ -690,15 +700,25 @@ export function App() {
   }
 
   async function handleSubmitContext() {
-    if (!run || !contextText.trim()) return;
+    if (!run) return;
+    const trimmedContextText = contextText.trim();
+    const rerunTargetAgent = contextIntent === "REQUEST_RERUN" ? contextTargetAgent : undefined;
+    if (contextIntent === "REQUEST_RERUN" && !rerunTargetAgent) return;
+    if (!rerunTargetAgent && !trimmedContextText) return;
     const runId = run.id;
+    if (!trimmedContextText) {
+      if (rerunTargetAgent) {
+        await handleRerun(rerunTargetAgent);
+      }
+      return;
+    }
     // 先乐观展示用户补充，后端写入成功后再以服务端状态为准，保证弱网下交互不显得断档。
     const optimisticMessage: AnalysisContextMessage = {
       id: `local-${Date.now()}`,
       role: "USER",
       intent: contextIntent,
-      content: contextText.trim(),
-      targetAgent: contextTargetAgent,
+      content: trimmedContextText,
+      targetAgent: rerunTargetAgent,
       createdAt: new Date().toISOString()
     };
     setLocalContextMessages((messages) => [optimisticMessage, ...messages]);
@@ -708,11 +728,15 @@ export function App() {
       const nextRun = await addContext(runId, {
         content: optimisticMessage.content,
         intent: contextIntent,
-        targetAgent: contextTargetAgent
+        targetAgent: rerunTargetAgent
       });
       if (!isCurrentWorkspaceRun(runId)) return;
       setRun(nextRun);
       setLocalContextMessages([]);
+      if (rerunTargetAgent) {
+        await handleRerun(rerunTargetAgent);
+        return;
+      }
       setEventMessage("上下文已写入任务");
     } catch (error) {
       if (!isCurrentWorkspaceRun(runId)) return;
@@ -746,8 +770,9 @@ export function App() {
   }
 
   async function handleRerun(agentName: AgentName) {
-    if (!run || runMutationDisabled) return;
+    if (!run || runMutationDisabled || rerunningAgent) return;
     const runId = run.id;
+    setRerunningAgent(agentName);
     setEventMessage(`正在从 ${AGENT_LABELS[agentName]} 继续重跑下游链路`);
     try {
       const nextRun = await rerunAgent(runId, agentName);
@@ -757,6 +782,10 @@ export function App() {
     } catch (error) {
       if (!isCurrentWorkspaceRun(runId)) return;
       setEventMessage(error instanceof Error ? `重跑失败：${error.message}` : "重跑失败");
+    } finally {
+      if (isCurrentWorkspaceRun(runId)) {
+        setRerunningAgent(null);
+      }
     }
   }
 
@@ -800,7 +829,7 @@ export function App() {
     lowFindingCount: run?.reviewFindings.filter((finding) => finding.severity === "LOW").length ?? 0
   };
   const phase = String(resolveRunPhase(run));
-  const runMutationDisabled = !run || ["RUNNING", "REVIEWING", "REVISING", "CANCELLED"].includes(phase);
+  const runMutationDisabled = !run || Boolean(rerunningAgent) || ["RUNNING", "REVIEWING", "REVISING", "CANCELLED"].includes(phase);
   const metricCards = [
     { label: "Agent 步骤", value: runMetrics.agentStepCount, icon: Activity },
     { label: "证据来源", value: runMetrics.evidenceCount, icon: Search },
@@ -1265,12 +1294,16 @@ function safeParseEvent(event: MessageEvent<string>): RunEvent | null {
   }
 }
 
-function isCurrentWorkspaceRun(runId: string) {
-  return window.localStorage.getItem(CURRENT_RUN_STORAGE_KEY) === runId;
+function safeParseRunSnapshot(event: MessageEvent<string>): AnalysisRun | null {
+  try {
+    return JSON.parse(event.data) as AnalysisRun;
+  } catch {
+    return null;
+  }
 }
 
-function hasAgentTrace(run: AnalysisRun, agentName: AgentName) {
-  return (run.traces ?? []).some((trace) => trace.agentName === agentName);
+function isCurrentWorkspaceRun(runId: string) {
+  return window.localStorage.getItem(CURRENT_RUN_STORAGE_KEY) === runId;
 }
 
 function splitLines(value: string) {

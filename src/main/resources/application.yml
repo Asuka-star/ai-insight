@@ -57,6 +57,10 @@ ai-insight:
     dimensions: ${AI_INSIGHT_EMBEDDING_DIMENSIONS:0}
     max-batch-size: ${AI_INSIGHT_EMBEDDING_MAX_BATCH_SIZE:32}
     timeout: ${AI_INSIGHT_EMBEDDING_TIMEOUT:30s}
+    cache-enabled: ${AI_INSIGHT_EMBEDDING_CACHE_ENABLED:true}
+    cache-ttl: ${AI_INSIGHT_EMBEDDING_CACHE_TTL:P90D}
+    cache-cleanup-interval-ms: ${AI_INSIGHT_EMBEDDING_CACHE_CLEANUP_INTERVAL_MS:86400000}
+    cache-cleanup-initial-delay-ms: ${AI_INSIGHT_EMBEDDING_CACHE_CLEANUP_INITIAL_DELAY_MS:600000}
   search:
     tavily:
       api-key: ${TAVILY_API_KEY:}

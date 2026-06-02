@@ -34,6 +34,10 @@ export function ContextPanel({
   onTargetAgentChange,
   onSubmit
 }: ContextPanelProps) {
+  const submitDisabled = intent === "REQUEST_RERUN"
+    ? !targetAgent
+    : !value.trim();
+
   return (
     <section className="panel context-panel">
       <div className="section-title">
@@ -60,7 +64,7 @@ export function ContextPanel({
       <textarea
         value={value}
         onChange={(event) => onValueChange(event.target.value)}
-        placeholder="请输入补充背景、范围调整、证据材料或重跑要求"
+        placeholder={intent === "REQUEST_RERUN" ? "可选：补充这次重跑需要注意的调整说明" : "请输入补充背景、范围调整、证据材料或报告修订要求"}
         rows={4}
       />
 
@@ -78,8 +82,8 @@ export function ContextPanel({
         </label>
       ) : null}
 
-      <button className="primary-button" type="button" onClick={onSubmit} disabled={disabled || !value.trim()}>
-        <SendHorizontal size={15} /> 提交补充
+      <button className="primary-button" type="button" onClick={onSubmit} disabled={disabled || submitDisabled}>
+        <SendHorizontal size={15} /> {intent === "REQUEST_RERUN" ? "重跑 Agent" : "提交补充"}
       </button>
 
       <div className="context-list">

@@ -32,6 +32,7 @@ import static com.aiinsight.util.AgentUtils.nullToEmpty;
 import static com.aiinsight.util.AgentUtils.safeList;
 import static com.aiinsight.util.AgentUtils.textOrDash;
 import static com.aiinsight.util.AgentUtils.textOrDefault;
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -642,9 +643,13 @@ public class ExtractorNode implements AgentNode {
         if (!StringUtils.hasText(raw)) {
             return List.of();
         }
+        String extractedJson = null;
+        JsonNode root = null;
+        JsonNode profilesNode = null;
         try {
-            JsonNode root = objectMapper.readTree(JsonResponseExtractor.extractJsonValue(raw));
-            JsonNode profilesNode = root.has("profiles") ? root.get("profiles") : root;
+            extractedJson = JsonResponseExtractor.extractJsonValue(raw);
+            root = objectMapper.readTree(extractedJson);
+            profilesNode = profilesNode(root);
             List<ProfileDraft> drafts = profileDrafts(profilesNode);
             Map<String, ProfileDraft> draftByName = (drafts == null ? List.<ProfileDraft>of() : drafts).stream()
                     .filter(draft -> StringUtils.hasText(draft.productName))
@@ -653,38 +658,220 @@ public class ExtractorNode implements AgentNode {
                             draft -> draft,
                             (first, ignored) -> first
                     ));
-            return run.getRequirement().getCompetitors().stream()
+            List<CompetitorProfile> profiles = run.getRequirement().getCompetitors().stream()
                     .map(competitor -> {
                         CompetitorProfile fallback = fallbackFor(fallbackProfiles, competitor);
                         ProfileDraft draft = draftByName.get(normalizeLower(competitor));
                         return draft == null ? fallback : toProfile(draft, fallback, run);
                     })
                     .toList();
+            recordExtractorParseSuccess(raw, extractedJson, root, profilesNode, drafts, draftByName.keySet(), run);
+            return profiles;
         } catch (IllegalArgumentException | JsonProcessingException ex) {
-            throw new IllegalStateException("无法解析 Extractor JSON", ex);
+            recordExtractorParseFailure(raw, extractedJson, root, profilesNode, ex, run);
+            throw new IllegalStateException(extractorJsonFailureMessage(raw, ex), ex);
         }
     }
 
-    private List<ProfileDraft> profileDrafts(JsonNode profilesNode) {
+    private JsonNode profilesNode(JsonNode root) {
+        if (root == null || root.isNull() || root.isMissingNode()) {
+            return root;
+        }
+        if (!root.isObject() || looksLikeProfileDraft(root)) {
+            return root;
+        }
+        for (String field : List.of("profiles", "competitorProfiles", "competitors", "products", "items")) {
+            JsonNode direct = root.get(field);
+            if (direct != null && !direct.isNull() && !direct.isMissingNode()) {
+                return direct;
+            }
+        }
+        for (String field : List.of("data", "result", "output")) {
+            JsonNode nested = root.get(field);
+            if (nested != null && !nested.isNull() && !nested.isMissingNode()) {
+                return profilesNode(nested);
+            }
+        }
+        return root;
+    }
+
+    private List<ProfileDraft> profileDrafts(JsonNode profilesNode) throws JsonProcessingException {
+        profilesNode = parseTextualJsonIfNeeded(profilesNode);
         if (profilesNode == null || profilesNode.isNull()) {
             return List.of();
         }
-        if (profilesNode.isObject()) {
-            Map<String, ProfileDraft> draftByKey = objectMapper.convertValue(profilesNode, new TypeReference<>() {
+        if (profilesNode.isArray()) {
+            return objectMapper.convertValue(profilesNode, new TypeReference<>() {
             });
-            return draftByKey.entrySet().stream()
-                    .map(entry -> {
-                        ProfileDraft draft = entry.getValue();
-                        if (draft != null && !StringUtils.hasText(draft.productName)) {
-                            draft.productName = entry.getKey();
-                        }
-                        return draft;
-                    })
-                    .filter(draft -> draft != null)
-                    .toList();
         }
-        return objectMapper.convertValue(profilesNode, new TypeReference<>() {
-        });
+        if (profilesNode.isObject()) {
+            if (looksLikeProfileDraft(profilesNode)) {
+                return List.of(objectMapper.convertValue(profilesNode, ProfileDraft.class));
+            }
+            List<ProfileDraft> drafts = new ArrayList<>();
+            profilesNode.fields().forEachRemaining(entry -> {
+                JsonNode value = entry.getValue();
+                if (value != null && value.isObject() && looksLikeProfileDraft(value)) {
+                    ProfileDraft draft = objectMapper.convertValue(value, ProfileDraft.class);
+                    if (!StringUtils.hasText(draft.productName)) {
+                        draft.productName = entry.getKey();
+                    }
+                    drafts.add(draft);
+                }
+            });
+            if (!drafts.isEmpty()) {
+                return drafts;
+            }
+        }
+        throw new IllegalArgumentException("profiles 字段不是数组、profile 对象或产品名映射");
+    }
+
+    private JsonNode parseTextualJsonIfNeeded(JsonNode node) throws JsonProcessingException {
+        if (node == null || !node.isTextual() || !StringUtils.hasText(node.asText())) {
+            return node;
+        }
+        String text = node.asText().trim();
+        if (!text.startsWith("{") && !text.startsWith("[") && !text.startsWith("```")) {
+            return node;
+        }
+        return objectMapper.readTree(JsonResponseExtractor.extractJsonValue(text));
+    }
+
+    private boolean looksLikeProfileDraft(JsonNode node) {
+        if (node == null || !node.isObject()) {
+            return false;
+        }
+        return node.has("productName")
+                || node.has("companyName")
+                || node.has("positioning")
+                || node.has("targetUsers")
+                || node.has("features")
+                || node.has("pricing")
+                || node.has("personas")
+                || node.has("strengths")
+                || node.has("weaknesses")
+                || node.has("evidenceIds");
+    }
+
+    private String extractorJsonFailureMessage(String raw, Exception ex) {
+        String cause = ex.getClass().getSimpleName() + ": " + textOrDefault(ex.getMessage(), "no message");
+        String preview = abbreviate(compact(raw), 700);
+        return "无法解析 Extractor JSON: cause=" + cause + ", outputPreview=" + preview;
+    }
+
+    private void recordExtractorParseSuccess(String raw,
+                                             String extractedJson,
+                                             JsonNode root,
+                                             JsonNode profilesNode,
+                                             List<ProfileDraft> drafts,
+                                             Set<String> parsedProfileNames,
+                                             AnalysisRun run) {
+        Set<String> requested = run.getRequirement().getCompetitors().stream()
+                .map(competitor -> normalizeLower(competitor))
+                .collect(Collectors.toCollection(LinkedHashSet::new));
+        Set<String> matched = parsedProfileNames.stream()
+                .filter(requested::contains)
+                .collect(Collectors.toCollection(LinkedHashSet::new));
+        AgentTraceContext.recordProcessSummary("""
+                Extractor JSON parse succeeded:
+                - rawChars=%d
+                - extractedJsonChars=%d
+                - rootShape=%s
+                - profilesShape=%s
+                - draftCount=%d
+                - requestedCompetitors=%s
+                - matchedCompetitors=%s
+                """.formatted(
+                raw == null ? 0 : raw.length(),
+                extractedJson == null ? 0 : extractedJson.length(),
+                nodeShape(root),
+                nodeShape(profilesNode),
+                drafts == null ? 0 : drafts.size(),
+                run.getRequirement().getCompetitors(),
+                matched
+        ).trim());
+    }
+
+    private void recordExtractorParseFailure(String raw,
+                                             String extractedJson,
+                                             JsonNode root,
+                                             JsonNode profilesNode,
+                                             Exception ex,
+                                             AnalysisRun run) {
+        String diagnostic = """
+                Extractor JSON parse failed:
+                - runId=%s
+                - exception=%s
+                - rawChars=%d
+                - extractedJsonChars=%d
+                - rootShape=%s
+                - rootFields=%s
+                - profilesShape=%s
+                - profilesFields=%s
+                - requestedCompetitors=%s
+                - rawPreview=%s
+                - extractedJsonPreview=%s
+                """.formatted(
+                run.getId(),
+                exceptionSummary(ex),
+                raw == null ? 0 : raw.length(),
+                extractedJson == null ? 0 : extractedJson.length(),
+                nodeShape(root),
+                objectFieldNames(root),
+                nodeShape(profilesNode),
+                objectFieldNames(profilesNode),
+                run.getRequirement().getCompetitors(),
+                abbreviate(compact(raw), 1000),
+                abbreviate(compact(extractedJson), 1000)
+        ).trim();
+        AgentTraceContext.recordProcessSummary(diagnostic);
+        log.warn("Extractor JSON parse failed: runId={}, exception={}, rawChars={}, extractedJsonChars={}, rootShape={}, profilesShape={}, rootFields={}, profilesFields={}, rawPreview={}, extractedJsonPreview={}",
+                run.getId(),
+                exceptionSummary(ex),
+                raw == null ? 0 : raw.length(),
+                extractedJson == null ? 0 : extractedJson.length(),
+                nodeShape(root),
+                nodeShape(profilesNode),
+                objectFieldNames(root),
+                objectFieldNames(profilesNode),
+                abbreviate(compact(raw), 400),
+                abbreviate(compact(extractedJson), 400));
+    }
+
+    private String nodeShape(JsonNode node) {
+        if (node == null) {
+            return "missing";
+        }
+        if (node.isObject()) {
+            return "object(fields=%d)".formatted(node.size());
+        }
+        if (node.isArray()) {
+            return "array(size=%d)".formatted(node.size());
+        }
+        return node.getNodeType().name().toLowerCase(Locale.ROOT);
+    }
+
+    private String objectFieldNames(JsonNode node) {
+        if (node == null || !node.isObject()) {
+            return "[]";
+        }
+        List<String> names = new ArrayList<>();
+        node.fieldNames().forEachRemaining(names::add);
+        return names.stream().limit(20).toList().toString();
+    }
+
+    private String exceptionSummary(Exception ex) {
+        String message = textOrDefault(ex.getMessage(), "no message");
+        Throwable cause = ex.getCause();
+        if (cause == null) {
+            return ex.getClass().getSimpleName() + ": " + message;
+        }
+        return ex.getClass().getSimpleName() + ": " + message
+                + " | cause=" + cause.getClass().getSimpleName() + ": " + textOrDefault(cause.getMessage(), "no message");
+    }
+
+    private String compact(String value) {
+        return nullToEmpty(value).replaceAll("\\s+", " ").trim();
     }
 
     private CompetitorProfile toProfile(ProfileDraft draft, CompetitorProfile fallback, AnalysisRun run) {
@@ -1026,6 +1213,7 @@ public class ExtractorNode implements AgentNode {
                 "recommend", "should", "opportunity", "risk", "threat", "strategy", "priority");
     }
 
+    @JsonIgnoreProperties(ignoreUnknown = true)
     private static class ProfileDraft {
         public String productName;
         public String companyName;
@@ -1039,12 +1227,14 @@ public class ExtractorNode implements AgentNode {
         public List<String> evidenceIds = List.of();
     }
 
+    @JsonIgnoreProperties(ignoreUnknown = true)
     private static class FeatureDraft {
         public String name;
         public String description;
         public List<String> evidenceIds = List.of();
     }
 
+    @JsonIgnoreProperties(ignoreUnknown = true)
     private static class PricingDraft {
         public String strategySummary;
         public Boolean hasFreePlan;
@@ -1052,6 +1242,7 @@ public class ExtractorNode implements AgentNode {
         public List<String> evidenceIds = List.of();
     }
 
+    @JsonIgnoreProperties(ignoreUnknown = true)
     private static class PricingPlanDraft {
         public String name;
         public String priceText;
@@ -1061,6 +1252,7 @@ public class ExtractorNode implements AgentNode {
         public List<String> evidenceIds = List.of();
     }
 
+    @JsonIgnoreProperties(ignoreUnknown = true)
     private static class PersonaDraft {
         public String name;
         public String segment;

@@ -586,9 +586,34 @@ h3 {
   text-align: left;
 }
 
+.clarification-option:hover:not(:disabled) {
+  border-color: var(--line-strong);
+  background: #ffffff;
+}
+
 .clarification-option.recommended {
-  border-color: rgba(24, 114, 77, 0.35);
-  background: #f0faf4;
+  border-color: rgba(24, 114, 77, 0.24);
+  background: #fbfefd;
+}
+
+.clarification-option.recommended:hover:not(:disabled) {
+  border-color: rgba(24, 114, 77, 0.3);
+  background: #fbfefd;
+}
+
+.clarification-option.selected {
+  border-color: var(--teal);
+  background: #e8f6f5;
+  box-shadow: 0 0 0 2px rgba(5, 119, 125, 0.1);
+}
+
+.clarification-option.selected:hover:not(:disabled) {
+  border-color: var(--teal);
+  background: #e8f6f5;
+}
+
+.clarification-option.selected span {
+  color: var(--teal);
 }
 
 .clarification-option span {

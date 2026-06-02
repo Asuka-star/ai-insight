@@ -2,10 +2,13 @@ package com.aiinsight.repository;
 
 import com.aiinsight.model.run.AnalysisRun;
 import com.aiinsight.dto.AnalysisRunSummary;
+import com.aiinsight.model.run.EmbeddingCacheEntry;
 import com.aiinsight.model.run.EvidenceChunk;
 
+import java.time.Duration;
 import java.util.List;
 import java.util.Collection;
+import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -26,6 +29,19 @@ public interface AnalysisRunRepository {
                                                                    String embeddingModel,
                                                                    int topK) {
         return Optional.empty();
+    }
+
+    default Map<String, EmbeddingCacheEntry> findCachedEmbeddings(Collection<String> inputHashes,
+                                                                 String embeddingModel,
+                                                                 int dimensions) {
+        return Map.of();
+    }
+
+    default void saveCachedEmbedding(EmbeddingCacheEntry entry) {
+    }
+
+    default int deleteExpiredEmbeddingCache(Duration ttl) {
+        return 0;
     }
 
     void deleteById(UUID id);

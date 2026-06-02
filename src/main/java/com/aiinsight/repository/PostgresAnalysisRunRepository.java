@@ -3,8 +3,10 @@ package com.aiinsight.repository;
 import com.aiinsight.dto.AnalysisRunSummary;
 import com.aiinsight.model.enums.AnalysisStatus;
 import com.aiinsight.model.run.AnalysisRun;
+import com.aiinsight.model.run.EmbeddingCacheEntry;
 import com.aiinsight.model.run.EvidenceChunk;
 import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.annotation.PostConstruct;
 import lombok.extern.slf4j.Slf4j;
@@ -19,10 +21,14 @@ import org.springframework.transaction.support.TransactionSynchronizationManager
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Timestamp;
+import java.time.Duration;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.Collection;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.stream.Collectors;
@@ -152,6 +158,23 @@ public class PostgresAnalysisRunRepository implements AnalysisRunRepository {
         jdbcTemplate.execute("""
                 create index if not exists idx_evidence_chunk_run_source
                 on evidence_chunk (run_id, source_citation_key, chunk_index)
+                """);
+        jdbcTemplate.execute("""
+                create table if not exists embedding_cache (
+                    input_hash varchar(128) not null,
+                    embedding_model varchar(128) not null,
+                    dimensions integer not null,
+                    text_hash varchar(128),
+                    embedding_json jsonb not null,
+                    created_at timestamptz not null,
+                    last_used_at timestamptz not null,
+                    usage_count integer not null default 0,
+                    primary key (input_hash, embedding_model, dimensions)
+                )
+                """);
+        jdbcTemplate.execute("""
+                create index if not exists idx_embedding_cache_last_used
+                on embedding_cache (last_used_at desc)
                 """);
         ensureVectorSchema();
         jdbcTemplate.execute("""
@@ -339,6 +362,115 @@ public class PostgresAnalysisRunRepository implements AnalysisRunRepository {
                     ex.getClass().getName(),
                     ex.getMessage());
             return Optional.empty();
+        }
+    }
+
+    @Override
+    public Map<String, EmbeddingCacheEntry> findCachedEmbeddings(Collection<String> inputHashes,
+                                                                String embeddingModel,
+                                                                int dimensions) {
+        if (inputHashes == null || inputHashes.isEmpty()
+                || embeddingModel == null || embeddingModel.isBlank()
+                || dimensions < 0) {
+            return Map.of();
+        }
+        List<String> hashes = inputHashes.stream()
+                .filter(hash -> hash != null && !hash.isBlank())
+                .distinct()
+                .toList();
+        if (hashes.isEmpty()) {
+            return Map.of();
+        }
+        String placeholders = hashes.stream().map(ignored -> "?").collect(Collectors.joining(", "));
+        List<Object> args = new ArrayList<>();
+        args.add(varchar(embeddingModel, 128));
+        args.add(dimensions);
+        args.addAll(hashes);
+        try {
+            Map<String, EmbeddingCacheEntry> entries = new LinkedHashMap<>();
+            jdbcTemplate.query("""
+                            select input_hash, text_hash, embedding_model, dimensions, embedding_json::text,
+                                   created_at, last_used_at, usage_count
+                            from embedding_cache
+                            where embedding_model = ?
+                              and dimensions = ?
+                              and input_hash in (%s)
+                            """.formatted(placeholders),
+                    rs -> {
+                        EmbeddingCacheEntry entry = toEmbeddingCacheEntry(rs);
+                        entries.put(entry.inputHash(), entry);
+                    },
+                    args.toArray()
+            );
+            return entries;
+        } catch (RuntimeException ex) {
+            log.warn("Embedding cache lookup failed; continuing without cache: model={}, dimensions={}, requested={}, exceptionType={}, message={}",
+                    embeddingModel,
+                    dimensions,
+                    hashes.size(),
+                    ex.getClass().getName(),
+                    ex.getMessage());
+            return Map.of();
+        }
+    }
+
+    @Override
+    public void saveCachedEmbedding(EmbeddingCacheEntry entry) {
+        if (entry == null || entry.inputHash() == null || entry.inputHash().isBlank()
+                || entry.embeddingModel() == null || entry.embeddingModel().isBlank()
+                || entry.dimensions() < 0
+                || entry.embedding() == null || entry.embedding().isEmpty()) {
+            return;
+        }
+        Instant now = Instant.now();
+        Instant createdAt = entry.createdAt() == null ? now : entry.createdAt();
+        Instant lastUsedAt = entry.lastUsedAt() == null ? now : entry.lastUsedAt();
+        try {
+            jdbcTemplate.update("""
+                            insert into embedding_cache
+                                (input_hash, embedding_model, dimensions, text_hash, embedding_json,
+                                 created_at, last_used_at, usage_count)
+                            values (?, ?, ?, ?, ?::jsonb, ?, ?, ?)
+                            on conflict (input_hash, embedding_model, dimensions) do update set
+                                text_hash = excluded.text_hash,
+                                embedding_json = excluded.embedding_json,
+                                last_used_at = excluded.last_used_at,
+                                usage_count = embedding_cache.usage_count + 1
+                            """,
+                    varchar(entry.inputHash(), 128),
+                    varchar(entry.embeddingModel(), 128),
+                    entry.dimensions(),
+                    varchar(entry.textHash(), 128),
+                    toJson(entry.embedding()),
+                    Timestamp.from(createdAt),
+                    Timestamp.from(lastUsedAt),
+                    Math.max(1, entry.usageCount())
+            );
+        } catch (RuntimeException ex) {
+            log.warn("Embedding cache write failed; continuing with in-run embedding only: model={}, dimensions={}, inputHash={}, exceptionType={}, message={}",
+                    entry.embeddingModel(),
+                    entry.dimensions(),
+                    entry.inputHash(),
+                    ex.getClass().getName(),
+                    ex.getMessage());
+        }
+    }
+
+    @Override
+    public int deleteExpiredEmbeddingCache(Duration ttl) {
+        if (ttl == null || ttl.isZero() || ttl.isNegative()) {
+            return 0;
+        }
+        Instant cutoff = Instant.now().minus(ttl);
+        try {
+            return jdbcTemplate.update("delete from embedding_cache where last_used_at < ?", Timestamp.from(cutoff));
+        } catch (RuntimeException ex) {
+            log.warn("Embedding cache cleanup failed; continuing without cleanup: ttl={}, cutoff={}, exceptionType={}, message={}",
+                    ttl,
+                    cutoff,
+                    ex.getClass().getName(),
+                    ex.getMessage());
+            return 0;
         }
     }
 
@@ -697,6 +829,28 @@ public class PostgresAnalysisRunRepository implements AnalysisRunRepository {
             return chunk;
         } catch (JsonProcessingException ex) {
             throw new IllegalStateException("Failed to deserialize vector evidence chunk payload", ex);
+        }
+    }
+
+    private EmbeddingCacheEntry toEmbeddingCacheEntry(ResultSet rs) throws SQLException {
+        try {
+            List<Double> embedding = objectMapper.readValue(
+                    rs.getString("embedding_json"),
+                    new TypeReference<>() {
+                    }
+            );
+            return new EmbeddingCacheEntry(
+                    rs.getString("input_hash"),
+                    rs.getString("text_hash"),
+                    rs.getString("embedding_model"),
+                    rs.getInt("dimensions"),
+                    embedding,
+                    timestampValue(rs, "created_at"),
+                    timestampValue(rs, "last_used_at"),
+                    rs.getInt("usage_count")
+            );
+        } catch (JsonProcessingException ex) {
+            throw new IllegalStateException("Failed to deserialize embedding cache payload", ex);
         }
     }
 

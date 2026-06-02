@@ -59,6 +59,11 @@ import java.util.UUID;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -1709,6 +1714,33 @@ class AnalysisWorkflowServiceTest {
     }
 
     @Test
+    void rerunAnalystCanContinueFromFailedRun() {
+        AnalysisWorkflowService service = newService();
+        CreateAnalysisRunRequest request = new CreateAnalysisRunRequest();
+        request.setPrompt("Analyze Notion and Confluence for AI document collaboration.");
+
+        var run = service.start(request);
+        run.setStatus(AnalysisStatus.FAILED);
+        run.setErrorMessage("simulated analyst failure");
+
+        var rerun = service.rerunAgent(run.getId(), AgentName.ANALYST);
+
+        assertThat(rerun.getStatus()).isIn(AnalysisStatus.SUCCEEDED, AnalysisStatus.NEEDS_USER_INPUT);
+        assertThat(rerun.getErrorMessage()).isNull();
+        assertThat(rerun.getSteps().subList(rerun.getSteps().size() - 4, rerun.getSteps().size()))
+                .extracting(step -> step.getAgentName())
+                .containsExactly(
+                        AgentName.ANALYST,
+                        AgentName.WRITER,
+                        AgentName.REVIEWER,
+                        AgentName.FINALIZER
+                );
+        assertThat(rerun.getWorkflowTransitions())
+                .last()
+                .satisfies(transition -> assertThat(transition.getTrigger()).isEqualTo("manual-rerun-from-ANALYST"));
+    }
+
+    @Test
     void rerunAgentIsBlockedWhileWorkflowIsRunning() {
         AnalysisWorkflowService service = newService(new TaskExecutorAdapter(command -> {
         }));
@@ -1721,6 +1753,56 @@ class AnalysisWorkflowServiceTest {
         assertThatThrownBy(() -> service.rerunAgent(run.getId(), AgentName.WRITER))
                 .isInstanceOf(InvalidRunStateException.class)
                 .hasMessageContaining("agent cannot be rerun while workflow is RUNNING");
+    }
+
+    @Test
+    void rerunAgentIsBlockedWhileAnotherManualRerunIsInProgress() throws Exception {
+        AnalysisRunRepository repository = new TestAnalysisRunRepository();
+        AnalysisEventBroker eventBroker = new AnalysisEventBroker();
+        WorkflowNodeExecutor nodeExecutor = new WorkflowNodeExecutor(repository, eventBroker);
+        ClarifierNode clarifierNode = new ClarifierNode(
+                noopLlmClient(),
+                new ObjectMapper(),
+                new FallbackClarificationDraftFactory());
+        AnalysisLangGraphWorkflow graphWorkflow = mock(AnalysisLangGraphWorkflow.class);
+        CountDownLatch rerunStarted = new CountDownLatch(1);
+        CountDownLatch releaseRerun = new CountDownLatch(1);
+        doAnswer(invocation -> {
+            UUID runId = invocation.getArgument(0);
+            rerunStarted.countDown();
+            assertThat(releaseRerun.await(5, TimeUnit.SECONDS)).isTrue();
+            return repository.findById(runId).orElseThrow();
+        }).when(graphWorkflow).rerunAgent(org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any());
+        AnalysisWorkflowService service = new AnalysisWorkflowService(
+                repository,
+                new AnalysisRequestNormalizer(),
+                eventBroker,
+                new TaskExecutorAdapter(Runnable::run),
+                graphWorkflow,
+                nodeExecutor,
+                clarifierNode,
+                new FallbackClarificationDraftFactory(),
+                new EvidenceRetrievalService(),
+                new SourceCollectionService(fetchUsefulPages(), fakeSearchProvider()),
+                new EvidenceChunkService(),
+                EvidenceEmbeddingService.disabled()
+        );
+        AnalysisRun run = new AnalysisRun(new AnalysisRequirement());
+        run.setStatus(AnalysisStatus.SUCCEEDED);
+        repository.save(run);
+
+        ExecutorService executor = Executors.newSingleThreadExecutor();
+        Future<AnalysisRun> firstRerun = executor.submit(() -> service.rerunAgent(run.getId(), AgentName.WRITER));
+        assertThat(rerunStarted.await(5, TimeUnit.SECONDS)).isTrue();
+        assertThat(repository.findById(run.getId()).orElseThrow().getStatus()).isEqualTo(AnalysisStatus.REVISING);
+
+        assertThatThrownBy(() -> service.rerunAgent(run.getId(), AgentName.REVIEWER))
+                .isInstanceOf(InvalidRunStateException.class)
+                .hasMessageContaining("agent cannot be rerun while workflow is REVISING");
+
+        releaseRerun.countDown();
+        assertThat(firstRerun.get(5, TimeUnit.SECONDS).getStatus()).isEqualTo(AnalysisStatus.SUCCEEDED);
+        executor.shutdownNow();
     }
 
     @Test

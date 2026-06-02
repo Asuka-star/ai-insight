@@ -18,4 +18,6 @@ public class EmbeddingProperties {
     private int dimensions = 0;
     private int maxBatchSize = 32;
     private Duration timeout = Duration.ofSeconds(30);
+    private boolean cacheEnabled = true;
+    private Duration cacheTtl = Duration.ofDays(90);
 }

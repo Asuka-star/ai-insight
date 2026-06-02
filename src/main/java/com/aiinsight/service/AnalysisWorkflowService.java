@@ -41,6 +41,8 @@ import java.util.Collection;
 import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.CancellationException;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
 import java.util.regex.Pattern;
 
 @Service
@@ -60,6 +62,7 @@ public class AnalysisWorkflowService {
     private final SourceCollectionService sourceCollectionService;
     private final EvidenceChunkService evidenceChunkService;
     private final EvidenceEmbeddingService evidenceEmbeddingService;
+    private final ConcurrentMap<UUID, AgentName> activeReruns = new ConcurrentHashMap<>();
 
     @Autowired
     public AnalysisWorkflowService(AnalysisRunRepository repository,
@@ -344,11 +347,57 @@ public class AnalysisWorkflowService {
     }
 
     public AnalysisRun rerunAgent(UUID runId, AgentName agentName) {
+        ensureAgentRerunnable(get(runId));
+        AgentName activeAgent = activeReruns.putIfAbsent(runId, agentName);
+        if (activeAgent != null) {
+            throw new InvalidRunStateException(runId, "agent rerun already in progress: " + activeAgent);
+        }
         AnalysisRun current = get(runId);
-        ensureAgentRerunnable(current);
-        AnalysisRun run = graphWorkflow.rerunAgent(runId, agentName);
-        eventBroker.publish(run, "agent_rerun_completed", agentName + " rerun completed");
-        return run;
+        AnalysisStatus previousStatus = current.getStatus();
+        try {
+            ensureAgentRerunnable(current);
+            current.setStatus(AnalysisStatus.REVISING);
+            current.setErrorMessage(null);
+            repository.save(current);
+            eventBroker.publish(current, "agent_rerun_started", agentName + " rerun started");
+
+            AnalysisRun run = graphWorkflow.rerunAgent(runId, agentName);
+            run = repository.findById(runId).orElse(run);
+            if (run.getStatus() == AnalysisStatus.CANCELLED) {
+                eventBroker.publish(run, "run_cancelled", "重跑流程已取消");
+                return run;
+            }
+            run.setStatus(statusAfterManualRerun(run, previousStatus, agentName));
+            repository.save(run);
+            eventBroker.publish(run, "agent_rerun_completed", agentName + " rerun completed");
+            return run;
+        } catch (CancellationException ex) {
+            AnalysisRun run = repository.findById(runId).orElse(current);
+            if (run.getStatus() != AnalysisStatus.CANCELLED) {
+                run.setStatus(AnalysisStatus.CANCELLED);
+                repository.save(run);
+            }
+            eventBroker.publish(run, "run_cancelled", "重跑流程已取消");
+            throw ex;
+        } catch (InvalidRunStateException ex) {
+            throw ex;
+        } catch (RuntimeException ex) {
+            AnalysisRun run = repository.findById(runId).orElse(current);
+            run.setStatus(AnalysisStatus.FAILED);
+            run.setErrorMessage(ex.getMessage());
+            repository.save(run);
+            eventBroker.publish(run, "agent_rerun_failed", ex.getMessage());
+            throw ex;
+        } finally {
+            activeReruns.remove(runId, agentName);
+        }
+    }
+
+    private AnalysisStatus statusAfterManualRerun(AnalysisRun run, AnalysisStatus previousStatus, AgentName agentName) {
+        if (agentName == AgentName.CLARIFIER) {
+            return previousStatus == AnalysisStatus.REVISING ? AnalysisStatus.AWAITING_CONFIRMATION : previousStatus;
+        }
+        return requiresUserInputAfterWorkflow(run) ? AnalysisStatus.NEEDS_USER_INPUT : AnalysisStatus.SUCCEEDED;
     }
 
     private void executePipeline(UUID runId) {
