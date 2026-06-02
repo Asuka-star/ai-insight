@@ -891,12 +891,14 @@ public class ReviewerNode implements AgentNode {
         return run.getEvidenceSources().stream()
                 .filter(source -> citedKeys.contains(source.getCitationKey()) || isWeakSource(source))
                 .limit(10)
-                .map(source -> "[%s] %s | type=%s | status=%s | freshness=%s | %s".formatted(
+                .map(source -> "[%s] %s | type=%s | authority=%s | status=%s | freshness=%s | chunkKinds=%s | %s".formatted(
                         source.getCitationKey(),
                         abbreviate(source.getTitle(), 80),
                         source.getSourceType(),
+                        blankToDash(source.getSourceAuthority()),
                         source.getCollectionStatus(),
                         source.getFreshness(),
+                        chunkKinds(run, source.getCitationKey()),
                         abbreviate(source.getSnippet(), 180)
                 ))
                 .collect(Collectors.joining("\n"));
@@ -931,9 +933,12 @@ public class ReviewerNode implements AgentNode {
                 .map(id -> run.getEvidenceSources().stream()
                         .filter(source -> id.equals(source.getCitationKey()))
                         .findFirst()
-                        .map(source -> "[%s] %s | status=%s | %s".formatted(
+                        .map(source -> "[%s] %s | type=%s | authority=%s | chunkKinds=%s | status=%s | %s".formatted(
                                 source.getCitationKey(),
                                 abbreviate(source.getTitle(), 70),
+                                source.getSourceType(),
+                                blankToDash(source.getSourceAuthority()),
+                                chunkKinds(run, source.getCitationKey()),
                                 source.getCollectionStatus(),
                                 abbreviate(source.getSnippet(), 160)
                         ))
@@ -980,15 +985,17 @@ public class ReviewerNode implements AgentNode {
         }
         return run.getEvidenceSources().stream()
                 .limit(16)
-                .map(source -> "[%s] title=%s | url=%s | type=%s | quality=%s | status=%s | freshness=%s | failure=%s | rawTextChars=%d | note=%s | snippet=%s".formatted(
+                .map(source -> "[%s] title=%s | url=%s | type=%s | authority=%s | quality=%s | status=%s | freshness=%s | failure=%s | chunkKinds=%s | rawTextChars=%d | note=%s | snippet=%s".formatted(
                         source.getCitationKey(),
                         abbreviate(source.getTitle(), 70),
                         abbreviate(source.getUrl(), 90),
                         source.getSourceType(),
+                        blankToDash(source.getSourceAuthority()),
                         source.getSourceQuality(),
                         source.getCollectionStatus(),
                         source.getFreshness(),
                         source.getFailureReason(),
+                        chunkKinds(run, source.getCitationKey()),
                         source.getRawText() == null ? 0 : source.getRawText().length(),
                         abbreviate(source.getComplianceNote(), 100),
                         abbreviate(source.getSnippet(), 140)
@@ -1041,6 +1048,16 @@ public class ReviewerNode implements AgentNode {
         return "FETCH_FAILED".equals(source.getCollectionStatus())
                 || "SEARCH_RESULT_SNIPPET".equals(source.getFreshness())
                 || "search_result_snippet".equals(source.getSourceType());
+    }
+
+    private String chunkKinds(AnalysisRun run, String citationKey) {
+        String kinds = run.getEvidenceChunks().stream()
+                .filter(chunk -> citationKey.equals(chunk.getSourceCitationKey()))
+                .map(chunk -> chunk.getContentKind())
+                .filter(StringUtils::hasText)
+                .distinct()
+                .collect(Collectors.joining(","));
+        return StringUtils.hasText(kinds) ? kinds : "-";
     }
 
     private String blankToDash(String value) {

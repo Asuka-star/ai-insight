@@ -209,6 +209,139 @@ class CitationCoverageEvaluatorTest {
                 });
     }
 
+    @Test
+    void flagsPricingClaimUsingThirdPartyPricingWhenOfficialPricingExists() {
+        AnalysisRun run = new AnalysisRun();
+        EvidenceSource officialPricing = source(
+                "S10",
+                "Cursor Pricing",
+                "https://www.cursor.com/pricing",
+                "pricing_page",
+                "FIRST_PARTY_OFFICIAL",
+                "Cursor Pro pricing is listed on the official pricing page."
+        );
+        EvidenceSource thirdPartyPricing = source(
+                "S11",
+                "Cursor pricing comparison",
+                "https://example-blog.com/cursor-pricing-comparison",
+                "third_party_pricing_reference",
+                "THIRD_PARTY_GENERAL",
+                "Cursor Pro pricing is $20/month according to this comparison."
+        );
+        run.getEvidenceSources().addAll(List.of(officialPricing, thirdPartyPricing));
+        run.getEvidenceChunks().add(chunk("S10-C1", "S10", "pricing", "FIRST_PARTY_OFFICIAL", "Cursor official pricing page lists Pro pricing."));
+        run.getEvidenceChunks().add(chunk("S11-C1", "S11", "pricing", "THIRD_PARTY_GENERAL", "Cursor Pro pricing is $20/month according to this comparison."));
+        AnalysisClaim claim = claim("Cursor Pro pricing is $20/month.", ConfidenceLevel.HIGH, List.of("S11"));
+        run.getClaims().add(claim);
+
+        var findings = evaluator.evaluate("## Report\n\nSummary only.", run);
+
+        assertThat(findings)
+                .anySatisfy(finding -> {
+                    assertThat(finding.getSeverity()).isEqualTo(ReviewSeverity.HIGH);
+                    assertThat(finding.getCategory()).isEqualTo("claim_weak_pricing_source");
+                    assertThat(finding.getClaimId()).isEqualTo(claim.getId());
+                    assertThat(finding.getCitationKey()).isEqualTo("S11");
+                });
+    }
+
+    @Test
+    void acceptsOfficialPricingClaimWithPricingChunk() {
+        AnalysisRun run = new AnalysisRun();
+        EvidenceSource officialPricing = source(
+                "S12",
+                "Cursor Pricing",
+                "https://www.cursor.com/pricing",
+                "pricing_page",
+                "FIRST_PARTY_OFFICIAL",
+                "Cursor Pro pricing is $20/month on the official pricing page."
+        );
+        run.getEvidenceSources().add(officialPricing);
+        run.getEvidenceChunks().add(chunk("S12-C1", "S12", "pricing", "FIRST_PARTY_OFFICIAL", "Cursor Pro pricing is $20/month on the official pricing page."));
+        AnalysisClaim claim = claim("Cursor Pro pricing is $20/month.", ConfidenceLevel.HIGH, List.of("S12"));
+        run.getClaims().add(claim);
+
+        var findings = evaluator.evaluate("## Report\n\nSummary only.", run);
+
+        assertThat(findings)
+                .noneMatch(finding -> "claim_weak_pricing_source".equals(finding.getCategory())
+                        || "claim_missing_pricing_source".equals(finding.getCategory()));
+    }
+
+    @Test
+    void flagsHighConfidenceSecurityClaimBackedOnlyByCommunityEvidence() {
+        AnalysisRun run = new AnalysisRun();
+        EvidenceSource community = source(
+                "S13",
+                "Community security discussion",
+                "https://reddit.com/r/tool/comments/security",
+                "public_review",
+                "COMMUNITY",
+                "Users mention SAML SSO and SCIM in an enterprise security discussion."
+        );
+        run.getEvidenceSources().add(community);
+        run.getEvidenceChunks().add(chunk("S13-C1", "S13", "public_review", "COMMUNITY", "Users mention SAML SSO and SCIM in an enterprise security discussion."));
+        AnalysisClaim claim = claim("Enterprise security supports SAML SSO and SCIM admin controls.", ConfidenceLevel.HIGH, List.of("S13"));
+        run.getClaims().add(claim);
+
+        var findings = evaluator.evaluate("## Report\n\nSummary only.", run);
+
+        assertThat(findings)
+                .anySatisfy(finding -> {
+                    assertThat(finding.getSeverity()).isEqualTo(ReviewSeverity.HIGH);
+                    assertThat(finding.getCategory()).isEqualTo("claim_weak_security_source");
+                    assertThat(finding.getClaimId()).isEqualTo(claim.getId());
+                });
+    }
+
+    @Test
+    void allowsUserSentimentClaimBackedByPublicReview() {
+        AnalysisRun run = new AnalysisRun();
+        EvidenceSource review = source(
+                "S14",
+                "G2 reviews",
+                "https://www.g2.com/products/example/reviews",
+                "public_review",
+                "COMMUNITY",
+                "Users report onboarding friction and slow setup in reviews."
+        );
+        run.getEvidenceSources().add(review);
+        run.getEvidenceChunks().add(chunk("S14-C1", "S14", "public_review", "COMMUNITY", "Users report onboarding friction and slow setup in reviews."));
+        AnalysisClaim claim = claim("Users report onboarding friction in reviews.", ConfidenceLevel.MEDIUM, List.of("S14"));
+        run.getClaims().add(claim);
+
+        var findings = evaluator.evaluate("## Report\n\nSummary only.", run);
+
+        assertThat(findings)
+                .noneMatch(finding -> "claim_missing_sentiment_source".equals(finding.getCategory()));
+    }
+
+    @Test
+    void flagsUserSentimentClaimBackedOnlyByOfficialMarketingPage() {
+        AnalysisRun run = new AnalysisRun();
+        EvidenceSource official = source(
+                "S15",
+                "Vendor product page",
+                "https://vendor.example.com/product",
+                "official_site",
+                "FIRST_PARTY_OFFICIAL",
+                "The vendor says teams onboard quickly with guided setup."
+        );
+        run.getEvidenceSources().add(official);
+        run.getEvidenceChunks().add(chunk("S15-C1", "S15", "general_product", "FIRST_PARTY_OFFICIAL", "The vendor says teams onboard quickly with guided setup."));
+        AnalysisClaim claim = claim("Users report onboarding friction in reviews.", ConfidenceLevel.MEDIUM, List.of("S15"));
+        run.getClaims().add(claim);
+
+        var findings = evaluator.evaluate("## Report\n\nSummary only.", run);
+
+        assertThat(findings)
+                .anySatisfy(finding -> {
+                    assertThat(finding.getCategory()).isEqualTo("claim_missing_sentiment_source");
+                    assertThat(finding.getClaimId()).isEqualTo(claim.getId());
+                    assertThat(finding.getCitationKey()).isEqualTo("S15");
+                });
+    }
+
     private AnalysisRun runWithEvidence() {
         AnalysisRun run = new AnalysisRun();
         run.getEvidenceSources().add(new EvidenceSource(
@@ -264,5 +397,43 @@ class CitationCoverageEvaluatorTest {
         claim.setConfidence(confidence);
         claim.setEvidenceIds(evidenceIds);
         return claim;
+    }
+
+    private EvidenceSource source(String citationKey,
+                                  String title,
+                                  String url,
+                                  String sourceType,
+                                  String authority,
+                                  String text) {
+        EvidenceSource source = new EvidenceSource(
+                citationKey,
+                title,
+                url,
+                sourceType,
+                "FETCHED",
+                "LIVE_FETCHED",
+                "HIGH",
+                "NONE",
+                text,
+                text,
+                "test evidence"
+        );
+        source.setSourceAuthority(authority);
+        return source;
+    }
+
+    private EvidenceChunk chunk(String chunkKey, String sourceCitationKey, String contentKind, String authority, String text) {
+        EvidenceChunk chunk = new EvidenceChunk(
+                chunkKey,
+                sourceCitationKey,
+                1,
+                "Evidence chunk",
+                "https://example.test/evidence",
+                text
+        );
+        chunk.setContentKind(contentKind);
+        chunk.setSourceAuthority(authority);
+        chunk.setSourceQuality("HIGH");
+        return chunk;
     }
 }

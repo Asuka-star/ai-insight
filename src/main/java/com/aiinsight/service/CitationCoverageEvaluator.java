@@ -223,6 +223,24 @@ public class CitationCoverageEvaluator {
                     finding.setExcerpt(claim.getContent());
                     findings.add(finding);
                 }
+                ClaimEvidencePolicyRisk policyRisk = claimEvidencePolicyRisk(
+                        claim,
+                        sourceByCitationKey(run, evidenceId),
+                        evidenceId,
+                        run
+                );
+                if (policyRisk != null) {
+                    ReviewFinding finding = new ReviewFinding(
+                            policyRisk.severity(),
+                            policyRisk.category(),
+                            policyRisk.reason(),
+                            policyRisk.recommendation()
+                    );
+                    finding.setClaimId(claim.getId());
+                    finding.setCitationKey(evidenceId);
+                    finding.setExcerpt(claim.getContent());
+                    findings.add(finding);
+                }
             }
             if (claim.getConfidence() == ConfidenceLevel.HIGH && containsUncertaintyMarker(claim.getContent())) {
                 ReviewFinding finding = new ReviewFinding(
@@ -372,6 +390,156 @@ public class CitationCoverageEvaluator {
         return null;
     }
 
+    private ClaimEvidencePolicyRisk claimEvidencePolicyRisk(AnalysisClaim claim,
+                                                            EvidenceSource source,
+                                                            String evidenceId,
+                                                            AnalysisRun run) {
+        if (claim == null || source == null || !StringUtils.hasText(claim.getContent())) {
+            return null;
+        }
+        String need = claimEvidenceNeed(claim);
+        if ("pricing".equals(need)) {
+            if (strongPricingEvidence(source, evidenceId, run)) {
+                return null;
+            }
+            if (weakPricingEvidence(source, evidenceId, run) && firstPartyPricingEvidenceAvailable(run)) {
+                return new ClaimEvidencePolicyRisk(
+                        claim.getConfidence() == ConfidenceLevel.HIGH ? ReviewSeverity.HIGH : ReviewSeverity.MEDIUM,
+                        "claim_weak_pricing_source",
+                        "Pricing claim cites secondary pricing evidence [" + evidenceId + "] while first-party pricing evidence is available.",
+                        "Use FIRST_PARTY_OFFICIAL pricing_page evidence or a first-party pricing chunk; otherwise downgrade the claim and mark the price as needing verification."
+                );
+            }
+            if (!chunkHasKind(run, evidenceId, "pricing") && !sourceTypeIs(source, "pricing_page")) {
+                return new ClaimEvidencePolicyRisk(
+                        ReviewSeverity.MEDIUM,
+                        "claim_missing_pricing_source",
+                        "Pricing claim cites evidence [" + evidenceId + "] that is not marked as pricing content.",
+                        "Bind this claim to pricing_page/pricing chunks, or rewrite it as an unverified pricing assumption."
+                );
+            }
+            return null;
+        }
+        if ("security".equals(need)) {
+            if (strongSecurityEvidence(source, evidenceId, run)) {
+                return null;
+            }
+            return new ClaimEvidencePolicyRisk(
+                    claim.getConfidence() == ConfidenceLevel.HIGH ? ReviewSeverity.HIGH : ReviewSeverity.MEDIUM,
+                    "claim_weak_security_source",
+                    "Security or permission claim cites evidence [" + evidenceId + "] without first-party docs, security docs, or security/permission chunks.",
+                    "Use official security_docs/product_docs/official_site evidence or first-party security/permission chunks; otherwise reduce confidence."
+            );
+        }
+        if ("sentiment".equals(need)) {
+            if (sentimentEvidence(source, evidenceId, run)) {
+                return null;
+            }
+            return new ClaimEvidencePolicyRisk(
+                    ReviewSeverity.MEDIUM,
+                    "claim_missing_sentiment_source",
+                    "User sentiment claim cites evidence [" + evidenceId + "] that is not a review, community, interview, survey, or user-provided source.",
+                    "Use public_review/community_discussion/user_interview/user_survey evidence, or rewrite the statement as vendor positioning instead of user sentiment."
+            );
+        }
+        return null;
+    }
+
+    private String claimEvidenceNeed(AnalysisClaim claim) {
+        String text = normalizeLower("%s %s".formatted(claim.getType(), claim.getContent()));
+        if (containsAny(text,
+                "pricing", "price", "plan", "billing", "cost", "$", "free plan", "enterprise plan",
+                "\u4ef7\u683c", "\u5b9a\u4ef7", "\u5957\u9910", "\u4ed8\u8d39", "\u514d\u8d39\u7248", "\u5546\u4e1a\u6a21\u5f0f")) {
+            return "pricing";
+        }
+        if (containsAny(text,
+                "security", "permission", "permissions", "compliance", "privacy", "saml", "sso", "scim", "rbac", "admin", "audit log",
+                "\u5b89\u5168", "\u6743\u9650", "\u5408\u89c4", "\u9690\u79c1", "\u7ba1\u7406\u5458", "\u89d2\u8272", "\u5ba1\u8ba1")) {
+            return "security";
+        }
+        if (containsAny(text,
+                "user review", "users report", "users complain", "customer feedback", "sentiment", "reviews", "complain", "complaint",
+                "\u7528\u6237\u53cd\u9988", "\u7528\u6237\u8bc4\u4ef7", "\u53e3\u7891", "\u5410\u69fd", "\u62b1\u6028", "\u8bc4\u8bba")) {
+            return "sentiment";
+        }
+        return "";
+    }
+
+    private boolean strongPricingEvidence(EvidenceSource source, String evidenceId, AnalysisRun run) {
+        String authority = normalizeUpper(source.getSourceAuthority());
+        if (sourceTypeIs(source, "pricing_page") && !weakAuthority(authority)) {
+            return true;
+        }
+        return chunkHasKind(run, evidenceId, "pricing")
+                && (firstPartyAuthority(authority) || !StringUtils.hasText(authority) || "UNKNOWN".equals(authority));
+    }
+
+    private boolean weakPricingEvidence(EvidenceSource source, String evidenceId, AnalysisRun run) {
+        return sourceTypeIs(source, "third_party_pricing_reference")
+                || sourceTypeIs(source, "pricing_reference")
+                || weakAuthority(normalizeUpper(source.getSourceAuthority()))
+                || (chunkHasKind(run, evidenceId, "pricing") && !strongPricingEvidence(source, evidenceId, run));
+    }
+
+    private boolean firstPartyPricingEvidenceAvailable(AnalysisRun run) {
+        return run.getEvidenceSources().stream()
+                .anyMatch(source -> strongPricingEvidence(source, source.getCitationKey(), run));
+    }
+
+    private boolean strongSecurityEvidence(EvidenceSource source, String evidenceId, AnalysisRun run) {
+        String authority = normalizeUpper(source.getSourceAuthority());
+        boolean securityKind = chunkHasKind(run, evidenceId, "security") || chunkHasKind(run, evidenceId, "permission");
+        boolean officialSecurityType = sourceTypeIs(source, "security_docs")
+                || sourceTypeIs(source, "docs")
+                || sourceTypeIs(source, "product_docs")
+                || sourceTypeIs(source, "official_site");
+        if (securityKind && (firstPartyAuthority(authority) || !StringUtils.hasText(authority) || "UNKNOWN".equals(authority))) {
+            return true;
+        }
+        return officialSecurityType && !weakAuthority(authority);
+    }
+
+    private boolean sentimentEvidence(EvidenceSource source, String evidenceId, AnalysisRun run) {
+        String authority = normalizeUpper(source.getSourceAuthority());
+        return sourceTypeIs(source, "public_review")
+                || sourceTypeIs(source, "public_reviews")
+                || sourceTypeIs(source, "community_discussion")
+                || sourceTypeIs(source, "user_interview")
+                || sourceTypeIs(source, "user_survey")
+                || sourceTypeIs(source, "user_note")
+                || "COMMUNITY".equals(authority)
+                || "USER_PROVIDED".equals(authority)
+                || "INTERNAL_ONLY".equals(authority)
+                || chunkHasKind(run, evidenceId, "public_review");
+    }
+
+    private boolean chunkHasKind(AnalysisRun run, String evidenceId, String expectedKind) {
+        return run.getEvidenceChunks().stream()
+                .filter(chunk -> evidenceId.equals(chunk.getSourceCitationKey()))
+                .map(EvidenceChunk::getContentKind)
+                .filter(StringUtils::hasText)
+                .map(this::normalizeLower)
+                .anyMatch(kind -> expectedKind.equals(kind));
+    }
+
+    private boolean sourceTypeIs(EvidenceSource source, String expectedType) {
+        return expectedType.equals(normalizeLower(source.getSourceType()));
+    }
+
+    private boolean firstPartyAuthority(String authority) {
+        return "FIRST_PARTY_OFFICIAL".equals(authority)
+                || "FIRST_PARTY_DOCS".equals(authority)
+                || "FIRST_PARTY_BLOG".equals(authority)
+                || "USER_PROVIDED".equals(authority)
+                || "INTERNAL_ONLY".equals(authority);
+    }
+
+    private boolean weakAuthority(String authority) {
+        return "THIRD_PARTY_GENERAL".equals(authority)
+                || "COMMUNITY".equals(authority)
+                || "SEARCH_SNIPPET".equals(authority);
+    }
+
     private boolean likelyMarketingOnlySource(EvidenceSource source) {
         String searchable = String.join(" ",
                 nullToEmpty(source.getTitle()),
@@ -396,6 +564,14 @@ public class CitationCoverageEvaluator {
 
     private String normalize(String text) {
         return text == null ? "" : text.trim();
+    }
+
+    private String normalizeLower(String text) {
+        return text == null ? "" : text.trim().toLowerCase(Locale.ROOT);
+    }
+
+    private String normalizeUpper(String text) {
+        return text == null ? "" : text.trim().toUpperCase(Locale.ROOT);
     }
 
     private boolean containsAny(String text, String... patterns) {
@@ -439,5 +615,11 @@ public class CitationCoverageEvaluator {
                                      String category,
                                      String reason,
                                      String recommendation) {
+    }
+
+    private record ClaimEvidencePolicyRisk(ReviewSeverity severity,
+                                           String category,
+                                           String reason,
+                                           String recommendation) {
     }
 }
