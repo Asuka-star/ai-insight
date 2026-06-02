@@ -2,7 +2,11 @@ package com.aiinsight.model.run;
 
 import com.aiinsight.model.enums.ClaimType;
 import com.aiinsight.model.schema.AnalysisClaim;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
+
+import java.time.Instant;
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -39,5 +43,27 @@ class AnalysisRunSchemaTest {
 
         assertThat(claim.getId()).startsWith("C-");
         assertThat(claim.getEvidenceIds()).containsExactly("S1");
+    }
+
+    @Test
+    void evidenceChunkJsonKeepsEmbeddingMetadataWithoutLargeVector() throws Exception {
+        EvidenceChunk chunk = new EvidenceChunk(
+                "S1-C1",
+                "S1",
+                1,
+                "Pricing",
+                "https://example.test/pricing",
+                "Pricing evidence"
+        );
+        chunk.setEmbedding(List.of(0.1, 0.2, 0.3));
+        chunk.setEmbeddingModel("test-embedding-model");
+        chunk.setEmbeddedAt(Instant.parse("2026-06-02T08:00:00Z"));
+
+        String json = new ObjectMapper().findAndRegisterModules().writeValueAsString(chunk);
+
+        assertThat(json).contains("\"embeddingModel\":\"test-embedding-model\"");
+        assertThat(json).contains("\"embeddedAt\":");
+        assertThat(json).doesNotContain("\"embedding\"");
+        assertThat(json).doesNotContain("0.1");
     }
 }

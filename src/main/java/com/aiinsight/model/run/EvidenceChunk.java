@@ -1,5 +1,6 @@
 package com.aiinsight.model.run;
 
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
 import lombok.Setter;
@@ -27,6 +28,7 @@ public class EvidenceChunk {
     private String textHash;
     private String embeddingModel;
     private Instant embeddedAt;
+    @JsonIgnore
     private List<Double> embedding = List.of();
     private String text;
     private double score;
