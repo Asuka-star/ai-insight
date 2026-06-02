@@ -7,6 +7,7 @@ import com.aiinsight.model.run.AnalysisRun;
 import com.aiinsight.model.run.EvidenceChunk;
 import com.aiinsight.model.run.EvidenceSource;
 import com.aiinsight.model.schema.AnalysisClaim;
+import com.aiinsight.model.schema.ExtractedFact;
 import org.springframework.stereotype.Component;
 import org.springframework.util.StringUtils;
 
@@ -14,6 +15,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Set;
 import java.util.regex.Pattern;
 import java.util.regex.Matcher;
@@ -167,6 +169,7 @@ public class CitationCoverageEvaluator {
         Set<String> known = run.getEvidenceSources().stream()
                 .map(EvidenceSource::getCitationKey)
                 .collect(Collectors.toCollection(LinkedHashSet::new));
+        findings.addAll(validateExtractedFacts(run, known));
         for (AnalysisClaim claim : run.getClaims()) {
             if (claim == null || !StringUtils.hasText(claim.getContent())) {
                 continue;
@@ -242,6 +245,7 @@ public class CitationCoverageEvaluator {
                     findings.add(finding);
                 }
             }
+            findings.addAll(validateClaimFacts(run, claim, known));
             if (claim.getConfidence() == ConfidenceLevel.HIGH && containsUncertaintyMarker(claim.getContent())) {
                 ReviewFinding finding = new ReviewFinding(
                         ReviewSeverity.LOW,
@@ -255,6 +259,223 @@ public class CitationCoverageEvaluator {
             }
         }
         return findings;
+    }
+
+    private List<ReviewFinding> validateExtractedFacts(AnalysisRun run, Set<String> knownEvidenceIds) {
+        List<ReviewFinding> findings = new ArrayList<>();
+        Map<String, String> claimIdByFactId = claimIdByFactId(run);
+        Set<String> knownChunkKeys = run.getEvidenceChunks().stream()
+                .map(EvidenceChunk::getChunkKey)
+                .filter(StringUtils::hasText)
+                .collect(Collectors.toCollection(LinkedHashSet::new));
+        int weakUnsupportedFactFindings = 0;
+        for (ExtractedFact fact : factsById(run).values()) {
+            List<String> factEvidenceIds = fact.getEvidenceIds() == null ? List.of() : fact.getEvidenceIds();
+            String claimId = claimIdByFactId.get(fact.getId());
+            if (factEvidenceIds.isEmpty()) {
+                findings.add(factFinding(
+                        ReviewSeverity.HIGH,
+                        "fact_missing_evidence",
+                        "Extracted fact has no evidenceIds: " + fact.getId(),
+                        "Rerun Extractor and only emit facts that carry evidenceIds/chunkKeys, or move the item to unknowns.",
+                        claimId,
+                        fact,
+                        null
+                ));
+                continue;
+            }
+            for (String chunkKey : fact.getChunkKeys() == null ? List.<String>of() : fact.getChunkKeys()) {
+                if (StringUtils.hasText(chunkKey) && !knownChunkKeys.contains(chunkKey)) {
+                    ReviewFinding finding = factFinding(
+                            ReviewSeverity.MEDIUM,
+                            "fact_unknown_chunk",
+                            "Extracted fact references an unknown evidence chunk key: " + chunkKey,
+                            "Rerun Extractor after chunking, or remove stale chunkKeys from the fact binding.",
+                            claimId,
+                            fact,
+                            null
+                    );
+                    finding.setChunkKey(chunkKey);
+                    findings.add(finding);
+                }
+            }
+            for (String evidenceId : factEvidenceIds) {
+                if (!knownEvidenceIds.contains(evidenceId)) {
+                    findings.add(factFinding(
+                            ReviewSeverity.HIGH,
+                            "fact_unknown_evidence",
+                            "Extracted fact references an unknown evidence id: [" + evidenceId + "]",
+                            "Rerun Extractor and bind the fact to existing evidence, or drop the unsupported fact.",
+                            claimId,
+                            fact,
+                            evidenceId
+                    ));
+                    continue;
+                }
+                if (StringUtils.hasText(fact.getValue()) && !citationSupportsParagraph(fact.getValue(), evidenceId, run)) {
+                    ReviewSeverity severity = shouldBlockUnsupportedFact(fact)
+                            ? ReviewSeverity.HIGH
+                            : ReviewSeverity.MEDIUM;
+                    if (severity == ReviewSeverity.HIGH || weakUnsupportedFactFindings < 6) {
+                        findings.add(factFinding(
+                                severity,
+                                "fact_unsupported_by_evidence",
+                                "Extracted fact value is not supported by its evidence [" + evidenceId + "]: " + abbreviate(fact.getValue()),
+                                "Rerun Extractor to correct the fact value/evidence binding, or move the unsupported field to unknowns.",
+                                claimId,
+                                fact,
+                                evidenceId
+                        ));
+                    }
+                    if (severity != ReviewSeverity.HIGH) {
+                        weakUnsupportedFactFindings++;
+                    }
+                }
+            }
+        }
+        return findings;
+    }
+
+    private Map<String, String> claimIdByFactId(AnalysisRun run) {
+        return run.getClaims().stream()
+                .filter(claim -> claim != null && StringUtils.hasText(claim.getId()))
+                .flatMap(claim -> (claim.getFactIds() == null ? List.<String>of() : claim.getFactIds()).stream()
+                        .filter(StringUtils::hasText)
+                        .map(factId -> Map.entry(factId, claim.getId())))
+                .collect(Collectors.toMap(
+                        Map.Entry::getKey,
+                        Map.Entry::getValue,
+                        (first, ignored) -> first
+                ));
+    }
+
+    private List<ReviewFinding> validateClaimFacts(AnalysisRun run, AnalysisClaim claim, Set<String> knownEvidenceIds) {
+        List<ReviewFinding> findings = new ArrayList<>();
+        Map<String, ExtractedFact> factsById = factsById(run);
+        List<String> factIds = claim.getFactIds() == null ? List.of() : claim.getFactIds();
+        if (factIds.isEmpty()) {
+            if (!factsById.isEmpty()
+                    && claim.getConfidence() != ConfidenceLevel.LOW
+                    && !containsUncertaintyMarker(claim.getContent())) {
+                ReviewFinding finding = new ReviewFinding(
+                        ReviewSeverity.MEDIUM,
+                        "claim_missing_fact_binding",
+                        "Structured claim is backed by evidenceIds but not by extracted factIds: " + abbreviate(claim.getContent()),
+                        "Bind the claim to relevant ExtractedFact ids, or keep the claim tentative if no extracted fact supports it."
+                );
+                finding.setClaimId(claim.getId());
+                finding.setExcerpt(claim.getContent());
+                findings.add(finding);
+            }
+            return findings;
+        }
+
+        List<ExtractedFact> boundFacts = new ArrayList<>();
+        for (String factId : factIds) {
+            ExtractedFact fact = factsById.get(factId);
+            if (fact == null) {
+                ReviewFinding finding = new ReviewFinding(
+                        ReviewSeverity.HIGH,
+                        "claim_unknown_fact",
+                        "Structured claim references an unknown extracted fact id: " + factId,
+                        "Remove the stale factId or rerun Analyst after Extractor regenerates the fact layer."
+                );
+                finding.setClaimId(claim.getId());
+                finding.setFactId(factId);
+                finding.setExcerpt(claim.getContent());
+                findings.add(finding);
+                continue;
+            }
+            boundFacts.add(fact);
+        }
+
+        if (claim.getConfidence() == ConfidenceLevel.HIGH && !claimSupportedByFacts(claim, boundFacts)) {
+            ReviewFinding finding = new ReviewFinding(
+                    ReviewSeverity.HIGH,
+                    "claim_fact_mismatch",
+                    "High-confidence claim over-interprets or does not align with its bound extracted facts: " + abbreviate(claim.getContent()),
+                    "Rerun Analyst to rewrite the claim from bound facts, bind more relevant facts, or downgrade confidence."
+            );
+            finding.setClaimId(claim.getId());
+            finding.setExcerpt(claim.getContent());
+            findings.add(finding);
+        }
+        return findings;
+    }
+
+    private Map<String, ExtractedFact> factsById(AnalysisRun run) {
+        return run.getCompetitorFactSets().stream()
+                .filter(factSet -> factSet != null && factSet.getFacts() != null)
+                .flatMap(factSet -> factSet.getFacts().stream())
+                .filter(fact -> fact != null)
+                .filter(fact -> StringUtils.hasText(fact.getId()))
+                .collect(Collectors.toMap(
+                        ExtractedFact::getId,
+                        fact -> fact,
+                        (left, right) -> left
+                ));
+    }
+
+    private ReviewFinding factFinding(ReviewSeverity severity,
+                                      String category,
+                                      String message,
+                                      String recommendation,
+                                      String claimId,
+                                      ExtractedFact fact,
+                                      String evidenceId) {
+        ReviewFinding finding = new ReviewFinding(severity, category, message, recommendation);
+        finding.setClaimId(claimId);
+        finding.setFactId(fact.getId());
+        finding.setCitationKey(evidenceId);
+        finding.setExcerpt(fact.getValue());
+        if (fact.getChunkKeys() != null && !fact.getChunkKeys().isEmpty()) {
+            finding.setChunkKey(fact.getChunkKeys().get(0));
+        }
+        return finding;
+    }
+
+    private boolean claimSupportedByFacts(AnalysisClaim claim, List<ExtractedFact> facts) {
+        if (facts.isEmpty()) {
+            return true;
+        }
+        Set<String> claimTerms = terms(claim.getContent());
+        if (claimTerms.isEmpty()) {
+            return true;
+        }
+        String factText = facts.stream()
+                .map(fact -> "%s %s %s %s".formatted(
+                        fact.getCompetitorName(),
+                        fact.getFactType(),
+                        fact.getAttribute(),
+                        fact.getValue()
+                ))
+                .collect(Collectors.joining(" "));
+        Set<String> factTerms = terms(factText);
+        long overlap = claimTerms.stream().filter(factTerms::contains).count();
+        return overlap >= Math.min(2, claimTerms.size());
+    }
+
+    private boolean shouldBlockUnsupportedFact(ExtractedFact fact) {
+        if (fact == null) {
+            return false;
+        }
+        String confidence = normalizeUpper(fact.getExtractionConfidence());
+        if (!"HIGH".equals(confidence)) {
+            return false;
+        }
+        String attribute = normalizeLower(fact.getAttribute());
+        if (Set.of(
+                "positioning",
+                "target_user",
+                "observed_advantage",
+                "observed_limitation",
+                "persona",
+                "feature",
+                "pricing_strategy"
+        ).contains(attribute)) {
+            return false;
+        }
+        return fact.getValue() != null && fact.getValue().length() <= 220;
     }
 
     private boolean citationSupportsParagraph(String paragraph, String citationKey, AnalysisRun run) {

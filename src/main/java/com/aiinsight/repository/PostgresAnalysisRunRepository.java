@@ -165,9 +165,19 @@ public class PostgresAnalysisRunRepository implements AnalysisRunRepository {
                     finding_payload jsonb not null
                 )
                 """);
+        jdbcTemplate.execute("alter table review_finding add column if not exists fact_id text");
+        jdbcTemplate.execute("alter table review_finding add column if not exists chunk_key varchar(128)");
         jdbcTemplate.execute("""
                 create index if not exists idx_review_finding_run_category
                 on review_finding (run_id, category, severity)
+                """);
+        jdbcTemplate.execute("""
+                create index if not exists idx_review_finding_run_fact
+                on review_finding (run_id, fact_id)
+                """);
+        jdbcTemplate.execute("""
+                create index if not exists idx_review_finding_run_chunk
+                on review_finding (run_id, chunk_key)
                 """);
     }
 
@@ -574,9 +584,9 @@ public class PostgresAnalysisRunRepository implements AnalysisRunRepository {
         for (var finding : run.getReviewFindings()) {
             jdbcTemplate.update("""
                             insert into review_finding
-                                (id, run_id, severity, category, artifact_id, claim_id, citation_key,
-                                 paragraph_index, finding_payload)
-                            values (?, ?, ?, ?, ?, ?, ?, ?, ?::jsonb)
+                                (id, run_id, severity, category, artifact_id, claim_id, fact_id, chunk_key,
+                                 citation_key, paragraph_index, finding_payload)
+                            values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?::jsonb)
                             """,
                     finding.getId(),
                     run.getId(),
@@ -584,6 +594,8 @@ public class PostgresAnalysisRunRepository implements AnalysisRunRepository {
                     varchar(finding.getCategory(), 128),
                     finding.getArtifactId(),
                     finding.getClaimId(),
+                    finding.getFactId(),
+                    varchar(finding.getChunkKey(), 128),
                     varchar(finding.getCitationKey(), 32),
                     finding.getParagraphIndex(),
                     toJson(finding)

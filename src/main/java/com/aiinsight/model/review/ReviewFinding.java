@@ -19,6 +19,8 @@ public class ReviewFinding {
     private String recommendation;
     private UUID artifactId;
     private String claimId;
+    private String factId;
+    private String chunkKey;
     private String citationKey;
     private Integer paragraphIndex;
     private String excerpt;

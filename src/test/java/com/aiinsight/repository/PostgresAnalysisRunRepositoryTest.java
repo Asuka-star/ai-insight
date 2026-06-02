@@ -69,13 +69,15 @@ class PostgresAnalysisRunRepositoryTest {
                 "recommendation"
         );
         finding.setCitationKey("S" + "3".repeat(64));
+        finding.setFactId("F" + "4".repeat(180));
+        finding.setChunkKey("S4-C" + "5".repeat(180));
         run.getReviewFindings().add(finding);
 
         repository.save(run);
 
         assertProjectionArgLengths(jdbcTemplate, "insert into evidence_source", 2, 32, 5, 64, 6, 64, 7, 64);
         assertProjectionArgLengths(jdbcTemplate, "insert into evidence_chunk", 2, 128, 3, 32);
-        assertProjectionArgLengths(jdbcTemplate, "insert into review_finding", 3, 128, 6, 32);
+        assertProjectionArgLengths(jdbcTemplate, "insert into review_finding", 3, 128, 7, 128, 8, 32);
     }
 
     @Test

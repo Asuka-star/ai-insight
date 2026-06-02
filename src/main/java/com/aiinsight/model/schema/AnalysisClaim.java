@@ -22,5 +22,7 @@ public class AnalysisClaim {
     private ConfidenceLevel confidence = ConfidenceLevel.MEDIUM;
     private String generatedBy;
     private List<String> competitorNames = new ArrayList<>();
+    private List<String> factIds = new ArrayList<>();
     private List<String> evidenceIds = new ArrayList<>();
+    private List<String> chunkKeys = new ArrayList<>();
 }

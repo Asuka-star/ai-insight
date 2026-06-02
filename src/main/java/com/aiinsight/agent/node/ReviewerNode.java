@@ -163,6 +163,14 @@ public class ReviewerNode implements AgentNode {
             hasLocator = true;
             matchedLocator = task.getClaimId().equals(finding.getClaimId());
         }
+        if (StringUtils.hasText(task.getFactId())) {
+            hasLocator = true;
+            matchedLocator = matchedLocator || task.getFactId().equals(finding.getFactId());
+        }
+        if (StringUtils.hasText(task.getChunkKey())) {
+            hasLocator = true;
+            matchedLocator = matchedLocator || task.getChunkKey().equals(finding.getChunkKey());
+        }
         if (StringUtils.hasText(task.getCitationKey())) {
             hasLocator = true;
             matchedLocator = matchedLocator || task.getCitationKey().equals(finding.getCitationKey());
@@ -255,7 +263,10 @@ public class ReviewerNode implements AgentNode {
 
     private List<String> repairInstructions(ReviewDecision decision, List<ReviewFinding> blockingFindings) {
         List<String> instructions = new java.util.ArrayList<>();
-        if (decision.getAction() == ReviewAction.RECOLLECT_EVIDENCE) {
+        if (isExtractorFactRepair(decision)) {
+            instructions.add("Extractor should repair only affected extracted facts and fact-to-evidence bindings.");
+            instructions.add("Unsupported values must be corrected, rebound to supporting chunks, or moved to unknowns.");
+        } else if (decision.getAction() == ReviewAction.RECOLLECT_EVIDENCE) {
             String evidenceTypes = decision.getRequiredEvidenceTypes().isEmpty()
                     ? "Reviewer 指出的缺口类型"
                     : String.join("、", decision.getRequiredEvidenceTypes());
@@ -287,6 +298,8 @@ public class ReviewerNode implements AgentNode {
         task.setFindingId(finding.getId() == null ? null : finding.getId().toString());
         task.setArtifactId(finding.getArtifactId());
         task.setClaimId(finding.getClaimId());
+        task.setFactId(finding.getFactId());
+        task.setChunkKey(finding.getChunkKey());
         task.setCitationKey(finding.getCitationKey());
         task.setParagraphIndex(finding.getParagraphIndex());
         task.setExcerpt(finding.getExcerpt());
@@ -294,9 +307,9 @@ public class ReviewerNode implements AgentNode {
         task.setCategory(finding.getCategory());
         task.setRequiredEvidenceTypes(decision.getRequiredEvidenceTypes());
         task.setAction(repairAction(decision));
-        task.setInstruction(repairTaskInstruction(decision, finding));
-        task.setExpectedFix(repairExpectedFix(decision, finding));
-        task.setAcceptanceCriteria(repairAcceptanceCriteria(decision, finding));
+        task.setInstruction(targetedRepairTaskInstruction(decision, finding));
+        task.setExpectedFix(targetedRepairExpectedFix(decision, finding));
+        task.setAcceptanceCriteria(targetedRepairAcceptanceCriteria(decision, finding));
         return task;
     }
 
@@ -305,12 +318,61 @@ public class ReviewerNode implements AgentNode {
             return "COLLECT_TARGETED_EVIDENCE";
         }
         if (decision.getAction() == ReviewAction.REWORK_ANALYSIS) {
+            if (decision.getTargetAgent() == AgentName.EXTRACTOR) {
+                return "REPAIR_FACT_EXTRACTION";
+            }
             return "REPAIR_CLAIM_EVIDENCE";
         }
         if (decision.getAction() == ReviewAction.REVISE_REPORT) {
             return "REVISE_REPORT_CITATION";
         }
         return "MANUAL_REVIEW";
+    }
+
+    private String targetedRepairTaskInstruction(ReviewDecision decision, ReviewFinding finding) {
+        if (isExtractorFactRepair(decision)) {
+            return "Fix " + repairLocation(finding) + " in extracted facts or fact-to-evidence bindings: "
+                    + finding.getRecommendation();
+        }
+        return repairTaskInstruction(decision, finding);
+    }
+
+    private String targetedRepairExpectedFix(ReviewDecision decision, ReviewFinding finding) {
+        if (isExtractorFactRepair(decision)) {
+            return "Regenerate only the affected facts with valid evidenceIds/chunkKeys; unsupported values should be corrected or moved to unknowns.";
+        }
+        return repairExpectedFix(decision, finding);
+    }
+
+    private String targetedRepairAcceptanceCriteria(ReviewDecision decision, ReviewFinding finding) {
+        if (isExtractorFactRepair(decision)) {
+            return "Affected facts must either cite existing evidence/chunks that support the value, or be removed from facts and recorded as unknowns.";
+        }
+        return repairAcceptanceCriteria(decision, finding);
+    }
+
+    private boolean isExtractorFactRepair(ReviewDecision decision) {
+        return decision.getAction() == ReviewAction.REWORK_ANALYSIS
+                && decision.getTargetAgent() == AgentName.EXTRACTOR;
+    }
+
+    private String repairLocation(ReviewFinding finding) {
+        if (StringUtils.hasText(finding.getFactId())) {
+            return "fact=" + finding.getFactId();
+        }
+        if (StringUtils.hasText(finding.getChunkKey())) {
+            return "chunk=" + finding.getChunkKey();
+        }
+        if (StringUtils.hasText(finding.getClaimId())) {
+            return "claim=" + finding.getClaimId();
+        }
+        if (StringUtils.hasText(finding.getCitationKey())) {
+            return "citation=" + finding.getCitationKey();
+        }
+        if (finding.getParagraphIndex() != null) {
+            return "paragraph=" + finding.getParagraphIndex();
+        }
+        return "unscoped finding";
     }
 
     private String repairCurrentText(AnalysisRun run, ReviewFinding finding) {
@@ -328,7 +390,9 @@ public class ReviewerNode implements AgentNode {
     }
 
     private String repairTaskInstruction(ReviewDecision decision, ReviewFinding finding) {
-        String location = finding.getClaimId() != null ? "claim=" + finding.getClaimId()
+        String location = finding.getFactId() != null ? "fact=" + finding.getFactId()
+                : finding.getChunkKey() != null ? "chunk=" + finding.getChunkKey()
+                : finding.getClaimId() != null ? "claim=" + finding.getClaimId()
                 : finding.getCitationKey() != null ? "citation=" + finding.getCitationKey()
                 : finding.getParagraphIndex() != null ? "paragraph=" + finding.getParagraphIndex()
                 : "未定位到具体对象";
@@ -426,6 +490,14 @@ public class ReviewerNode implements AgentNode {
             run.getRecommendedActions().add("质检发现一手调研证据缺口（%s）：公开搜索不能自动生成真实问卷或访谈，请上传对应资料；自动流程将改为降级相关结论或修订报告。"
                     .formatted(String.join("、", manualOnlyEvidenceTypes)));
         }
+        if (blockingFindings.stream().anyMatch(this::needsExtractionRework)) {
+            decision.setAction(ReviewAction.REWORK_ANALYSIS);
+            decision.setTargetAgent(AgentName.EXTRACTOR);
+            decision.setReason("Review found high-risk extracted fact issues (%s); rerun Extractor to repair fact values, evidenceIds, or chunk bindings.".formatted(
+                    categorySummary(blockingFindings)
+            ));
+            return;
+        }
         if (blockingFindings.stream().anyMatch(this::needsAnalysisRework)) {
             decision.setAction(ReviewAction.REWORK_ANALYSIS);
             decision.setTargetAgent(AgentName.ANALYST);
@@ -484,6 +556,13 @@ public class ReviewerNode implements AgentNode {
                 || category.contains("schema")
                 || category.contains("matrix")
                 || category.contains("swot");
+    }
+
+    private boolean needsExtractionRework(ReviewFinding finding) {
+        String category = normalizedCategory(finding);
+        return category.startsWith("fact_")
+                || category.contains("fact_extraction")
+                || category.contains("extracted_fact");
     }
 
     private String categorySummary(List<ReviewFinding> findings) {
@@ -876,11 +955,13 @@ public class ReviewerNode implements AgentNode {
         }
         return run.getClaims().stream()
                 .limit(10)
-                .map(claim -> "- id=%s type=%s confidence=%s evidence=%s content=%s".formatted(
+                .map(claim -> "- id=%s type=%s confidence=%s evidence=%s facts=%s chunks=%s content=%s".formatted(
                         claim.getId(),
                         claim.getType(),
                         claim.getConfidence(),
                         claim.getEvidenceIds(),
+                        claim.getFactIds(),
+                        claim.getChunkKeys(),
                         abbreviate(claim.getContent(), 140)
                 ))
                 .collect(Collectors.joining("\n"));
@@ -911,7 +992,7 @@ public class ReviewerNode implements AgentNode {
         return run.getClaims().stream()
                 .limit(8)
                 .map(claim -> """
-                        - claimId=%s type=%s confidence=%s competitors=%s
+                        - claimId=%s type=%s confidence=%s competitors=%s factIds=%s chunkKeys=%s
                           content=%s
                           evidence=%s
                         """.formatted(
@@ -919,6 +1000,8 @@ public class ReviewerNode implements AgentNode {
                         claim.getType(),
                         claim.getConfidence(),
                         claim.getCompetitorNames(),
+                        claim.getFactIds(),
+                        claim.getChunkKeys(),
                         abbreviate(claim.getContent(), 180),
                         evidenceSnippets(run, claim.getEvidenceIds())
                 ))

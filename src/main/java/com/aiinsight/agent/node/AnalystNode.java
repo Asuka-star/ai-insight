@@ -15,7 +15,10 @@ import com.aiinsight.model.run.AnalysisRequirement;
 import com.aiinsight.model.run.AnalysisRun;
 import com.aiinsight.model.run.EvidenceSource;
 import com.aiinsight.model.schema.AnalysisClaim;
+import com.aiinsight.model.schema.CompetitorFactSet;
 import com.aiinsight.model.schema.CompetitorProfile;
+import com.aiinsight.model.schema.ExtractedFact;
+import com.aiinsight.model.schema.UnknownFact;
 import com.aiinsight.observability.AgentTraceContext;
 import com.aiinsight.service.AnalysisDraft;
 import com.aiinsight.service.fallback.FallbackAnalysisDraftFactory;
@@ -136,7 +139,7 @@ public class AnalystNode implements AgentNode {
 
                 输出约束：
                 1. 只输出 JSON，不要 Markdown 代码块。
-                2. claims 必须是数组，最多 8 条；每条 claim 包含 type、content、confidence、competitorNames、evidenceIds。
+                2. claims 必须是数组，最多 8 条；每条 claim 包含 type、content、confidence、competitorNames、factIds、evidenceIds、chunkKeys。
                 3. type 只能取 FACT、COMPARISON、STRENGTH、WEAKNESS、OPPORTUNITY、RISK、RECOMMENDATION。
                 4. confidence 只能取 LOW、MEDIUM、HIGH。
                 5. content 不超过 120 字，必须围绕用户关注维度、业务目标或已采集证据生成。
@@ -154,7 +157,9 @@ public class AnalystNode implements AgentNode {
                       "content": "结论正文",
                       "confidence": "MEDIUM",
                       "competitorNames": ["竞品名"],
-                      "evidenceIds": ["S1"]
+                      "factIds": ["F1"],
+                      "evidenceIds": ["S1"],
+                      "chunkKeys": []
                     }
                   ]
                 }
@@ -256,6 +261,9 @@ public class AnalystNode implements AgentNode {
         // evidenceIds 是 claim 进入 Writer/Reviewer 的硬约束，只允许已知 citation；
         // 模型编造的 [S404] 会被过滤，避免后续报告携带不可追溯引用。
         claim.setEvidenceIds(distinctKnownEvidenceIds(run, draft.evidenceIds));
+        claim.setFactIds(distinctKnownFactIds(run, draft.factIds));
+        claim.setChunkKeys(distinctKnownChunkKeys(run, draft.chunkKeys));
+        bindClaimFacts(run, claim);
         adjustClaimConfidence(run, claim);
         if (claim.getEvidenceIds().isEmpty() && !containsUncertaintyMarker(claim.getContent())) {
             claim.setContent(claim.getContent() + "（证据不足，待验证）");
@@ -267,15 +275,19 @@ public class AnalystNode implements AgentNode {
         List<AnalysisClaim> claims = draft.claims().stream()
                 .map(claim -> sanitizeClaim(run, claim))
                 .toList();
+        AnalystContext context = analystContext(run);
         return new AnalysisDraft(
                 claims,
-                sanitizeCitationText(run, draft.matrixMarkdown()),
-                sanitizeCitationText(run, draft.swotMarkdown())
+                sanitizeCitationText(run, renderMatrixFromClaims(context, claims)),
+                sanitizeCitationText(run, renderSwotFromClaims(claims))
         );
     }
 
     private AnalysisClaim sanitizeClaim(AnalysisRun run, AnalysisClaim claim) {
         claim.setEvidenceIds(distinctKnownEvidenceIds(run, claim.getEvidenceIds()));
+        claim.setFactIds(distinctKnownFactIds(run, claim.getFactIds()));
+        claim.setChunkKeys(distinctKnownChunkKeys(run, claim.getChunkKeys()));
+        bindClaimFacts(run, claim);
         if (claim.getEvidenceIds().isEmpty()) {
             claim.setConfidence(ConfidenceLevel.LOW);
             if (!containsUncertaintyMarker(claim.getContent())) {
@@ -379,6 +391,122 @@ public class AnalystNode implements AgentNode {
                 .toList();
     }
 
+    private List<String> distinctKnownFactIds(AnalysisRun run, List<String> factIds) {
+        Set<String> known = run.getCompetitorFactSets().stream()
+                .flatMap(factSet -> factSet.getFacts().stream())
+                .map(ExtractedFact::getId)
+                .filter(this::hasText)
+                .collect(Collectors.toCollection(LinkedHashSet::new));
+        return safeList(factIds).stream()
+                .filter(this::hasText)
+                .filter(known::contains)
+                .distinct()
+                .toList();
+    }
+
+    private List<String> distinctKnownChunkKeys(AnalysisRun run, List<String> chunkKeys) {
+        Set<String> known = run.getEvidenceChunks().stream()
+                .map(com.aiinsight.model.run.EvidenceChunk::getChunkKey)
+                .filter(this::hasText)
+                .collect(Collectors.toCollection(LinkedHashSet::new));
+        return safeList(chunkKeys).stream()
+                .filter(this::hasText)
+                .filter(known::contains)
+                .distinct()
+                .toList();
+    }
+
+    private void bindClaimFacts(AnalysisRun run, AnalysisClaim claim) {
+        List<ExtractedFact> selectedFacts = selectedFactsForClaim(run, claim);
+        if (claim.getFactIds().isEmpty()) {
+            claim.setFactIds(selectedFacts.stream()
+                    .map(ExtractedFact::getId)
+                    .filter(this::hasText)
+                    .distinct()
+                    .limit(6)
+                    .toList());
+        }
+        if (claim.getEvidenceIds().isEmpty()) {
+            claim.setEvidenceIds(selectedFacts.stream()
+                    .flatMap(fact -> fact.getEvidenceIds().stream())
+                    .filter(this::hasText)
+                    .distinct()
+                    .limit(6)
+                    .toList());
+        }
+        if (claim.getChunkKeys().isEmpty()) {
+            claim.setChunkKeys(selectedFacts.stream()
+                    .flatMap(fact -> fact.getChunkKeys().stream())
+                    .filter(this::hasText)
+                    .distinct()
+                    .limit(8)
+                    .toList());
+        }
+    }
+
+    private List<ExtractedFact> selectedFactsForClaim(AnalysisRun run, AnalysisClaim claim) {
+        List<ExtractedFact> allFacts = run.getCompetitorFactSets().stream()
+                .flatMap(factSet -> factSet.getFacts().stream())
+                .toList();
+        if (allFacts.isEmpty()) {
+            return List.of();
+        }
+        Set<String> requestedFactIds = new LinkedHashSet<>(safeList(claim.getFactIds()));
+        Set<String> evidenceIds = new LinkedHashSet<>(safeList(claim.getEvidenceIds()));
+        Set<String> competitors = safeList(claim.getCompetitorNames()).stream()
+                .map(this::competitorKey)
+                .collect(Collectors.toCollection(LinkedHashSet::new));
+        Set<String> claimTerms = termsForBinding(claim.getContent());
+        return allFacts.stream()
+                .map(fact -> new FactMatch(fact, factMatchScore(fact, requestedFactIds, evidenceIds, competitors, claimTerms)))
+                .filter(match -> match.score() > 0)
+                .sorted((left, right) -> Integer.compare(right.score(), left.score()))
+                .map(FactMatch::fact)
+                .limit(6)
+                .toList();
+    }
+
+    private int factMatchScore(ExtractedFact fact,
+                               Set<String> requestedFactIds,
+                               Set<String> evidenceIds,
+                               Set<String> competitors,
+                               Set<String> claimTerms) {
+        int score = 0;
+        if (!requestedFactIds.isEmpty() && requestedFactIds.contains(fact.getId())) {
+            score += 100;
+        }
+        if (!evidenceIds.isEmpty() && fact.getEvidenceIds().stream().anyMatch(evidenceIds::contains)) {
+            score += 20;
+        }
+        if (!competitors.isEmpty() && competitors.contains(competitorKey(fact.getCompetitorName()))) {
+            score += 10;
+        }
+        Set<String> factTerms = termsForBinding("%s %s %s".formatted(fact.getFactType(), fact.getAttribute(), fact.getValue()));
+        long overlap = claimTerms.stream().filter(factTerms::contains).count();
+        score += (int) Math.min(overlap, 8);
+        return score;
+    }
+
+    private Set<String> termsForBinding(String text) {
+        Set<String> terms = new LinkedHashSet<>();
+        if (!hasText(text)) {
+            return terms;
+        }
+        String normalized = text.toLowerCase(Locale.ROOT)
+                .replaceAll("[^\\p{IsHan}a-z0-9]+", " ")
+                .trim();
+        for (String part : normalized.split("\\s+")) {
+            if (part.length() >= 2) {
+                terms.add(part);
+            }
+        }
+        String chineseOnly = normalized.replaceAll("[^\\p{IsHan}]", "");
+        for (int i = 0; i < chineseOnly.length() - 1; i++) {
+            terms.add(chineseOnly.substring(i, i + 2));
+        }
+        return terms;
+    }
+
     private ClaimType parseClaimType(String value) {
         if (!hasText(value)) {
             return ClaimType.FACT;
@@ -431,7 +559,7 @@ public class AnalystNode implements AgentNode {
         return new AnalystContext(
                 run,
                 requirementSummary(run),
-                compactProfileBlock(run),
+                compactProfileBlock(run) + "\n\nExtractor facts:\n" + factBlock(run),
                 evidenceIndexBlock(run),
                 dimensionEvidenceBlock(run),
                 researchContextBlock(run),
@@ -941,6 +1069,57 @@ public class AnalystNode implements AgentNode {
                 .collect(Collectors.joining("\n"));
     }
 
+    private String factBlock(AnalysisRun run) {
+        if (run.getCompetitorFactSets().isEmpty()) {
+            return "No extracted fact layer is available; use competitor profiles and evidence directly.";
+        }
+        return run.getCompetitorFactSets().stream()
+                .map(factSet -> """
+                        Competitor: %s
+                        Facts:
+                        %s
+                        Unknowns:
+                        %s
+                        """.formatted(
+                        factSet.getCompetitorName(),
+                        factsForPrompt(factSet.getFacts()),
+                        unknownsForPrompt(factSet.getUnknowns())
+                ))
+                .collect(Collectors.joining("\n"));
+    }
+
+    private String factsForPrompt(List<ExtractedFact> facts) {
+        if (facts == null || facts.isEmpty()) {
+            return "- none";
+        }
+        return facts.stream()
+                .limit(20)
+                .map(fact -> "- id=%s type=%s attr=%s evidence=%s chunks=%s confidence=%s value=%s".formatted(
+                        fact.getId(),
+                        fact.getFactType(),
+                        nullToEmpty(fact.getAttribute()),
+                        fact.getEvidenceIds(),
+                        fact.getChunkKeys(),
+                        nullToEmpty(fact.getExtractionConfidence()),
+                        abbreviate(fact.getValue(), 180)
+                ))
+                .collect(Collectors.joining("\n"));
+    }
+
+    private String unknownsForPrompt(List<UnknownFact> unknowns) {
+        if (unknowns == null || unknowns.isEmpty()) {
+            return "- none";
+        }
+        return unknowns.stream()
+                .limit(12)
+                .map(unknown -> "- field=%s reason=%s needed=%s".formatted(
+                        nullToEmpty(unknown.getField()),
+                        nullToEmpty(unknown.getReason()),
+                        unknown.getNeededEvidenceTypes()
+                ))
+                .collect(Collectors.joining("\n"));
+    }
+
     private boolean hasText(String text) {
         return text != null && !text.isBlank();
     }
@@ -986,7 +1165,12 @@ public class AnalystNode implements AgentNode {
         public String content;
         public String confidence;
         public List<String> competitorNames = List.of();
+        public List<String> factIds = List.of();
         public List<String> evidenceIds = List.of();
+        public List<String> chunkKeys = List.of();
+    }
+
+    private record FactMatch(ExtractedFact fact, int score) {
     }
 
     private record AnalystContext(

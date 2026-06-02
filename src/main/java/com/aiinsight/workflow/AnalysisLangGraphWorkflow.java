@@ -32,6 +32,7 @@ public class AnalysisLangGraphWorkflow {
 
     static final String ROUTE_FINISH = "finish";
     private static final String ROUTE_RECOLLECT = "recollect";
+    private static final String ROUTE_REEXTRACT = "reextract";
     private static final String ROUTE_REANALYZE = "reanalyze";
     private static final String ROUTE_REVISE = "revise";
     private static final String REVIEW_GATE = "REVIEW_GATE";
@@ -123,6 +124,7 @@ public class AnalysisLangGraphWorkflow {
                     AsyncEdgeAction.edge_async(AnalysisGraphState::feedbackRoute),
                     Map.of(
                             ROUTE_RECOLLECT, AgentName.RESEARCHER.name(),
+                            ROUTE_REEXTRACT, AgentName.EXTRACTOR.name(),
                             ROUTE_REANALYZE, AgentName.ANALYST.name(),
                             ROUTE_REVISE, AgentName.WRITER.name(),
                             ROUTE_FINISH, AgentName.FINALIZER.name()
@@ -193,6 +195,9 @@ public class AnalysisLangGraphWorkflow {
             return ROUTE_RECOLLECT;
         }
         if (action == ReviewAction.REWORK_ANALYSIS) {
+            if (run.getReviewDecision().getTargetAgent() == AgentName.EXTRACTOR) {
+                return ROUTE_REEXTRACT;
+            }
             return ROUTE_REANALYZE;
         }
         if (action == ReviewAction.REVISE_REPORT) {
@@ -213,6 +218,9 @@ public class AnalysisLangGraphWorkflow {
     private String targetNodeFor(String route) {
         if (ROUTE_RECOLLECT.equals(route)) {
             return AgentName.RESEARCHER.name();
+        }
+        if (ROUTE_REEXTRACT.equals(route)) {
+            return AgentName.EXTRACTOR.name();
         }
         if (ROUTE_REANALYZE.equals(route)) {
             return AgentName.ANALYST.name();

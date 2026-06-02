@@ -2,11 +2,14 @@ package com.aiinsight.service;
 
 import com.aiinsight.model.enums.ClaimType;
 import com.aiinsight.model.enums.ConfidenceLevel;
+import com.aiinsight.model.enums.FactType;
 import com.aiinsight.model.enums.ReviewSeverity;
 import com.aiinsight.model.run.AnalysisRun;
 import com.aiinsight.model.run.EvidenceChunk;
 import com.aiinsight.model.run.EvidenceSource;
 import com.aiinsight.model.schema.AnalysisClaim;
+import com.aiinsight.model.schema.CompetitorFactSet;
+import com.aiinsight.model.schema.ExtractedFact;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -342,6 +345,99 @@ class CitationCoverageEvaluatorTest {
                 });
     }
 
+    @Test
+    void flagsExtractedFactUnsupportedByBoundEvidence() {
+        AnalysisRun run = new AnalysisRun();
+        run.getEvidenceSources().add(source(
+                "S20",
+                "Cursor Composer docs",
+                "https://docs.cursor.com/composer",
+                "product_docs",
+                "FIRST_PARTY_OFFICIAL",
+                "Cursor Composer supports multi-file code editing."
+        ));
+        run.getEvidenceChunks().add(chunk("S20-C1", "S20", "feature", "FIRST_PARTY_OFFICIAL",
+                "Cursor Composer supports multi-file code editing."));
+        ExtractedFact fact = fact("F20", "Cursor", FactType.SECURITY,
+                "compliance", "Cursor includes SOC 2 enterprise compliance controls.", List.of("S20"), List.of("S20-C1"));
+        run.getCompetitorFactSets().add(factSet("Cursor", fact));
+        AnalysisClaim claim = claim("Cursor includes SOC 2 enterprise compliance controls.", ConfidenceLevel.HIGH, List.of("S20"));
+        claim.getFactIds().add("F20");
+        run.getClaims().add(claim);
+
+        var findings = evaluator.evaluate("## Report\n\nSummary only.", run);
+
+        assertThat(findings)
+                .anySatisfy(finding -> {
+                    assertThat(finding.getSeverity()).isEqualTo(ReviewSeverity.HIGH);
+                    assertThat(finding.getCategory()).isEqualTo("fact_unsupported_by_evidence");
+                    assertThat(finding.getClaimId()).isEqualTo(claim.getId());
+                    assertThat(finding.getFactId()).isEqualTo("F20");
+                    assertThat(finding.getChunkKey()).isEqualTo("S20-C1");
+                    assertThat(finding.getCitationKey()).isEqualTo("S20");
+                });
+    }
+
+    @Test
+    void flagsUnsupportedExtractedFactEvenWhenNoClaimReferencesIt() {
+        AnalysisRun run = new AnalysisRun();
+        run.getEvidenceSources().add(source(
+                "S22",
+                "Cursor Composer docs",
+                "https://docs.cursor.com/composer",
+                "product_docs",
+                "FIRST_PARTY_OFFICIAL",
+                "Cursor Composer supports multi-file code editing."
+        ));
+        run.getEvidenceChunks().add(chunk("S22-C1", "S22", "feature", "FIRST_PARTY_OFFICIAL",
+                "Cursor Composer supports multi-file code editing."));
+        ExtractedFact fact = fact("F22", "Cursor", FactType.SECURITY,
+                "compliance", "Cursor includes SOC 2 enterprise compliance controls.", List.of("S22"), List.of("S22-C1"));
+        run.getCompetitorFactSets().add(factSet("Cursor", fact));
+
+        var findings = evaluator.evaluate("## Report\n\nSummary only.", run);
+
+        assertThat(findings)
+                .anySatisfy(finding -> {
+                    assertThat(finding.getSeverity()).isEqualTo(ReviewSeverity.HIGH);
+                    assertThat(finding.getCategory()).isEqualTo("fact_unsupported_by_evidence");
+                    assertThat(finding.getClaimId()).isNull();
+                    assertThat(finding.getFactId()).isEqualTo("F22");
+                    assertThat(finding.getChunkKey()).isEqualTo("S22-C1");
+                    assertThat(finding.getCitationKey()).isEqualTo("S22");
+                });
+    }
+
+    @Test
+    void flagsHighConfidenceClaimThatOverInterpretsBoundFacts() {
+        AnalysisRun run = new AnalysisRun();
+        run.getEvidenceSources().add(source(
+                "S21",
+                "Cursor Composer docs",
+                "https://docs.cursor.com/composer",
+                "product_docs",
+                "FIRST_PARTY_OFFICIAL",
+                "Cursor Composer supports multi-file code editing."
+        ));
+        run.getEvidenceChunks().add(chunk("S21-C1", "S21", "feature", "FIRST_PARTY_OFFICIAL",
+                "Cursor Composer supports multi-file code editing."));
+        ExtractedFact fact = fact("F21", "Cursor", FactType.FEATURE,
+                "composer", "Cursor Composer supports multi-file code editing.", List.of("S21"), List.of("S21-C1"));
+        run.getCompetitorFactSets().add(factSet("Cursor", fact));
+        AnalysisClaim claim = claim("Cursor is the best enterprise governance platform.", ConfidenceLevel.HIGH, List.of("S21"));
+        claim.getFactIds().add("F21");
+        run.getClaims().add(claim);
+
+        var findings = evaluator.evaluate("## Report\n\nSummary only.", run);
+
+        assertThat(findings)
+                .anySatisfy(finding -> {
+                    assertThat(finding.getSeverity()).isEqualTo(ReviewSeverity.HIGH);
+                    assertThat(finding.getCategory()).isEqualTo("claim_fact_mismatch");
+                    assertThat(finding.getClaimId()).isEqualTo(claim.getId());
+                });
+    }
+
     private AnalysisRun runWithEvidence() {
         AnalysisRun run = new AnalysisRun();
         run.getEvidenceSources().add(new EvidenceSource(
@@ -397,6 +493,32 @@ class CitationCoverageEvaluatorTest {
         claim.setConfidence(confidence);
         claim.setEvidenceIds(evidenceIds);
         return claim;
+    }
+
+    private CompetitorFactSet factSet(String competitorName, ExtractedFact fact) {
+        CompetitorFactSet factSet = new CompetitorFactSet();
+        factSet.setCompetitorName(competitorName);
+        factSet.getFacts().add(fact);
+        return factSet;
+    }
+
+    private ExtractedFact fact(String id,
+                               String competitorName,
+                               FactType type,
+                               String attribute,
+                               String value,
+                               List<String> evidenceIds,
+                               List<String> chunkKeys) {
+        ExtractedFact fact = new ExtractedFact();
+        fact.setId(id);
+        fact.setCompetitorName(competitorName);
+        fact.setFactType(type);
+        fact.setAttribute(attribute);
+        fact.setValue(value);
+        fact.setEvidenceIds(evidenceIds);
+        fact.setChunkKeys(chunkKeys);
+        fact.setExtractionConfidence("HIGH");
+        return fact;
     }
 
     private EvidenceSource source(String citationKey,

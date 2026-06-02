@@ -5,6 +5,7 @@ import com.aiinsight.model.enums.ArtifactType;
 import com.aiinsight.model.review.ReviewDecision;
 import com.aiinsight.model.review.ReviewFinding;
 import com.aiinsight.model.schema.AnalysisClaim;
+import com.aiinsight.model.schema.CompetitorFactSet;
 import com.aiinsight.model.schema.CompetitorProfile;
 import com.aiinsight.model.schema.ResearchPackage;
 import lombok.Getter;
@@ -36,6 +37,7 @@ public class AnalysisRun {
     private List<AnalysisArtifact> artifacts = new ArrayList<>();
     // 结构化 Schema 结果，供 Agent 间通过共享状态传递，而不是只解析 Markdown。
     private ResearchPackage researchPackage = new ResearchPackage();
+    private List<CompetitorFactSet> competitorFactSets = new ArrayList<>();
     private List<CompetitorProfile> competitorProfiles = new ArrayList<>();
     private List<AnalysisClaim> claims = new ArrayList<>();
     private ClarificationDraft clarificationDraft = new ClarificationDraft();

@@ -3,6 +3,7 @@ package com.aiinsight.agent.node;
 import com.aiinsight.llm.ChatRequest;
 import com.aiinsight.llm.LlmClient;
 import com.aiinsight.model.enums.ArtifactType;
+import com.aiinsight.model.enums.FactType;
 import com.aiinsight.model.run.AnalysisRequirement;
 import com.aiinsight.model.run.AnalysisRun;
 import com.aiinsight.model.run.EvidenceChunk;
@@ -94,6 +95,17 @@ class ExtractorNodeTest {
                 .filteredOn(artifact -> artifact.getType() == ArtifactType.COMPETITOR_PROFILE)
                 .last()
                 .satisfies(artifact -> assertThat(artifact.getContent()).contains("Composer", "$20/month"));
+        assertThat(run.getCompetitorFactSets()).hasSize(1);
+        assertThat(run.getCompetitorFactSets().get(0).getFacts())
+                .anySatisfy(fact -> {
+                    assertThat(fact.getFactType()).isEqualTo(FactType.FEATURE);
+                    assertThat(fact.getValue()).contains("Composer");
+                    assertThat(fact.getEvidenceIds()).containsExactly("S1");
+                });
+        assertThat(run.getArtifacts())
+                .filteredOn(artifact -> artifact.getType() == ArtifactType.FACT_EXTRACTION)
+                .last()
+                .satisfies(artifact -> assertThat(artifact.getContent()).contains("F", "Composer"));
     }
 
     @Test
@@ -333,6 +345,58 @@ class ExtractorNodeTest {
                 .doesNotContain("should prioritize enterprise governance");
         assertThat(run.getRecommendedActions())
                 .anyMatch(action -> action.contains("Extractor filtered non-factual weaknesses for Cursor"));
+    }
+
+    @Test
+    void competitorProfileIsProjectedOnlyFromAcceptedFacts() {
+        LlmClient llmClient = new LlmClient() {
+            @Override
+            public boolean isAvailable() {
+                return true;
+            }
+
+            @Override
+            public String complete(ChatRequest request) {
+                return """
+                        {
+                          "profiles": [
+                            {
+                              "productName": "Cursor",
+                              "companyName": "Cursor",
+                              "positioning": "AI code editor",
+                              "targetUsers": ["Developers"],
+                              "features": [
+                                {"name":"Composer","description":"Multi-file code editing","evidenceIds":["S1"]},
+                                {"name":"Invented roadmap","description":"Unsupported future plan","evidenceIds":["S404"]}
+                              ],
+                              "pricing": {
+                                "strategySummary": "待验证",
+                                "hasFreePlan": false,
+                                "plans": [],
+                                "evidenceIds": []
+                              },
+                              "personas": [],
+                              "strengths": ["Documented editing workflow"],
+                              "weaknesses": ["Unsupported strategic risk"],
+                              "evidenceIds": ["S1"]
+                            }
+                          ]
+                        }
+                        """;
+            }
+        };
+        AnalysisRun run = runWithCursorEvidence();
+
+        new ExtractorNode(llmClient, new FallbackExtractionFactory()).execute(run);
+
+        assertThat(run.getCompetitorProfiles()).hasSize(1);
+        assertThat(run.getCompetitorProfiles().get(0).getFeatureTree().getRoots())
+                .extracting(node -> node.getName())
+                .containsExactly("Composer");
+        assertThat(run.getCompetitorProfiles().get(0).getPricingModel().getStrategySummary()).isEqualTo("待验证");
+        assertThat(run.getCompetitorFactSets().get(0).getFacts())
+                .extracting(fact -> fact.getValue())
+                .noneMatch(value -> value.contains("Invented roadmap"));
     }
 
     private AnalysisRun runWithCursorEvidence() {

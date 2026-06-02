@@ -7,15 +7,19 @@ import com.aiinsight.llm.ChatRequest;
 import com.aiinsight.llm.LlmClient;
 import com.aiinsight.model.enums.AgentName;
 import com.aiinsight.model.enums.ArtifactType;
+import com.aiinsight.model.enums.FactType;
 import com.aiinsight.model.run.AnalysisArtifact;
 import com.aiinsight.model.run.AnalysisRun;
 import com.aiinsight.model.run.EvidenceChunk;
 import com.aiinsight.model.run.EvidenceSource;
+import com.aiinsight.model.schema.CompetitorFactSet;
 import com.aiinsight.model.schema.CompetitorProfile;
+import com.aiinsight.model.schema.ExtractedFact;
 import com.aiinsight.model.schema.FeatureNode;
 import com.aiinsight.model.schema.FeatureTree;
 import com.aiinsight.model.schema.PricingModel;
 import com.aiinsight.model.schema.PricingPlan;
+import com.aiinsight.model.schema.UnknownFact;
 import com.aiinsight.model.schema.UserPersona;
 import com.aiinsight.observability.AgentTraceContext;
 import com.aiinsight.service.EvidenceRetrievalService;
@@ -76,7 +80,9 @@ public class ExtractorNode implements AgentNode {
     public AnalysisRun execute(AnalysisRun run) {
         if (llmClient.isAvailable()) {
             try {
-                List<CompetitorProfile> profiles = extractProfilesWithLlm(run);
+                List<CompetitorProfile> rawProfiles = extractProfilesWithLlm(run);
+                List<CompetitorFactSet> factSets = publishFactSets(run, rawProfiles);
+                List<CompetitorProfile> profiles = projectProfilesFromFacts(rawProfiles, factSets);
                 run.getCompetitorProfiles().clear();
                 run.getCompetitorProfiles().addAll(profiles);
                 run.addArtifact(new AnalysisArtifact(
@@ -105,9 +111,12 @@ public class ExtractorNode implements AgentNode {
     }
 
     private AnalysisRun fallback(AnalysisRun run) {
+        List<CompetitorProfile> rawProfiles = fallbackExtractionFactory.buildProfiles(run);
+        List<CompetitorFactSet> factSets = publishFactSets(run, rawProfiles);
+        List<CompetitorProfile> profiles = projectProfilesFromFacts(rawProfiles, factSets);
         run.getCompetitorProfiles().clear();
-        run.getCompetitorProfiles().addAll(fallbackExtractionFactory.buildProfiles(run));
-        String content = fallbackExtractionFactory.buildMarkdown(run);
+        run.getCompetitorProfiles().addAll(profiles);
+        String content = fallbackExtractionFactory.buildMarkdown(run) + "\n\n## Fact-projected profile\n\n" + profilesMarkdown(profiles);
         AgentTraceContext.recordFallback("deterministic-extractor-fallback", content);
         run.addArtifact(new AnalysisArtifact(
                 ArtifactType.COMPETITOR_PROFILE,
@@ -116,6 +125,453 @@ public class ExtractorNode implements AgentNode {
                 run.getEvidenceSources().stream().map(EvidenceSource::getCitationKey).toList()
         ));
         return run;
+    }
+
+    private List<CompetitorFactSet> publishFactSets(AnalysisRun run, List<CompetitorProfile> profiles) {
+        List<CompetitorFactSet> factSets = buildFactSets(profiles, run);
+        run.getCompetitorFactSets().clear();
+        run.getCompetitorFactSets().addAll(factSets);
+        run.addArtifact(new AnalysisArtifact(
+                ArtifactType.FACT_EXTRACTION,
+                "Fact Extraction",
+                factSetsMarkdown(factSets),
+                factSetCitationKeys(factSets)
+        ));
+        return factSets;
+    }
+
+    private List<CompetitorFactSet> buildFactSets(List<CompetitorProfile> profiles, AnalysisRun run) {
+        int[] sequence = {1};
+        return profiles.stream()
+                .map(profile -> buildFactSet(profile, run, sequence))
+                .toList();
+    }
+
+    private CompetitorFactSet buildFactSet(CompetitorProfile profile, AnalysisRun run, int[] sequence) {
+        CompetitorFactSet factSet = new CompetitorFactSet();
+        factSet.setCompetitorName(profile.getProductName());
+        List<ExtractedFact> facts = new ArrayList<>();
+        List<UnknownFact> unknowns = new ArrayList<>();
+
+        addFactIfKnown(facts, unknowns, run, sequence, profile.getProductName(), FactType.POSITIONING,
+                "positioning", profile.getPositioning(), profile.getEvidenceIds(), List.of("official_site", "product_docs"));
+        for (String targetUser : profile.getTargetUsers()) {
+            addFactIfKnown(facts, unknowns, run, sequence, profile.getProductName(), FactType.TARGET_USER,
+                    "target_user", targetUser, profile.getEvidenceIds(), List.of("public_review", "user_interview", "user_survey"));
+        }
+        addFeatureFacts(facts, unknowns, run, sequence, profile.getProductName(), profile.getFeatureTree().getRoots());
+        addPricingFacts(facts, unknowns, run, sequence, profile.getProductName(), profile.getPricingModel());
+        addPersonaFacts(facts, unknowns, run, sequence, profile.getProductName(), profile.getPersonas());
+        for (String strength : profile.getStrengths()) {
+            addFactIfKnown(facts, unknowns, run, sequence, profile.getProductName(), FactType.FEATURE,
+                    "observed_advantage", strength, profile.getEvidenceIds(), List.of("official_site", "product_docs", "public_review"));
+        }
+        for (String weakness : profile.getWeaknesses()) {
+            addFactIfKnown(facts, unknowns, run, sequence, profile.getProductName(), FactType.LIMITATION,
+                    "observed_limitation", weakness, profile.getEvidenceIds(), List.of("public_review", "user_interview", "product_docs"));
+        }
+        factSet.setFacts(facts);
+        factSet.setUnknowns(unknowns.stream()
+                .filter(unknown -> StringUtils.hasText(unknown.getField()))
+                .toList());
+        factSet.setSourceCoverageNotes(coverageNotes(profile, facts, unknowns));
+        return factSet;
+    }
+
+    private List<CompetitorProfile> projectProfilesFromFacts(List<CompetitorProfile> originalProfiles,
+                                                             List<CompetitorFactSet> factSets) {
+        Map<String, CompetitorProfile> originalsByName = (originalProfiles == null ? List.<CompetitorProfile>of() : originalProfiles).stream()
+                .filter(profile -> profile != null && StringUtils.hasText(profile.getProductName()))
+                .collect(Collectors.toMap(
+                        profile -> normalizeName(profile.getProductName()),
+                        profile -> profile,
+                        (first, ignored) -> first
+                ));
+        return (factSets == null ? List.<CompetitorFactSet>of() : factSets).stream()
+                .filter(factSet -> factSet != null && StringUtils.hasText(factSet.getCompetitorName()))
+                .map(factSet -> projectProfileFromFacts(factSet, originalsByName.get(normalizeName(factSet.getCompetitorName()))))
+                .toList();
+    }
+
+    private CompetitorProfile projectProfileFromFacts(CompetitorFactSet factSet, CompetitorProfile original) {
+        CompetitorProfile profile = new CompetitorProfile();
+        profile.setProductName(factSet.getCompetitorName());
+        profile.setCompanyName(original == null ? factSet.getCompetitorName() : textOrDefault(original.getCompanyName(), factSet.getCompetitorName()));
+        List<ExtractedFact> facts = factSet.getFacts() == null ? List.of() : factSet.getFacts();
+        profile.setEvidenceIds(allFactEvidenceIds(facts));
+        profile.setPositioning(firstFactValue(facts, "positioning", "待验证"));
+        profile.setTargetUsers(valuesForAttribute(facts, "target_user"));
+        profile.setFeatureTree(projectFeatureTree(facts));
+        profile.setPricingModel(projectPricingModel(facts));
+        profile.setPersonas(projectPersonas(facts, profile.getEvidenceIds()));
+        profile.setStrengths(valuesForAttribute(facts, "observed_advantage"));
+        profile.setWeaknesses(valuesForAttribute(facts, "observed_limitation"));
+        return profile;
+    }
+
+    private FeatureTree projectFeatureTree(List<ExtractedFact> facts) {
+        FeatureTree tree = new FeatureTree();
+        List<FeatureNode> roots = facts.stream()
+                .filter(fact -> fact != null && "feature".equals(fact.getAttribute()))
+                .map(this::projectFeatureNode)
+                .filter(node -> StringUtils.hasText(node.getName()))
+                .toList();
+        tree.setRoots(roots);
+        return tree;
+    }
+
+    private FeatureNode projectFeatureNode(ExtractedFact fact) {
+        String value = nullToEmpty(fact.getValue());
+        String[] parts = value.split(":", 2);
+        String name = parts.length > 0 ? textOrDefault(parts[0], "未命名功能") : "未命名功能";
+        String description = parts.length > 1 ? textOrDefault(parts[1], value) : value;
+        return new FeatureNode(name, description, fact.getEvidenceIds() == null ? List.of() : fact.getEvidenceIds());
+    }
+
+    private PricingModel projectPricingModel(List<ExtractedFact> facts) {
+        PricingModel model = new PricingModel();
+        List<ExtractedFact> pricingFacts = facts.stream()
+                .filter(fact -> fact != null && fact.getFactType() == FactType.PRICING)
+                .toList();
+        model.setStrategySummary(firstFactValue(pricingFacts, "pricing_strategy", "待验证"));
+        List<String> pricingEvidenceIds = allFactEvidenceIds(pricingFacts);
+        model.setEvidenceIds(pricingEvidenceIds);
+        List<PricingPlan> plans = pricingFacts.stream()
+                .filter(fact -> "pricing_plan".equals(fact.getAttribute()))
+                .map(this::projectPricingPlan)
+                .toList();
+        model.setPlans(plans);
+        model.setHasFreePlan(plans.stream()
+                .anyMatch(plan -> containsAny(normalizeName(plan.getName() + " " + plan.getPriceText()), "free", "$0", "免费", "0元")));
+        return model;
+    }
+
+    private PricingPlan projectPricingPlan(ExtractedFact fact) {
+        String[] parts = nullToEmpty(fact.getValue()).split("\\|", -1);
+        return new PricingPlan(
+                partOrDefault(parts, 0, "未命名套餐"),
+                partOrDefault(parts, 1, "待验证"),
+                partOrDefault(parts, 2, "unknown"),
+                partOrDefault(parts, 3, "待验证"),
+                splitCsv(partOrDefault(parts, 4, "")),
+                fact.getEvidenceIds() == null ? List.of() : fact.getEvidenceIds()
+        );
+    }
+
+    private List<UserPersona> projectPersonas(List<ExtractedFact> facts, List<String> fallbackEvidenceIds) {
+        List<UserPersona> personas = facts.stream()
+                .filter(fact -> fact != null && "persona".equals(fact.getAttribute()))
+                .map(this::projectPersona)
+                .toList();
+        if (!personas.isEmpty() || fallbackEvidenceIds == null || fallbackEvidenceIds.isEmpty()) {
+            return personas;
+        }
+        UserPersona unknownPersona = new UserPersona();
+        unknownPersona.setName("典型用户待验证");
+        unknownPersona.setSegment("待验证");
+        unknownPersona.setCompanySize("待验证");
+        unknownPersona.setJobsToBeDone(List.of("待验证"));
+        unknownPersona.setPainPoints(List.of("待验证"));
+        unknownPersona.setBuyingConcerns(List.of("待验证"));
+        unknownPersona.setEvidenceIds(fallbackEvidenceIds);
+        return List.of(unknownPersona);
+    }
+
+    private UserPersona projectPersona(ExtractedFact fact) {
+        String[] parts = nullToEmpty(fact.getValue()).split("\\|", -1);
+        UserPersona persona = new UserPersona();
+        persona.setName(partOrDefault(parts, 0, "典型用户"));
+        persona.setSegment(partOrDefault(parts, 1, "待验证"));
+        persona.setCompanySize(partOrDefault(parts, 2, "待验证"));
+        persona.setJobsToBeDone(extractTaggedList(parts, "jobs="));
+        persona.setPainPoints(extractTaggedList(parts, "pains="));
+        persona.setBuyingConcerns(extractTaggedList(parts, "concerns="));
+        persona.setEvidenceIds(fact.getEvidenceIds() == null ? List.of() : fact.getEvidenceIds());
+        return persona;
+    }
+
+    private List<String> allFactEvidenceIds(List<ExtractedFact> facts) {
+        return facts.stream()
+                .filter(fact -> fact != null && fact.getEvidenceIds() != null)
+                .flatMap(fact -> fact.getEvidenceIds().stream())
+                .filter(StringUtils::hasText)
+                .distinct()
+                .toList();
+    }
+
+    private List<String> valuesForAttribute(List<ExtractedFact> facts, String attribute) {
+        return facts.stream()
+                .filter(fact -> fact != null && attribute.equals(fact.getAttribute()))
+                .map(ExtractedFact::getValue)
+                .filter(StringUtils::hasText)
+                .distinct()
+                .toList();
+    }
+
+    private String firstFactValue(List<ExtractedFact> facts, String attribute, String fallback) {
+        return facts.stream()
+                .filter(fact -> fact != null && attribute.equals(fact.getAttribute()))
+                .map(ExtractedFact::getValue)
+                .filter(StringUtils::hasText)
+                .findFirst()
+                .orElse(fallback);
+    }
+
+    private String partOrDefault(String[] parts, int index, String fallback) {
+        if (parts == null || index >= parts.length) {
+            return fallback;
+        }
+        return textOrDefault(parts[index], fallback);
+    }
+
+    private List<String> splitCsv(String value) {
+        if (!StringUtils.hasText(value)) {
+            return List.of();
+        }
+        return List.of(value.split(",")).stream()
+                .map(String::trim)
+                .filter(StringUtils::hasText)
+                .distinct()
+                .toList();
+    }
+
+    private List<String> extractTaggedList(String[] parts, String tag) {
+        for (String part : parts == null ? new String[0] : parts) {
+            String trimmed = part.trim();
+            if (trimmed.startsWith(tag)) {
+                return splitCsv(trimmed.substring(tag.length())
+                        .replace("[", "")
+                        .replace("]", ""));
+            }
+        }
+        return List.of("待验证");
+    }
+
+    private void addFeatureFacts(List<ExtractedFact> facts,
+                                 List<UnknownFact> unknowns,
+                                 AnalysisRun run,
+                                 int[] sequence,
+                                 String competitorName,
+                                 List<FeatureNode> nodes) {
+        for (FeatureNode node : nodes == null ? List.<FeatureNode>of() : nodes) {
+            String value = "%s: %s".formatted(nullToEmpty(node.getName()), nullToEmpty(node.getDescription()));
+            addFactIfKnown(facts, unknowns, run, sequence, competitorName, factTypeForFeature(value),
+                    "feature", value, node.getEvidenceIds(), List.of("official_site", "product_docs"));
+            addFeatureFacts(facts, unknowns, run, sequence, competitorName, node.getChildren());
+        }
+    }
+
+    private void addPricingFacts(List<ExtractedFact> facts,
+                                 List<UnknownFact> unknowns,
+                                 AnalysisRun run,
+                                 int[] sequence,
+                                 String competitorName,
+                                 PricingModel pricingModel) {
+        if (pricingModel == null) {
+            addUnknown(unknowns, competitorName, "pricing", "No pricing model was extracted.", List.of("pricing_page"));
+            return;
+        }
+        addFactIfKnown(facts, unknowns, run, sequence, competitorName, FactType.PRICING,
+                "pricing_strategy", pricingModel.getStrategySummary(), pricingModel.getEvidenceIds(), List.of("pricing_page"));
+        for (PricingPlan plan : pricingModel.getPlans()) {
+            String value = "%s | %s | %s | %s | %s".formatted(
+                    nullToEmpty(plan.getName()),
+                    nullToEmpty(plan.getPriceText()),
+                    nullToEmpty(plan.getBillingCycle()),
+                    nullToEmpty(plan.getTargetSegment()),
+                    plan.getIncludedFeatures() == null ? "" : String.join(", ", plan.getIncludedFeatures())
+            );
+            addFactIfKnown(facts, unknowns, run, sequence, competitorName, FactType.PRICING,
+                    "pricing_plan", value, plan.getEvidenceIds(), List.of("pricing_page"));
+        }
+    }
+
+    private void addPersonaFacts(List<ExtractedFact> facts,
+                                 List<UnknownFact> unknowns,
+                                 AnalysisRun run,
+                                 int[] sequence,
+                                 String competitorName,
+                                 List<UserPersona> personas) {
+        for (UserPersona persona : personas == null ? List.<UserPersona>of() : personas) {
+            String value = "%s | %s | %s | jobs=%s | pains=%s | concerns=%s".formatted(
+                    nullToEmpty(persona.getName()),
+                    nullToEmpty(persona.getSegment()),
+                    nullToEmpty(persona.getCompanySize()),
+                    persona.getJobsToBeDone(),
+                    persona.getPainPoints(),
+                    persona.getBuyingConcerns()
+            );
+            addFactIfKnown(facts, unknowns, run, sequence, competitorName, FactType.CUSTOMER_SIGNAL,
+                    "persona", value, persona.getEvidenceIds(), List.of("user_interview", "user_survey", "public_review"));
+        }
+    }
+
+    private void addFactIfKnown(List<ExtractedFact> facts,
+                                List<UnknownFact> unknowns,
+                                AnalysisRun run,
+                                int[] sequence,
+                                String competitorName,
+                                FactType factType,
+                                String attribute,
+                                String value,
+                                List<String> evidenceIds,
+                                List<String> neededEvidenceTypes) {
+        if (!StringUtils.hasText(value) || isUnknownValue(value)) {
+            addUnknown(unknowns, competitorName, attribute, "Extractor did not find explicit evidence for this field.", neededEvidenceTypes);
+            return;
+        }
+        List<String> knownIds = knownEvidenceIds(run, evidenceIds, List.of());
+        if (knownIds.isEmpty()) {
+            addUnknown(unknowns, competitorName, attribute, "Extracted value has no valid evidence id.", neededEvidenceTypes);
+            return;
+        }
+        ExtractedFact fact = new ExtractedFact();
+        fact.setId("F" + sequence[0]++);
+        fact.setCompetitorName(competitorName);
+        fact.setFactType(factType == null ? FactType.UNKNOWN : factType);
+        fact.setAttribute(attribute);
+        fact.setValue(value.trim());
+        fact.setEvidenceIds(knownIds);
+        fact.setChunkKeys(chunkKeysForEvidence(run, knownIds));
+        EvidenceSource primarySource = primarySource(run, knownIds);
+        fact.setSourceAuthority(primarySource == null ? "UNKNOWN" : textOrDash(primarySource.getSourceAuthority()));
+        fact.setSourceQuality(primarySource == null ? "UNKNOWN" : textOrDash(primarySource.getSourceQuality()));
+        fact.setExtractionConfidence(extractionConfidence(primarySource, fact.getChunkKeys()));
+        facts.add(fact);
+    }
+
+    private void addUnknown(List<UnknownFact> unknowns,
+                            String competitorName,
+                            String field,
+                            String reason,
+                            List<String> neededEvidenceTypes) {
+        UnknownFact unknown = new UnknownFact();
+        unknown.setCompetitorName(competitorName);
+        unknown.setField(field);
+        unknown.setReason(reason);
+        unknown.setNeededEvidenceTypes(neededEvidenceTypes == null ? List.of() : neededEvidenceTypes);
+        unknowns.add(unknown);
+    }
+
+    private FactType factTypeForFeature(String value) {
+        String normalized = normalizeName(value);
+        if (containsAny(normalized, "ai", "assistant", "copilot", "search", "智能", "生成式", "搜索")) {
+            return FactType.AI_CAPABILITY;
+        }
+        if (containsAny(normalized, "permission", "admin", "role", "rbac", "saml", "sso", "scim", "权限", "管理员", "角色")) {
+            return FactType.PERMISSION;
+        }
+        if (containsAny(normalized, "security", "compliance", "privacy", "安全", "合规", "隐私")) {
+            return FactType.SECURITY;
+        }
+        if (containsAny(normalized, "integration", "api", "webhook", "集成", "接口")) {
+            return FactType.INTEGRATION;
+        }
+        return FactType.FEATURE;
+    }
+
+    private List<String> chunkKeysForEvidence(AnalysisRun run, List<String> evidenceIds) {
+        Set<String> accepted = new LinkedHashSet<>(evidenceIds);
+        return run.getEvidenceChunks().stream()
+                .filter(chunk -> accepted.contains(chunk.getSourceCitationKey()))
+                .map(EvidenceChunk::getChunkKey)
+                .filter(StringUtils::hasText)
+                .distinct()
+                .limit(6)
+                .toList();
+    }
+
+    private EvidenceSource primarySource(AnalysisRun run, List<String> evidenceIds) {
+        Set<String> accepted = new LinkedHashSet<>(evidenceIds);
+        return run.getEvidenceSources().stream()
+                .filter(source -> accepted.contains(source.getCitationKey()))
+                .findFirst()
+                .orElse(null);
+    }
+
+    private String extractionConfidence(EvidenceSource source, List<String> chunkKeys) {
+        if (source == null) {
+            return "LOW";
+        }
+        String quality = textOrDash(source.getSourceQuality()).toUpperCase(Locale.ROOT);
+        String authority = textOrDash(source.getSourceAuthority()).toUpperCase(Locale.ROOT);
+        if ("HIGH".equals(quality) && (authority.startsWith("FIRST_PARTY") || "USER_PROVIDED".equals(authority) || "INTERNAL_ONLY".equals(authority))) {
+            return "HIGH";
+        }
+        if ("UNUSABLE".equals(quality) || chunkKeys == null || chunkKeys.isEmpty()) {
+            return "LOW";
+        }
+        return "MEDIUM";
+    }
+
+    private boolean isUnknownValue(String value) {
+        String normalized = normalizeName(value);
+        return containsAny(normalized,
+                "待验证", "证据不足", "unknown", "not verified", "needs verification",
+                "寰呴獙璇", "璇佹嵁涓嶈冻");
+    }
+
+    private List<String> coverageNotes(CompetitorProfile profile, List<ExtractedFact> facts, List<UnknownFact> unknowns) {
+        List<String> notes = new ArrayList<>();
+        notes.add("%s facts extracted from %s valid evidence-bound fields.".formatted(facts.size(), profile.getProductName()));
+        if (!unknowns.isEmpty()) {
+            notes.add("%s fields remain unknown and should drive targeted recollection.".formatted(unknowns.size()));
+        }
+        return notes;
+    }
+
+    private List<String> factSetCitationKeys(List<CompetitorFactSet> factSets) {
+        return factSets.stream()
+                .flatMap(factSet -> factSet.getFacts().stream())
+                .flatMap(fact -> fact.getEvidenceIds().stream())
+                .distinct()
+                .toList();
+    }
+
+    private String factSetsMarkdown(List<CompetitorFactSet> factSets) {
+        return factSets.stream()
+                .map(factSet -> """
+                        ### %s
+                        #### Extracted facts
+                        %s
+                        #### Unknowns
+                        %s
+                        """.formatted(
+                        factSet.getCompetitorName(),
+                        factMarkdown(factSet.getFacts()),
+                        unknownMarkdown(factSet.getUnknowns())
+                ))
+                .collect(Collectors.joining("\n\n"));
+    }
+
+    private String factMarkdown(List<ExtractedFact> facts) {
+        if (facts == null || facts.isEmpty()) {
+            return "- No evidence-bound facts extracted.";
+        }
+        return facts.stream()
+                .map(fact -> "- %s %s.%s: %s evidence=%s chunks=%s confidence=%s".formatted(
+                        fact.getId(),
+                        fact.getFactType(),
+                        fact.getAttribute(),
+                        abbreviate(fact.getValue(), 180),
+                        fact.getEvidenceIds(),
+                        fact.getChunkKeys(),
+                        fact.getExtractionConfidence()
+                ))
+                .collect(Collectors.joining("\n"));
+    }
+
+    private String unknownMarkdown(List<UnknownFact> unknowns) {
+        if (unknowns == null || unknowns.isEmpty()) {
+            return "- None.";
+        }
+        return unknowns.stream()
+                .map(unknown -> "- %s: %s needed=%s".formatted(
+                        unknown.getField(),
+                        unknown.getReason(),
+                        unknown.getNeededEvidenceTypes()
+                ))
+                .collect(Collectors.joining("\n"));
     }
 
     private List<CompetitorProfile> extractProfilesWithLlm(AnalysisRun run) {
@@ -577,6 +1033,10 @@ public class ExtractorNode implements AgentNode {
 
     private String textOrDash(String value) {
         return StringUtils.hasText(value) ? value.trim() : "-";
+    }
+
+    private String nullToEmpty(String value) {
+        return value == null ? "" : value;
     }
 
     private String normalizeName(String value) {
