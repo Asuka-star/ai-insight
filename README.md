@@ -26,7 +26,7 @@ AI Insight 是面向字节跳动 AI 全栈挑战赛 AI-3 课题的后端原型�
 -> Writer 生成报告草稿
 -> Reviewer 检查引用覆盖和证据缺口
    -> 如需补采、重做分析或修订报告，打回对应 Agent 并重跑下游节点
--> Finalizer 输出最终封版报告
+-> Reviewer 通过或达到自动返工上限后结束流程
 ```
 
 当前闭环示例：
@@ -36,7 +36,9 @@ AI Insight 是面向字节跳动 AI 全栈挑战赛 AI-3 课题的后端原型�
 3. Researcher 第二轮补充价格页和用户评价证据。
 4. Extractor、Analyst、Writer、Reviewer 自动重跑。
 5. Writer 补上引用后，Reviewer 最终通过。
-6. Finalizer 保留 Writer 正文，并追加复核状态、定向修复计划和证据限制说明。
+6. 前端展示 Writer 最新报告草稿，并保留 Reviewer 复核结果供人工确认。
+
+说明：当前流程已经移除独立封版 Agent；历史运行中的最终报告类产物仍可读取，但新运行以 Writer 的最新报告草稿作为报告展示内容。
 
 ## 核心模块
 
@@ -269,7 +271,6 @@ docker exec -it ai-insight-pg psql -U ai_insight -d ai_insight -c "truncate tabl
 - Researcher 支持用户提供公开 URL 并沉淀为可引用证据
 - EvidenceChunk 证据切片与关键词召回接口
 - Reviewer 自动打回 Researcher、Analyst 或 Writer 的反馈闭环
-- Finalizer 最终封版与可信度说明
 - SSE 事件推送
 - 单 Agent 重跑接口
 - 小米 LLM 可选接入

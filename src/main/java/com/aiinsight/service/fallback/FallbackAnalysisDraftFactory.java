@@ -47,15 +47,15 @@ public class FallbackAnalysisDraftFactory {
         }
         if (containsAny(normalized, "权限", "治理", "安全", "合规", "审计")) {
             return profileBackedClaim(run, ClaimType.COMPARISON, dimension,
-                    "围绕%s，竞品画像显示权限治理、安全合规或团队管理能力是企业采用时的关键比较项。");
+                    "围绕%s，竞品画像显示该维度会影响采用门槛、风险控制或后续运营方式，应按证据强弱分层比较。");
         }
         if (containsAny(normalized, "ai", "智能", "搜索", "生成", "总结")) {
             return profileBackedClaim(run, ClaimType.COMPARISON, dimension,
-                    "围绕%s，竞品普遍在 AI 生成、搜索或知识处理能力上形成竞争焦点。");
+                    "围绕%s，已有资料可支持对智能能力、触发入口和实际使用场景做初步比较。");
         }
         if (containsAny(normalized, "功能", "协作", "文档", "知识", "流程", "集成")) {
             return profileBackedClaim(run, ClaimType.COMPARISON, dimension,
-                    "围绕%s，当前差异主要体现在协作流程、知识沉淀和团队落地路径上。");
+                    "围绕%s，当前差异应从能力覆盖、使用入口、工作流衔接和证据中的限制条件来判断。");
         }
         return profileBackedClaim(run, ClaimType.FACT, dimension,
                 "围绕%s，已有资料可以支持初步比较，但仍需要结合更多业务场景继续验证。");
@@ -108,7 +108,7 @@ public class FallbackAnalysisDraftFactory {
         List<String> evidenceIds = evidenceIdsForDimension(run, dimensionFocus + " " + goal);
         AnalysisClaim claim = baseClaim(run, evidenceIds);
         claim.setType(ClaimType.OPPORTUNITY);
-        claim.setContent("面向%s，建议优先围绕%s形成产品取舍：先采用已有公开证据支撑的差异判断，再把体验型问题列入补证清单。".formatted(goal, dimensionFocus));
+        claim.setContent("面向%s，建议把%s作为当前决策主线：已被证据支持的差异进入建议，证据薄弱的判断进入补证清单。".formatted(goal, dimensionFocus));
         claim.setConfidence(evidenceIds.isEmpty() ? ConfidenceLevel.LOW : ConfidenceLevel.MEDIUM);
         return claim;
     }

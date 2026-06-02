@@ -247,10 +247,19 @@ h3 {
   scrollbar-gutter: stable;
 }
 
+.right-rail {
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+
 .rail-resize-handle {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   align-self: stretch;
-  justify-self: center;
-  width: 8px;
+  justify-self: stretch;
+  width: auto;
   min-height: 0;
   height: 100%;
   border: 1px solid transparent;
@@ -259,7 +268,27 @@ h3 {
   background: transparent;
   color: var(--faint);
   cursor: col-resize;
+  overflow: visible;
   touch-action: none;
+}
+
+.rail-resize-handle::before {
+  content: "";
+  position: absolute;
+  top: 4px;
+  bottom: 4px;
+  left: 50%;
+  width: 1px;
+  transform: translateX(-50%);
+  background: rgba(139, 150, 145, 0.28);
+}
+
+.rail-resize-handle svg {
+  position: relative;
+  z-index: 1;
+  flex: 0 0 auto;
+  border-radius: 999px;
+  background: var(--bg);
 }
 
 .rail-resize-handle:hover,
@@ -267,6 +296,16 @@ h3 {
   border-color: rgba(5, 119, 125, 0.2);
   background: #edf7f6;
   color: var(--teal);
+}
+
+.rail-resize-handle:hover::before,
+.rail-resize-handle:focus-visible::before {
+  background: rgba(5, 119, 125, 0.42);
+}
+
+.rail-resize-handle:hover svg,
+.rail-resize-handle:focus-visible svg {
+  background: #edf7f6;
 }
 
 .is-resizing-rail,
@@ -1147,12 +1186,16 @@ h3 {
 .finding-list {
   display: grid;
   gap: 8px;
+  min-width: 0;
 }
 
 .evidence-item {
   display: grid;
   gap: 5px;
+  min-width: 0;
   width: 100%;
+  max-width: 100%;
+  overflow: hidden;
   text-align: left;
   border: 1px solid var(--line);
   border-radius: 6px;
@@ -1169,6 +1212,14 @@ h3 {
 .evidence-item.active {
   border-color: var(--teal);
   box-shadow: 0 0 0 3px rgba(5, 119, 125, 0.1);
+}
+
+.evidence-item > strong,
+.evidence-item > p,
+.evidence-item > small {
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
 }
 
 .evidence-key {
@@ -1216,14 +1267,17 @@ h3 {
   display: flex;
   flex-wrap: wrap;
   gap: 5px;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .evidence-badges small {
-  width: fit-content;
+  max-width: 100%;
   border-radius: 4px;
   background: #eef4f1;
   padding: 1px 6px;
   font-size: 11px;
+  overflow-wrap: anywhere;
 }
 
 .evidence-badges small.quality-high {
@@ -1294,10 +1348,12 @@ h3 {
   align-items: center;
   gap: 5px;
   min-width: 0;
+  max-width: 100%;
   color: var(--blue);
   font-size: 12px;
   font-weight: 720;
   overflow-wrap: anywhere;
+  word-break: break-word;
   text-decoration: none;
 }
 
@@ -1492,11 +1548,13 @@ h3 {
   padding: 10px;
 }
 
+.evidence-group,
 .finding-group {
   display: grid;
   gap: 7px;
 }
 
+.evidence-group-title,
 .finding-group-title,
 .finding-heading,
 .finding-meta {
@@ -1506,11 +1564,13 @@ h3 {
   min-width: 0;
 }
 
+.evidence-group-title,
 .finding-group-title {
   justify-content: space-between;
   min-height: 24px;
 }
 
+.evidence-group-title strong,
 .finding-group-title strong {
   flex: 1;
   color: var(--text);
@@ -1536,10 +1596,12 @@ h3 {
   transition: transform 0.16s ease;
 }
 
+.evidence-group.collapsed .severity-toggle svg,
 .finding-group.collapsed .severity-toggle svg {
   transform: rotate(-90deg);
 }
 
+.evidence-group-title small,
 .finding-group-title small {
   border-radius: 999px;
   background: #eef4f1;
@@ -1549,9 +1611,22 @@ h3 {
   font-weight: 850;
 }
 
+.evidence-group-note,
 .finding-group-note {
   color: var(--muted);
   font-size: 12px;
+}
+
+.evidence-group .severity-dot.high {
+  background: var(--green);
+}
+
+.evidence-group .severity-dot.medium {
+  background: var(--blue);
+}
+
+.evidence-group .severity-dot.low {
+  background: var(--amber);
 }
 
 .severity-dot {

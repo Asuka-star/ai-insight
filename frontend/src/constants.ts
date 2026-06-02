@@ -6,8 +6,7 @@ export const AGENTS: AgentName[] = [
   "EXTRACTOR",
   "ANALYST",
   "WRITER",
-  "REVIEWER",
-  "FINALIZER"
+  "REVIEWER"
 ];
 
 export const AGENT_LABELS: Record<AgentName, string> = {
@@ -16,8 +15,7 @@ export const AGENT_LABELS: Record<AgentName, string> = {
   EXTRACTOR: "结构化抽取",
   ANALYST: "竞品分析",
   WRITER: "报告撰写",
-  REVIEWER: "事实质检",
-  FINALIZER: "最终封版"
+  REVIEWER: "事实质检"
 };
 
 export const AGENT_STAGE: Record<AgentName, string> = {
@@ -26,14 +24,14 @@ export const AGENT_STAGE: Record<AgentName, string> = {
   EXTRACTOR: "schema",
   ANALYST: "analysis",
   WRITER: "report",
-  REVIEWER: "review",
-  FINALIZER: "final"
+  REVIEWER: "review"
 };
 
 export const ARTIFACT_LABELS: Record<ArtifactType, string> = {
   CLARIFICATION_BRIEF: "范围摘要",
   SOURCE_LIST: "资料清单",
   RESEARCH_PLAN: "调研计划",
+  FACT_EXTRACTION: "事实抽取",
   COMPETITOR_PROFILE: "竞品 Schema",
   COMPETITIVE_MATRIX: "横向矩阵",
   SWOT_ANALYSIS: "SWOT 分析",

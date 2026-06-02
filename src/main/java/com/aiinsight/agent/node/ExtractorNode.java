@@ -276,12 +276,12 @@ public class ExtractorNode implements AgentNode {
             return personas;
         }
         UserPersona unknownPersona = new UserPersona();
-        unknownPersona.setName("典型用户待验证");
+        unknownPersona.setName("典型使用或评估者待验证");
         unknownPersona.setSegment("待验证");
-        unknownPersona.setCompanySize("待验证");
-        unknownPersona.setJobsToBeDone(List.of("待验证"));
-        unknownPersona.setPainPoints(List.of("待验证"));
-        unknownPersona.setBuyingConcerns(List.of("待验证"));
+        unknownPersona.setCompanySize("需按目标场景继续确认");
+        unknownPersona.setJobsToBeDone(List.of("按用户关注维度继续验证"));
+        unknownPersona.setPainPoints(List.of("实际使用阻力待验证"));
+        unknownPersona.setBuyingConcerns(List.of("采用成本、学习成本或商业条款待验证"));
         unknownPersona.setEvidenceIds(fallbackEvidenceIds);
         return List.of(unknownPersona);
     }

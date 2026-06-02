@@ -70,6 +70,7 @@ export function ScopeConfirmationPanel({
   const scopeEditable = !busy && !creating && !agentRunning && (!run || ["DRAFT", "AWAITING_CONFIRMATION", "PENDING"].includes(phaseText));
   // Clarifier 没产出待确认项时，用户无需再点一次“确认范围”，启动前会直接保存当前结构化范围。
   const canStartWithoutConfirm = hasDraft && !hasClarificationRequests;
+  const mainAnalysisStarted = Boolean(run?.steps?.some((step) => step.agentName !== "CLARIFIER"));
   const hasScopeInput = [industry, competitors, dimensions, outputGoal, sourceUrls].some((value) => value.trim());
   const canCreate = !run && !busy && !creating && hasScopeInput;
   const canConfirm = Boolean(run) && hasClarificationRequests && !busy && !agentRunning && ["DRAFT", "AWAITING_CONFIRMATION", "PENDING"].includes(phaseText);
@@ -77,6 +78,7 @@ export function ScopeConfirmationPanel({
   const canStart = Boolean(run)
     && !busy
     && !agentRunning
+    && !mainAnalysisStarted
     && (isConfirmed || canStartWithoutConfirm)
     && ["AWAITING_CONFIRMATION", "PENDING", "NEEDS_USER_INPUT"].includes(phaseText);
 

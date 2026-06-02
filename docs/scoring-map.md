@@ -24,7 +24,6 @@
 - `AnalystNode`：生成矩阵、Claim 和 SWOT。
 - `WriterNode`：生成报告草稿。
 - `ReviewerNode`：质检引用覆盖和证据缺口。
-- `FinalizerNode`：最终封版，保留 Writer 正文并追加 Reviewer 复核状态和证据限制。
 
 演示方式：
 

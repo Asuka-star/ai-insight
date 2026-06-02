@@ -236,7 +236,7 @@ function reworkLimitProfile(
     return "";
   }
   const latestTransition = workflowTransitions.at(-1);
-  if (latestTransition?.route !== "finish" || latestTransition.targetNode !== "FINALIZER" || latestTransition.trigger !== "auto-review-gate") {
+  if (latestTransition?.route !== "finish" || latestTransition.trigger !== "auto-review-gate") {
     return "";
   }
   const reworkCount = workflowTransitions.filter((transition) => transition.route && transition.route !== "finish").length;

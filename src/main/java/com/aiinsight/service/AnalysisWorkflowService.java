@@ -204,6 +204,7 @@ public class AnalysisWorkflowService {
         int completeProfiles = (int) run.getCompetitorProfiles().stream()
                 .filter(this::isCompleteProfile)
                 .count();
+        // Count historical final reports for old runs; current runs use REPORT_DRAFT as the report artifact.
         int citationMentions = run.getArtifacts().stream()
                 .filter(artifact -> artifact.getType() == ArtifactType.FINAL_REPORT
                         || artifact.getType() == ArtifactType.REPORT_DRAFT)

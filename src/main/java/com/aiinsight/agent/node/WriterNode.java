@@ -110,12 +110,15 @@ public class WriterNode implements AgentNode {
                 6. 不要在正文使用 [C-...] Claim ID；Claim ID 只供内部追踪，面向用户只展示自然语言结论和 [S] 证据编号。
                 7. 总字数控制在 1200-1800 字。至少包含一个“建议优先级”表，列出：建议、理由、证据、置信度、下一步。
                 8. 必须优先使用“结构化结论”、竞品矩阵和 SWOT；证据索引只用于引用定位，不用于重新分析。
-                9. 建议结构：一句话结论、建议优先级、关键洞察、竞品对比、风险与证据缺口、下一步补证清单。
-                10. 报告主体只写“已验证/可初步判断”的内容；“待验证/证据不足”集中放到“风险与证据缺口”或“下一步补证清单”，不要铺满对比表。
-                11. 如果某个维度只有公开说明而没有体验证据，请写成“公开资料显示...”而不是直接判定体验优劣。
-                12. 不要出现 Analyst、Reviewer、Researcher、Writer、打回采集、重跑 Agent 等内部流程措辞。
-                13. 如果 Reviewer 修复计划包含结构化修复任务，优先只修订 task 定位的 paragraph/excerpt/currentText；不要为了一个 citation 问题重写整份报告。
-                14. 每个 task 必须满足 expectedFix 和 criteria；无法满足时，把对应表述降级为“待验证/证据不足”，并放入风险与证据缺口。
+                9. 先根据“用户需求、分析维度、结构化结论、竞品画像”归纳本次最重要的 3-6 个对比维度，再决定报告小节；不要把示例结构当成固定模板。
+                10. 建议结构可参考：一句话结论、建议优先级、关键洞察、竞品对比、风险与证据缺口、下一步补证清单；如果用户目标或证据形态不适合某个小节，可以合并、改名或省略。
+                11. 报告主体只写“已验证/可初步判断”的内容；“待验证/证据不足”集中放到“风险与证据缺口”或“下一步补证清单”，不要铺满对比表。
+                12. 如果某个维度只有公开说明而没有体验证据，请写成“公开资料显示...”而不是直接判定体验优劣。
+                13. 不要把竞品固定归类为某条路线、某类用户或某种商业模式；只有结构化结论或证据明确支持时才可下这种判断。
+                14. 不要输出“结构化结论”作为自然语言句子的尾巴或来源名；内部 Claim ID 应直接移除，不能替换成面向用户的词。
+                15. 不要出现 Analyst、Reviewer、Researcher、Writer、打回采集、重跑 Agent 等内部流程措辞。
+                16. 如果 Reviewer 修复计划包含结构化修复任务，优先只修订 task 定位的 paragraph/excerpt/currentText；不要为了一个 citation 问题重写整份报告。
+                17. 每个 task 必须满足 expectedFix 和 criteria；无法满足时，把对应表述降级为“待验证/证据不足”，并放入风险与证据缺口。
 
                 用户需求:
                 %s
@@ -176,8 +179,20 @@ public class WriterNode implements AgentNode {
             return "";
         }
         String cleaned = removeReportMetadata(text);
-        cleaned = CLAIM_REFERENCE_PATTERN.matcher(cleaned).replaceAll("结构化结论");
+        cleaned = removeInternalClaimReferences(cleaned);
         return sanitizeCitationText(run, cleaned);
+    }
+
+    private String removeInternalClaimReferences(String text) {
+        return CLAIM_REFERENCE_PATTERN.matcher(text)
+                .replaceAll("")
+                .lines()
+                .map(line -> line
+                        .replaceAll("\\s+([，。！？；：,.!?;:])", "$1")
+                        .replaceAll("[ \\t]{2,}", " ")
+                        .trim())
+                .collect(Collectors.joining("\n"))
+                .trim();
     }
 
     private String removeReportMetadata(String text) {

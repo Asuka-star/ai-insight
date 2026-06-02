@@ -44,7 +44,6 @@ export function WorkflowGraph({ run, onSelectAgent }: WorkflowGraphProps) {
     edge("EXTRACTOR", "ANALYST"),
     edge("ANALYST", "WRITER"),
     edge("WRITER", "REVIEWER"),
-    edge("REVIEWER", "FINALIZER"),
     edge("REVIEWER", "RESEARCHER", "recollect", "feedback"),
     edge("REVIEWER", "ANALYST", "reanalyze", "feedback"),
     edge("REVIEWER", "WRITER", "revise", "feedback")

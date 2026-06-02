@@ -105,7 +105,6 @@ AI Insight 是一个面向内部产品、业务、战略和运营分析团队的
 - `ANALYST`：生成横向对比、SWOT、机会点、风险和结构化 Claim。
 - `WRITER`：生成报告草稿。
 - `REVIEWER`：检查引用覆盖、事实一致性、过度推断和证据缺口。
-- `FINALIZER`：最终封版，保留 Writer 正文并追加复核状态、修复计划和证据限制。
 
 ### 3.4 补充上下文
 
@@ -316,7 +315,7 @@ POST /api/analysis-runs/{runId}/start
 建议行为：
 
 - 从当前 requirement 启动 DAG。
-- 异步执行 Researcher、Extractor、Analyst、Writer、Reviewer、Finalizer。
+- 异步执行 Researcher、Extractor、Analyst、Writer、Reviewer。
 - 前端通过 SSE 订阅进度。
 
 #### 补充上下文
@@ -618,7 +617,6 @@ EXTRACTOR
 ANALYST
 WRITER
 REVIEWER
-FINALIZER
 ```
 
 ### 6.5 ReviewAction

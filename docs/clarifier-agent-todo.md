@@ -40,8 +40,7 @@ START
    -> RESEARCHER  when route = recollect
    -> ANALYST     when route = reanalyze
    -> WRITER      when route = revise
-   -> FINALIZER   when route = finish
--> END
+   -> END         when route = finish
 ```
 
 ## 设计边界

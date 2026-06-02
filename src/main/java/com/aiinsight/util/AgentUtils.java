@@ -20,7 +20,7 @@ import java.util.stream.Collectors;
  * Shared utility methods across all agent nodes.
  * Eliminates duplicated private helpers (nullToEmpty, abbreviate, sanitizeCitationText, etc.)
  * that were previously copy-pasted into ClarifierNode, ResearcherNode, ExtractorNode,
- * AnalystNode, WriterNode, ReviewerNode, FinalizerNode, and WorkflowNodeExecutor.
+ * AnalystNode, WriterNode, ReviewerNode, and WorkflowNodeExecutor.
  */
 public final class AgentUtils {
 
@@ -43,7 +43,7 @@ public final class AgentUtils {
     /**
      * Returns trimmed value when non-blank, otherwise fallback.
      * Unifies the slightly different implementations across nodes
-     * (ExtractorNode trimmed, WriterNode/FinalizerNode did not).
+     * (ExtractorNode trimmed, WriterNode did not).
      */
     public static String textOrDefault(String value, String fallback) {
         return value == null || value.isBlank() ? fallback : value.trim();

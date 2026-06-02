@@ -21,10 +21,10 @@ RESEARCHER
    -> RESEARCHER  when ReviewDecision = RECOLLECT_EVIDENCE
    -> ANALYST     when ReviewDecision = REWORK_ANALYSIS
    -> WRITER      when ReviewDecision = REVISE_REPORT
-   -> FINALIZER   when ReviewDecision = PASS or rework limit reached
+   -> END         when ReviewDecision = PASS or rework limit reached
 ```
 
-`FINALIZER` 是封版节点，不重写 Writer 正文，只追加 Reviewer 复核状态、修复计划和证据限制说明。
+流程结束后不再执行封版 Agent。报告展示使用 Writer 生成的 `REPORT_DRAFT`，Reviewer 的复核结果作为独立产物和状态保留。
 
 ## 关键代码入口
 
@@ -38,7 +38,6 @@ RESEARCHER
 - `AnalystNode`：生成矩阵、SWOT 和结构化 claims。
 - `WriterNode`：基于需求、证据、Schema 和 Analyst 产物撰写报告草稿。
 - `ReviewerNode`：规则质检 + LLM 语义质检，生成 `ReviewFinding` 和 `ReviewDecision`。
-- `FinalizerNode`：生成最终封版报告。
 - `PostgresAnalysisRunRepository`：保存 `analysis_run.run_payload` 权威快照，并同步刷新明细投影表。
 
 ## 状态与数据约定
@@ -47,6 +46,15 @@ RESEARCHER
 - `analysis_artifact`、`agent_step`、`agent_trace`、`evidence_source`、`evidence_chunk`、`review_finding` 是查询和看板投影。
 - Agent 之间优先通过结构化对象传递状态，例如 `ResearchPackage`、`CompetitorProfile`、`AnalysisClaim`、`ReviewDecision`。
 - 报告引用使用 `[S1]` 这类 citation key，结构化 claim 使用 `evidenceIds`。
+- 新运行不再生成 `FINAL_REPORT` 或 `FINALIZATION_NOTE`；报告页展示 Writer 的最新 `REPORT_DRAFT`。
+- `FINAL_REPORT` 和 `FINALIZATION_NOTE` 类型仅用于兼容历史运行，不应在新 Agent 或服务中继续产出。
+
+## 封版节点删除约定
+
+- 主流程的最后一个可执行 Agent 是 `REVIEWER`。
+- `REVIEW_GATE` 的 `finish` 路由直接进入 LangGraph `END`，并在 `WorkflowTransition.targetNode` 中记录为 `END`。
+- Reviewer 的质检结论独立保存在 `ReviewFinding`、`ReviewDecision` 和 `REVIEW_FINDINGS` artifact 中，不再被复制或追加到报告正文。
+- 手动重跑只级联到 Reviewer，例如重跑 Writer 时执行 `WRITER -> REVIEWER`。
 
 ## 本地数据维护
 
@@ -89,5 +97,5 @@ npm run build
 
 ```powershell
 git diff --check
-rg -n "FINALIZER|FinalizerNode|FINALIZATION_NOTE" src frontend/src docs README.md
+# 再搜索旧封版 Agent 名称，确认没有残留引用。
 ```

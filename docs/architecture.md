@@ -207,17 +207,19 @@ Agent 直接读取并更新 `AnalysisRun`：
 - `RECOLLECT_EVIDENCE`
 - `ASK_USER`
 
-### 5.7 FINALIZER
+### 5.7 流程结束
 
 职责：
 
-- 最终封版，不重写 Writer 生成的报告正文。
-- 把 Reviewer 的复核状态、定向修复计划和证据限制追加到最终报告。
-- 保留 HIGH 级风险和待补证据提示，避免把未解决问题包装成已验证结论。
+- Reviewer 通过或达到自动返工上限后，主流程直接结束。
+- Writer 生成的 `REPORT_DRAFT` 是新流程的报告展示产物。
+- Reviewer 的 `ReviewFinding` 和 `ReviewDecision` 保留为独立质检结果，不再由封版节点复制到报告正文。
+- 历史运行中的 `FINAL_REPORT` 和 `FINALIZATION_NOTE` 仍可被前端读取，但新流程不再产出。
 
 输出：
 
-- `FINAL_REPORT` artifact。
+- `REPORT_DRAFT` artifact。
+- `REVIEW_FINDINGS` artifact。
 
 ## 6. LangGraph4j DAG
 
@@ -234,8 +236,7 @@ START
    -> RESEARCHER  when route = recollect
    -> ANALYST     when route = reanalyze
    -> WRITER      when route = revise
-   -> FINALIZER   when route = finish
--> END
+   -> END         when route = finish
 ```
 
 `REVIEW_GATE` 根据 `ReviewDecision.action` 决定路由：
@@ -243,7 +244,7 @@ START
 - `RECOLLECT_EVIDENCE` -> Researcher。
 - `REWORK_ANALYSIS` -> Analyst。
 - `REVISE_REPORT` -> Writer。
-- `PASS` -> Finalizer。
+- `PASS` -> END。
 
 当前为避免演示无限循环，自动打回最多 1 次。
 

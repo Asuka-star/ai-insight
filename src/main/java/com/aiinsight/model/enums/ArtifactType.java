@@ -10,6 +10,7 @@ public enum ArtifactType {
     SWOT_ANALYSIS,
     REPORT_DRAFT,
     REVIEW_FINDINGS,
+    // Historical compatibility only. New runs stop after Reviewer and display REPORT_DRAFT.
     FINALIZATION_NOTE,
     FINAL_REPORT
 }

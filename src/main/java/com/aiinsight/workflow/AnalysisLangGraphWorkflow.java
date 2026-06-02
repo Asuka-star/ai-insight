@@ -127,10 +127,11 @@ public class AnalysisLangGraphWorkflow {
                             ROUTE_REEXTRACT, AgentName.EXTRACTOR.name(),
                             ROUTE_REANALYZE, AgentName.ANALYST.name(),
                             ROUTE_REVISE, AgentName.WRITER.name(),
-                            ROUTE_FINISH, AgentName.FINALIZER.name()
+                            // The old final-copy step has been removed: Writer owns the report body, Reviewer owns quality state.
+                            // A finished review now terminates the graph directly instead of producing a copied final artifact.
+                            ROUTE_FINISH, GraphDefinition.END
                     )
             );
-            stateGraph.addEdge(AgentName.FINALIZER.name(), GraphDefinition.END);
             return stateGraph.compile();
         } catch (Exception ex) {
             throw new IllegalStateException("Failed to build LangGraph4j analysis workflow", ex);
@@ -228,20 +229,22 @@ public class AnalysisLangGraphWorkflow {
         if (ROUTE_REVISE.equals(route)) {
             return AgentName.WRITER.name();
         }
-        return AgentName.FINALIZER.name();
+        // Persist the finish target as END so workflow history reflects that no downstream agent ran.
+        return GraphDefinition.END;
     }
 
     private List<AgentNode> rerunCascade(AgentName agentName) {
+        // Manual reruns replay the selected agent plus deterministic downstream dependencies only.
+        // Reviewer is the terminal executable agent; finish no longer triggers a copied-report step.
         List<AgentName> order = switch (agentName) {
             case CLARIFIER -> List.of(AgentName.CLARIFIER);
             case RESEARCHER -> List.of(AgentName.RESEARCHER, AgentName.EXTRACTOR, AgentName.ANALYST,
-                    AgentName.WRITER, AgentName.REVIEWER, AgentName.FINALIZER);
+                    AgentName.WRITER, AgentName.REVIEWER);
             case EXTRACTOR -> List.of(AgentName.EXTRACTOR, AgentName.ANALYST, AgentName.WRITER,
-                    AgentName.REVIEWER, AgentName.FINALIZER);
-            case ANALYST -> List.of(AgentName.ANALYST, AgentName.WRITER, AgentName.REVIEWER, AgentName.FINALIZER);
-            case WRITER -> List.of(AgentName.WRITER, AgentName.REVIEWER, AgentName.FINALIZER);
-            case REVIEWER -> List.of(AgentName.REVIEWER, AgentName.FINALIZER);
-            case FINALIZER -> List.of(AgentName.FINALIZER);
+                    AgentName.REVIEWER);
+            case ANALYST -> List.of(AgentName.ANALYST, AgentName.WRITER, AgentName.REVIEWER);
+            case WRITER -> List.of(AgentName.WRITER, AgentName.REVIEWER);
+            case REVIEWER -> List.of(AgentName.REVIEWER);
         };
         return order.stream()
                 .map(nodesByName::get)

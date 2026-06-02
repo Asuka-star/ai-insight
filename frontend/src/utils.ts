@@ -72,6 +72,7 @@ export function formatTime(value?: string): string {
 }
 
 export function findDefaultArtifact(artifacts: AnalysisArtifact[]): AnalysisArtifact | undefined {
+  // Prefer historical FINAL_REPORT when opening old runs; new runs usually fall back to REPORT_DRAFT.
   return [...artifacts].reverse().find((artifact) => artifact.type === "FINAL_REPORT") ?? artifacts.at(-1);
 }
 

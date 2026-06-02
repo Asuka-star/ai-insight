@@ -214,10 +214,6 @@ public class WorkflowNodeExecutor {
                     run.getEvidenceSources().size(),
                     run.getArtifacts().size()
             );
-            case FINALIZER -> prefix + "生成最终封版报告：复核问题=%d，复核动作=%s".formatted(
-                    run.getReviewFindings().size(),
-                    reviewAction(run)
-            );
         };
     }
 
@@ -256,11 +252,6 @@ public class WorkflowNodeExecutor {
                     run.getReviewFindings().size(),
                     reviewAction(run),
                     textOrDefault(reviewDecision(run).getReason(), "未记录原因")
-            );
-            case FINALIZER -> "最终封版完成：产物=%d，遗留复核问题=%d，建议动作=%d".formatted(
-                    run.getArtifacts().size(),
-                    run.getReviewFindings().size(),
-                    run.getRecommendedActions().size()
             );
         };
     }

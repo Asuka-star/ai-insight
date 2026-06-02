@@ -49,7 +49,7 @@ public class FallbackResearchPlanFactory {
             tasks.add(new ResearchTask(
                     "pricing_page",
                     competitor + " 价格页",
-                    "验证免费版、团队版、企业版和商业模式线索。",
+                    "验证免费层、付费套餐、定制方案和商业模式线索。",
                     hasEvidenceType(run, "pricing") ? "covered" : "needs_collection"
             ));
             tasks.add(new ResearchTask(

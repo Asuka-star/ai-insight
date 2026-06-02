@@ -65,15 +65,15 @@ public class FallbackExtractionFactory {
         profile.setCompanyName(productName);
         profile.setPositioning("%s 领域竞品，具体定位需结合证据继续验证。".formatted(domain));
         profile.setTargetUsers(interviewRoles.isEmpty()
-                ? List.of(domain + "目标用户", "采购/业务决策参与者")
-                : mergeDistinct(List.of(domain + "目标用户", "采购/业务决策参与者"), interviewRoles));
+                ? List.of(domain + "相关目标用户", "评估或决策参与者")
+                : mergeDistinct(List.of(domain + "相关目标用户", "评估或决策参与者"), interviewRoles));
         profile.setStrengths(evidenceIds.isEmpty()
                 ? List.of("优势待验证")
                 : List.of("已采集到可核验证据，可支持初步画像"));
         profile.setWeaknesses(!painPoints.isEmpty()
                 ? painPoints.stream().map(point -> "访谈显示：" + point).limit(3).toList()
                 : pricingEvidencePresent
-                ? List.of("用户迁移成本、学习成本和差异化弱势仍需继续验证")
+                ? List.of("采用成本、学习成本和差异化弱势仍需继续验证")
                 : List.of("价格策略、用户评价和差异化弱势仍需补充证据"));
         profile.setEvidenceIds(evidenceIds);
 
@@ -92,15 +92,15 @@ public class FallbackExtractionFactory {
         profile.setPricingModel(pricingModel);
 
         UserPersona persona = new UserPersona();
-        persona.setName(productName + " 典型团队用户");
+        persona.setName(productName + " 典型使用或评估者");
         persona.setSegment(domain);
-        persona.setCompanySize("中小团队到企业团队");
+        persona.setCompanySize("需按目标场景继续确认");
         persona.setJobsToBeDone(jobsFor(run));
         persona.setPainPoints(painPoints.isEmpty()
-                ? List.of("价值验证不足", "迁移或集成成本待评估", "团队采用阻力待验证")
+                ? List.of("价值验证不足", "采用或集成成本待评估", "实际使用阻力待验证")
                 : painPoints);
         persona.setBuyingConcerns(buyingConcerns.isEmpty()
-                ? List.of("迁移成本", "成员学习成本", "价格方案")
+                ? List.of("采用成本", "学习成本", "价格或商业条款")
                 : buyingConcerns);
         persona.setEvidenceIds(personaEvidenceIds);
         profile.setPersonas(List.of(persona));
@@ -159,11 +159,11 @@ public class FallbackExtractionFactory {
             return List.of();
         }
         return List.of(new PricingPlan(
-                "团队版 / 企业版",
+                "公开套餐 / 定制方案",
                 "以价格页为准",
-                "month_or_year",
-                "团队与企业客户",
-                List.of("核心能力", "团队能力", "企业管理能力"),
+                "以原始页面为准",
+                "目标用户或采购主体",
+                List.of("已披露能力", "适用范围", "限制条件"),
                 evidenceIds
         ));
     }

@@ -81,6 +81,7 @@ export function App() {
   const [selectedArtifactId, setSelectedArtifactId] = useState<string>();
   const [artifactPinned, setArtifactPinned] = useState(false);
   const [selectedCitationKey, setSelectedCitationKey] = useState<string>();
+  const [selectedCitationRequestId, setSelectedCitationRequestId] = useState(0);
   const [selectedClaimId, setSelectedClaimId] = useState<string>();
   const [selectedAgent, setSelectedAgent] = useState<AgentName | null>(null);
   const [contextText, setContextText] = useState("");
@@ -354,6 +355,7 @@ export function App() {
   const reportDisplayArtifact = useMemo(() => {
     return selectedArtifact && isReportArtifact(selectedArtifact)
       ? selectedArtifact
+      // FINAL_REPORT is only expected on historical runs; current runs display the latest REPORT_DRAFT.
       : [...reportArtifacts].reverse().find((artifact) => artifact.type === "FINAL_REPORT")
         ?? reportArtifacts.at(-1);
   }, [reportArtifacts, selectedArtifact]);
@@ -422,6 +424,7 @@ export function App() {
 
   const handleSelectCitation = useCallback((citationKey: string) => {
     setSelectedCitationKey(citationKey);
+    setSelectedCitationRequestId((requestId) => requestId + 1);
     setCollapsedRightPanels((current) => {
       if (!current.evidence) return current;
       return {
@@ -667,6 +670,7 @@ export function App() {
 
   async function handleStartAnalysis() {
     if (!run) return;
+    if (hasMainAnalysisStarted(run)) return;
     const requestToken = ++workspaceRequestTokenRef.current;
     setIsScopeBusy(true);
     setEventMessage("正在保存范围并启动 Agent 分析");
@@ -845,10 +849,10 @@ export function App() {
 
   const mainTabs: Array<{ key: MainView; label: string }> = [
     { key: "dag", label: "Agent DAG" },
-    { key: "report", label: "最终报告" },
+    { key: "report", label: "报告" },
     { key: "schema", label: "结构化 Schema" },
     { key: "matrix", label: "竞品矩阵" },
-    { key: "versions", label: "报告版本" }
+    { key: "versions", label: "全部产物" }
   ];
 
   return (
@@ -1098,6 +1102,7 @@ export function App() {
           <EvidencePanel
             sources={run?.evidenceSources ?? []}
             selectedCitationKey={selectedCitationKey}
+            selectedCitationRequestId={selectedCitationRequestId}
             onSelectCitation={handleSelectCitation}
             collapsed={collapsedRightPanels.evidence}
             onToggle={() => toggleRightPanel("evidence")}
@@ -1304,6 +1309,10 @@ function safeParseRunSnapshot(event: MessageEvent<string>): AnalysisRun | null {
 
 function isCurrentWorkspaceRun(runId: string) {
   return window.localStorage.getItem(CURRENT_RUN_STORAGE_KEY) === runId;
+}
+
+function hasMainAnalysisStarted(run: AnalysisRun) {
+  return run.steps.some((step) => step.agentName !== "CLARIFIER");
 }
 
 function splitLines(value: string) {

@@ -6,7 +6,6 @@ import com.aiinsight.agent.node.ClarifierNode;
 import com.aiinsight.agent.node.ExtractorNode;
 import com.aiinsight.agent.node.ResearcherNode;
 import com.aiinsight.agent.node.ReviewerNode;
-import com.aiinsight.agent.node.FinalizerNode;
 import com.aiinsight.agent.node.WriterNode;
 import com.aiinsight.dto.AddAnalysisContextRequest;
 import com.aiinsight.dto.AddUserEvidenceRequest;
@@ -49,6 +48,7 @@ import com.aiinsight.service.fallback.FallbackResearchPlanFactory;
 import com.aiinsight.workflow.AnalysisLangGraphWorkflow;
 import com.aiinsight.workflow.WorkflowNodeExecutor;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import org.bsc.langgraph4j.GraphDefinition;
 import org.junit.jupiter.api.Test;
 import org.springframework.core.task.support.TaskExecutorAdapter;
 
@@ -483,7 +483,7 @@ class AnalysisWorkflowServiceTest {
                 });
         assertThat(finished.getWorkflowTransitions()).isNotEmpty();
         assertThat(finished.getWorkflowTransitions().get(finished.getWorkflowTransitions().size() - 1).getRoute()).isEqualTo("finish");
-        assertThat(finished.getWorkflowTransitions().get(finished.getWorkflowTransitions().size() - 1).getTargetNode()).isEqualTo(AgentName.FINALIZER.name());
+        assertThat(finished.getWorkflowTransitions().get(finished.getWorkflowTransitions().size() - 1).getTargetNode()).isEqualTo(GraphDefinition.END);
         assertThat(finished.getSteps())
                 .filteredOn(step -> step.getAgentName() == AgentName.RESEARCHER)
                 .isNotEmpty();
@@ -534,7 +534,6 @@ class AnalysisWorkflowServiceTest {
                 .contains(1);
         assertThat(finished.getArtifacts()).anyMatch(artifact -> artifact.getType() == ArtifactType.SWOT_ANALYSIS);
         assertThat(finished.getArtifacts()).anyMatch(artifact -> artifact.getType() == ArtifactType.RESEARCH_PLAN);
-        assertThat(finished.getArtifacts()).anyMatch(artifact -> artifact.getType() == ArtifactType.FINAL_REPORT);
         assertThat(finished.getReviewFindings())
                 .noneMatch(finding -> finding.getSeverity() == com.aiinsight.model.enums.ReviewSeverity.HIGH);
     }
@@ -704,8 +703,8 @@ class AnalysisWorkflowServiceTest {
                 .filteredOn(artifact -> artifact.getType() == ArtifactType.REPORT_DRAFT)
                 .last()
                 .satisfies(artifact -> assertThat(artifact.getContent())
-                        .contains("结构化结论", "[S1]")
-                        .doesNotContain("报告编号", "生成日期", "报告草稿结束", "[C-77b41f42"));
+                        .contains("核心路径差异可以作为规划输入", "[S1]")
+                        .doesNotContain("报告编号", "生成日期", "报告草稿结束", "[C-77b41f42", "结构化结论"));
     }
 
     @Test
@@ -745,6 +744,7 @@ class AnalysisWorkflowServiceTest {
         assertThat(promptCapture.toString())
                 .contains("结构化结论:", "竞品画像摘要:", "竞品矩阵:", "SWOT 分析:", "采集包缺口与一手洞察:", "证据索引:")
                 .contains("结论先行", "建议优先级", "不要输出报告编号", "不要在正文使用 [C-...] Claim ID")
+                .contains("归纳本次最重要的 3-6 个对比维度", "不要把示例结构当成固定模板", "不能替换成面向用户的词")
                 .contains("报告主体只写“已验证/可初步判断”的内容", "不要出现 Analyst、Reviewer、Researcher、Writer")
                 .contains("Notion 的 AI 搜索能力可作为产品规划参考。", "AI 知识协作工具", "证据缺口", "Notion AI search")
                 .doesNotContain("相关证据切片", "S1-C1");
@@ -1448,6 +1448,17 @@ class AnalysisWorkflowServiceTest {
         assertThat(salesforce.getFeatureTree().getRoots())
                 .extracting(node -> node.getName())
                 .containsExactly("线索管理", "销售预测", "客户支持");
+        assertThat(salesforce.getPersonas())
+                .anySatisfy(persona -> {
+                    assertThat(persona.getName()).contains("使用或评估者");
+                    assertThat(persona.getCompanySize()).isEqualTo("需按目标场景继续确认");
+                    assertThat(persona.getPainPoints()).contains("实际使用阻力待验证");
+                });
+        assertThat(salesforce.getPricingModel().getPlans())
+                .anySatisfy(plan -> {
+                    assertThat(plan.getName()).isEqualTo("公开套餐 / 定制方案");
+                    assertThat(plan.getTargetSegment()).isEqualTo("目标用户或采购主体");
+                });
         assertThat(run.getArtifacts())
                 .filteredOn(artifact -> artifact.getType() == ArtifactType.COMPETITOR_PROFILE)
                 .last()
@@ -1662,19 +1673,15 @@ class AnalysisWorkflowServiceTest {
         var run = service.start(request);
         var rerun = service.rerunAgent(run.getId(), AgentName.WRITER);
 
-        assertThat(rerun.getSteps().subList(rerun.getSteps().size() - 3, rerun.getSteps().size()))
+        assertThat(rerun.getSteps().subList(rerun.getSteps().size() - 2, rerun.getSteps().size()))
                 .extracting(step -> step.getAgentName())
-                .containsExactly(AgentName.WRITER, AgentName.REVIEWER, AgentName.FINALIZER);
+                .containsExactly(AgentName.WRITER, AgentName.REVIEWER);
         assertThat(rerun.getArtifacts())
                 .filteredOn(artifact -> artifact.getType() == ArtifactType.REPORT_DRAFT)
                 .extracting(artifact -> artifact.getVersion())
                 .containsExactly(1, 2);
         assertThat(rerun.getArtifacts())
                 .filteredOn(artifact -> artifact.getType() == ArtifactType.REVIEW_FINDINGS)
-                .extracting(artifact -> artifact.getVersion())
-                .containsExactly(1, 2);
-        assertThat(rerun.getArtifacts())
-                .filteredOn(artifact -> artifact.getType() == ArtifactType.FINAL_REPORT)
                 .extracting(artifact -> artifact.getVersion())
                 .containsExactly(1, 2);
         assertThat(rerun.getWorkflowTransitions())
@@ -1694,15 +1701,14 @@ class AnalysisWorkflowServiceTest {
         var run = service.start(request);
         var rerun = service.rerunAgent(run.getId(), AgentName.RESEARCHER);
 
-        assertThat(rerun.getSteps().subList(rerun.getSteps().size() - 6, rerun.getSteps().size()))
+        assertThat(rerun.getSteps().subList(rerun.getSteps().size() - 5, rerun.getSteps().size()))
                 .extracting(step -> step.getAgentName())
                 .containsExactly(
                         AgentName.RESEARCHER,
                         AgentName.EXTRACTOR,
                         AgentName.ANALYST,
                         AgentName.WRITER,
-                        AgentName.REVIEWER,
-                        AgentName.FINALIZER
+                        AgentName.REVIEWER
                 );
         assertThat(rerun.getArtifacts())
                 .filteredOn(artifact -> artifact.getType() == ArtifactType.REPORT_DRAFT)
@@ -1727,13 +1733,12 @@ class AnalysisWorkflowServiceTest {
 
         assertThat(rerun.getStatus()).isIn(AnalysisStatus.SUCCEEDED, AnalysisStatus.NEEDS_USER_INPUT);
         assertThat(rerun.getErrorMessage()).isNull();
-        assertThat(rerun.getSteps().subList(rerun.getSteps().size() - 4, rerun.getSteps().size()))
+        assertThat(rerun.getSteps().subList(rerun.getSteps().size() - 3, rerun.getSteps().size()))
                 .extracting(step -> step.getAgentName())
                 .containsExactly(
                         AgentName.ANALYST,
                         AgentName.WRITER,
-                        AgentName.REVIEWER,
-                        AgentName.FINALIZER
+                        AgentName.REVIEWER
                 );
         assertThat(rerun.getWorkflowTransitions())
                 .last()
@@ -2659,124 +2664,6 @@ class AnalysisWorkflowServiceTest {
                 });
     }
 
-    @Test
-    void finalizerKeepsFinalReportCleanAndLeavesFindingsInReviewArtifact() {
-        AnalysisRun run = new AnalysisRun();
-        run.addArtifact(new AnalysisArtifact(
-                ArtifactType.REPORT_DRAFT,
-                "draft",
-                "# 报告草稿\n\n机会点是优化价格策略 [S1]。",
-                List.of("S1")
-        ));
-        run.addArtifact(new AnalysisArtifact(
-                ArtifactType.REVIEW_FINDINGS,
-                "review",
-                "claim_missing_evidence：结构化结论未绑定证据。",
-                List.of()
-        ));
-        ReviewFinding finding = new ReviewFinding(
-                ReviewSeverity.HIGH,
-                "claim_missing_evidence",
-                "结构化结论未绑定证据。",
-                "补充 evidenceIds 或降级为待验证。"
-        );
-        finding.setClaimId("C-1");
-        finding.setCitationKey("S1");
-        run.getReviewFindings().add(finding);
-        run.getReviewDecision().setAction(ReviewAction.REWORK_ANALYSIS);
-        run.getReviewDecision().setTargetAgent(AgentName.ANALYST);
-        run.getReviewDecision().setAffectedClaimIds(List.of("C-1"));
-        run.getReviewDecision().setRequiredEvidenceTypes(List.of("pricing_page"));
-        run.getReviewDecision().setRepairScopeSummary("目标 Agent=ANALYST；阻断问题=1；Claim=C-1；证据类型=pricing_page。");
-        run.getReviewDecision().setRepairInstructions(List.of(
-                "Analyst 优先修复 affectedClaimIds 指向的结构化结论，避免重写无关 claims。"
-        ));
-
-        new FinalizerNode().execute(run);
-
-        assertThat(run.getArtifacts())
-                .filteredOn(artifact -> artifact.getType() == ArtifactType.FINAL_REPORT)
-                .last()
-                .satisfies(artifact -> assertThat(artifact.getContent())
-                        .contains("内部复核项")
-                        .doesNotContain("Reviewer 当前决策")
-                        .doesNotContain("ReviewDecision")
-                        .doesNotContain("定向修复计划")
-                        .doesNotContain("Analyst 优先修复 affectedClaimIds")
-                        .doesNotContain("claim_missing_evidence")
-                        .doesNotContain("结构化结论未绑定证据。")
-                );
-        assertThat(run.getArtifacts())
-                .filteredOn(artifact -> artifact.getType() == ArtifactType.FINALIZATION_NOTE)
-                .last()
-                .satisfies(artifact -> assertThat(artifact.getContent())
-                        .contains("Reviewer 当前决策为 `REWORK_ANALYSIS`")
-                        .contains("定向修复计划")
-                        .contains("C-1")
-                        .contains("pricing_page"));
-        assertThat(run.getArtifacts())
-                .filteredOn(artifact -> artifact.getType() == ArtifactType.REVIEW_FINDINGS)
-                .last()
-                .satisfies(artifact -> assertThat(artifact.getContent()).contains("claim_missing_evidence"));
-        assertThat(run.getRecommendedActions())
-                .anyMatch(action -> action.contains("HIGH"));
-    }
-
-    @Test
-    void finalizerExplainsWhenReworkLimitStopsOpenReviewDecision() {
-        AnalysisRun run = new AnalysisRun();
-        run.addArtifact(new AnalysisArtifact(
-                ArtifactType.REPORT_DRAFT,
-                "draft",
-                "# 报告草稿\n\n定价页证据仍不足 [S1]。",
-                List.of("S1")
-        ));
-        ReviewFinding finding = new ReviewFinding(
-                ReviewSeverity.HIGH,
-                "citation_missing",
-                "缺少官方定价页证据。",
-                "补采 pricing_page。"
-        );
-        finding.setClaimId("C-1");
-        run.getReviewFindings().add(finding);
-        run.getReviewDecision().setAction(ReviewAction.RECOLLECT_EVIDENCE);
-        run.getReviewDecision().setTargetAgent(AgentName.RESEARCHER);
-        run.getReviewDecision().setRequiredEvidenceTypes(List.of("pricing_page"));
-        run.getReviewDecision().setAffectedClaimIds(List.of("C-1"));
-        run.getReviewDecision().setRepairScopeSummary("目标 Agent=RESEARCHER；证据类型=pricing_page。");
-        WorkflowTransition transition = new WorkflowTransition(
-                "REVIEW_GATE",
-                AgentName.FINALIZER.name(),
-                "finish",
-                ReviewAction.RECOLLECT_EVIDENCE,
-                "仍需补证，但已达到返工上限。",
-                1
-        );
-        transition.setTrigger("auto-review-gate");
-        run.getWorkflowTransitions().add(transition);
-
-        new FinalizerNode().execute(run);
-
-        assertThat(run.getArtifacts())
-                .filteredOn(artifact -> artifact.getType() == ArtifactType.FINAL_REPORT)
-                .last()
-                .satisfies(artifact -> assertThat(artifact.getContent())
-                        .contains("内部复核项")
-                        .doesNotContain("自动返工上限说明")
-                        .doesNotContain("ReviewDecision"));
-        assertThat(run.getArtifacts())
-                .filteredOn(artifact -> artifact.getType() == ArtifactType.FINALIZATION_NOTE)
-                .last()
-                .satisfies(artifact -> assertThat(artifact.getContent())
-                        .contains("自动返工上限说明")
-                        .contains("最后一次 ReviewDecision 仍为 `RECOLLECT_EVIDENCE`")
-                        .contains("不得被理解为“质检已通过”")
-                        .contains("已执行自动返工次数：0"));
-        assertThat(run.getRecommendedActions())
-                .anyMatch(action -> action.contains("自动返工")
-                        && action.contains("ReviewDecision"));
-    }
-
     private String invokeRepairPlanBlock(Object node, AnalysisRun run) throws Exception {
         java.lang.reflect.Method method = node.getClass().getDeclaredMethod("repairPlanBlock", AnalysisRun.class);
         method.setAccessible(true);
@@ -2822,7 +2709,6 @@ class AnalysisWorkflowServiceTest {
         AnalysisLangGraphWorkflow graphWorkflow = new AnalysisLangGraphWorkflow(
                 List.of(
                         clarifierNode,
-                        new FinalizerNode(),
                         new WriterNode(noopLlmClient, new FallbackReportDraftFactory()),
                         new ReviewerNode(new CitationCoverageEvaluator(), noopLlmClient, new FallbackReviewReportFactory()),
                         new AnalystNode(noopLlmClient, new ObjectMapper(), new FallbackAnalysisDraftFactory()),

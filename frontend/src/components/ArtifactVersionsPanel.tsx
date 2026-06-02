@@ -19,8 +19,8 @@ export function ArtifactVersionsPanel({ artifacts, selectedArtifactId, onSelectA
     return (
       <div className="empty-state">
         <GitCompareArrows size={22} />
-        <strong>暂无版本</strong>
-        <p>Agent 产物生成后，这里会按类型展示报告、矩阵和复核结果的版本记录。</p>
+        <strong>暂无产物</strong>
+        <p>Agent 产物生成后，这里会按类型展示全部产物和版本记录。</p>
       </div>
     );
   }

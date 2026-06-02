@@ -6,6 +6,5 @@ public enum AgentName {
     EXTRACTOR,
     ANALYST,
     WRITER,
-    REVIEWER,
-    FINALIZER
+    REVIEWER
 }

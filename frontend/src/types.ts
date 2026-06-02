@@ -16,18 +16,19 @@ export type AgentName =
   | "EXTRACTOR"
   | "ANALYST"
   | "WRITER"
-  | "REVIEWER"
-  | "FINALIZER";
+  | "REVIEWER";
 
 export type ArtifactType =
   | "CLARIFICATION_BRIEF"
   | "SOURCE_LIST"
   | "RESEARCH_PLAN"
+  | "FACT_EXTRACTION"
   | "COMPETITOR_PROFILE"
   | "COMPETITIVE_MATRIX"
   | "SWOT_ANALYSIS"
   | "REPORT_DRAFT"
   | "REVIEW_FINDINGS"
+  // Kept for historical runs created before the final-copy step was removed.
   | "FINALIZATION_NOTE"
   | "FINAL_REPORT";
 
