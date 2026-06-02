@@ -104,6 +104,19 @@ class EvidenceRetrievalServiceTest {
     }
 
     @Test
+    void semanticRetrievalRejectsLowSimilarityCandidatesWithoutKeywordMatch() {
+        AnalysisRun run = new AnalysisRun();
+        EvidenceChunk weakMatch = new EvidenceChunk("S1-C1", "S1", 1, "Billing docs", "https://example.test/billing", "No matching keywords here.");
+        weakMatch.setEmbedding(List.of(0.2, 0.98));
+        weakMatch.setEmbeddingModel("test-embedding-model");
+        run.getEvidenceChunks().add(weakMatch);
+
+        var results = new EvidenceRetrievalService(new FakeEmbeddingClient()).retrieve(run, "enterprise access controls", 3);
+
+        assertThat(results).isEmpty();
+    }
+
+    @Test
     void semanticRetrievalUsesRepositoryVectorCandidatesWhenRunPayloadHasNoEmbeddings() {
         AnalysisRun run = new AnalysisRun();
         EvidenceChunk payloadChunk = new EvidenceChunk("S1-C1", "S1", 1, "Admin docs", "https://example.test/admin", "A short unrelated sentence.");
