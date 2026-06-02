@@ -807,11 +807,13 @@ public class AnalystNode implements AgentNode {
                 ? "暂无结构化修复任务。"
                 : run.getReviewDecision().getRepairTasks().stream()
                 .filter(task -> task.getTargetAgent() == AgentName.ANALYST)
-                .map(task -> "- action=%s claim=%s citation=%s instruction=%s criteria=%s".formatted(
+                .map(task -> "- action=%s claim=%s citation=%s currentText=%s instruction=%s expectedFix=%s criteria=%s".formatted(
                         task.getAction(),
                         nullToEmpty(task.getClaimId()),
                         nullToEmpty(task.getCitationKey()),
+                        nullToEmpty(task.getCurrentText()),
                         nullToEmpty(task.getInstruction()),
+                        nullToEmpty(task.getExpectedFix()),
                         nullToEmpty(task.getAcceptanceCriteria())
                 ))
                 .collect(Collectors.joining("\n"));

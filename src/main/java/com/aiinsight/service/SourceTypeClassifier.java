@@ -98,14 +98,17 @@ public class SourceTypeClassifier {
         if (!normalizedPath.startsWith("/")) {
             return false;
         }
-        String[] segments = normalizedPath.substring(1).split("/");
+        String[] segments = semanticSegments(normalizedPath);
+        if (segments.length == 0) {
+            return true;
+        }
         if (segments.length > 2) {
             return false;
         }
         return containsAny(
                 "/" + segments[0],
                 "/product", "/products", "/features", "/platform", "/enterprise",
-                "/solutions", "/security", "/customers", "/about", "/company"
+                "/solutions", "/security", "/integrations", "/customers", "/about", "/company"
         );
     }
 
@@ -117,15 +120,28 @@ public class SourceTypeClassifier {
         if (!normalizedPath.startsWith("/")) {
             return false;
         }
-        String[] segments = normalizedPath.substring(1).split("/");
+        String[] segments = semanticSegments(normalizedPath);
         if (segments.length > 3) {
             return false;
         }
-        return containsAny(
-                "/" + segments[0],
-                "/docs", "/doc", "/help", "/support", "/reference", "/guide", "/guides",
-                "/pricing", "/plans", "/changelog", "/release", "/releases"
-        );
+        for (String segment : segments) {
+            if (containsAny(
+                    "/" + segment,
+                    "/docs", "/doc", "/help", "/support", "/reference", "/guide", "/guides",
+                    "/pricing", "/plans", "/api", "/integrations", "/changelog", "/release", "/releases"
+            )) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private String[] semanticSegments(String normalizedPath) {
+        String[] rawSegments = normalizedPath.substring(1).split("/");
+        if (rawSegments.length <= 1 || rawSegments[0].length() != 2) {
+            return rawSegments;
+        }
+        return java.util.Arrays.copyOfRange(rawSegments, 1, rawSegments.length);
     }
 
     private boolean isVideoHost(String url) {

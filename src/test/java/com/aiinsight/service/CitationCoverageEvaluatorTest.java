@@ -182,6 +182,33 @@ class CitationCoverageEvaluatorTest {
                 });
     }
 
+    @Test
+    void flagsRegionUnavailableSourceAsHighRiskSupport() {
+        AnalysisRun run = new AnalysisRun();
+        run.getEvidenceSources().add(new EvidenceSource(
+                "S4",
+                "App unavailable in region | Claude",
+                "https://claude.com/app-unavailable-in-region",
+                "official_site",
+                "FETCHED",
+                "LIVE_FETCHED",
+                "MEDIUM",
+                "NONE",
+                "App unavailable in region.",
+                "Claude is not currently available in your region.",
+                "robots.txt checked: allowed for public fetch."
+        ));
+
+        var findings = evaluator.evaluate("风险在于 Claude Code 存在区域可用性限制 [S4]。", run);
+
+        assertThat(findings)
+                .anySatisfy(finding -> {
+                    assertThat(finding.getSeverity()).isEqualTo(ReviewSeverity.HIGH);
+                    assertThat(finding.getCategory()).isEqualTo("citation_region_unavailable_source");
+                    assertThat(finding.getCitationKey()).isEqualTo("S4");
+                });
+    }
+
     private AnalysisRun runWithEvidence() {
         AnalysisRun run = new AnalysisRun();
         run.getEvidenceSources().add(new EvidenceSource(

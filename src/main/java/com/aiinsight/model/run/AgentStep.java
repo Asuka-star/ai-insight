@@ -51,4 +51,12 @@ public class AgentStep {
         this.issues.add(issue);
         this.completedAt = Instant.now();
     }
+
+    public void cancel(String issue) {
+        this.status = StepStatus.CANCELLED;
+        if (issue != null && !issue.isBlank()) {
+            this.issues.add(issue);
+        }
+        this.completedAt = Instant.now();
+    }
 }

@@ -62,13 +62,16 @@ public class FallbackReviewReportFactory {
         String tasks = run.getReviewDecision().getRepairTasks().isEmpty()
                 ? "暂无结构化修复任务。"
                 : run.getReviewDecision().getRepairTasks().stream()
-                .map(task -> "- action=%s target=%s finding=%s claim=%s citation=%s instruction=%s criteria=%s".formatted(
+                .map(task -> "- action=%s target=%s finding=%s claim=%s citation=%s paragraph=%s excerpt=%s instruction=%s expectedFix=%s criteria=%s".formatted(
                         task.getAction(),
                         task.getTargetAgent(),
                         nullToEmpty(task.getFindingId()),
                         nullToEmpty(task.getClaimId()),
                         nullToEmpty(task.getCitationKey()),
+                        task.getParagraphIndex() == null ? "-" : task.getParagraphIndex(),
+                        nullToEmpty(task.getExcerpt()),
                         nullToEmpty(task.getInstruction()),
+                        nullToEmpty(task.getExpectedFix()),
                         nullToEmpty(task.getAcceptanceCriteria())
                 ))
                 .collect(Collectors.joining("\n"));

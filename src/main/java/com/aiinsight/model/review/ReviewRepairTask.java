@@ -17,11 +17,16 @@ public class ReviewRepairTask {
     private UUID id = UUID.randomUUID();
     private AgentName targetAgent;
     private String findingId;
+    private UUID artifactId;
     private String claimId;
     private String citationKey;
+    private Integer paragraphIndex;
+    private String excerpt;
+    private String currentText;
     private String category;
     private String action;
     private String instruction;
+    private String expectedFix;
     private String acceptanceCriteria;
     private List<String> requiredEvidenceTypes = new ArrayList<>();
 }

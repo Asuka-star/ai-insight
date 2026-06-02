@@ -50,7 +50,7 @@ export function AgentTimeline({ run, selectedAgent, onSelectAgent, pendingClarif
 
 function statusIcon(status: StepStatus | "PENDING") {
   if (status === "SUCCEEDED") return CheckCircle2;
-  if (status === "FAILED") return XCircle;
+  if (status === "FAILED" || status === "CANCELLED") return XCircle;
   if (status === "RUNNING") return Clock;
   return CircleDashed;
 }

@@ -5,5 +5,6 @@ public enum StepStatus {
     RUNNING,
     SUCCEEDED,
     FAILED,
+    CANCELLED,
     SKIPPED
 }

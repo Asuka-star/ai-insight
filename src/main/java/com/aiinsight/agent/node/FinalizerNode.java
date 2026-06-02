@@ -34,18 +34,30 @@ public class FinalizerNode implements AgentNode {
             return run;
         }
 
-        AnalysisArtifact finalReport = new AnalysisArtifact(
+        run.addArtifact(new AnalysisArtifact(
                 ArtifactType.FINAL_REPORT,
                 "可溯源竞品分析报告（最终封版）",
-                draft.getContent() + finalReportReviewNote(run),
+                draft.getContent() + publicReviewWarning(run),
                 draft.getCitationKeys()
-        );
-        run.addArtifact(finalReport);
+        ));
+        run.addArtifact(new AnalysisArtifact(
+                ArtifactType.FINALIZATION_NOTE,
+                "最终封版质检说明",
+                finalizationNote(run),
+                List.of()
+        ));
         run.getRecommendedActions().add(recommendedAction(run));
         return run;
     }
 
-    private String finalReportReviewNote(AnalysisRun run) {
+    private String publicReviewWarning(AnalysisRun run) {
+        if (run.getReviewDecision() == null || run.getReviewDecision().getAction() == ReviewAction.PASS) {
+            return "";
+        }
+        return "\n\n> 本报告仍有未关闭的内部复核项，请完成确认后再对外发布。";
+    }
+
+    private String finalizationNote(AnalysisRun run) {
         return """
 
                 ## 复核状态
@@ -112,12 +124,15 @@ public class FinalizerNode implements AgentNode {
         String tasks = run.getReviewDecision().getRepairTasks().isEmpty()
                 ? "暂无结构化修复任务。"
                 : run.getReviewDecision().getRepairTasks().stream()
-                .map(task -> "- `%s` -> %s，Claim=%s，Citation=%s；指令：%s；验收：%s".formatted(
+                .map(task -> "- `%s` -> %s，Claim=%s，Citation=%s，Paragraph=%s；摘录：%s；指令：%s；期望修复：%s；验收：%s".formatted(
                         task.getAction(),
                         task.getTargetAgent(),
                         textOrDefault(task.getClaimId(), "-"),
                         textOrDefault(task.getCitationKey(), "-"),
+                        task.getParagraphIndex() == null ? "-" : task.getParagraphIndex(),
+                        textOrDefault(task.getExcerpt(), "-"),
                         textOrDefault(task.getInstruction(), "-"),
+                        textOrDefault(task.getExpectedFix(), "-"),
                         textOrDefault(task.getAcceptanceCriteria(), "-")
                 ))
                 .collect(Collectors.joining("\n"));

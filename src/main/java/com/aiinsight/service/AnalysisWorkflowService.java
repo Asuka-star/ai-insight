@@ -14,6 +14,7 @@ import com.aiinsight.model.enums.AnalysisStatus;
 import com.aiinsight.model.enums.ArtifactType;
 import com.aiinsight.model.enums.ContextIntent;
 import com.aiinsight.model.enums.ContextRole;
+import com.aiinsight.model.enums.ReviewAction;
 import com.aiinsight.model.enums.ReviewSeverity;
 import com.aiinsight.model.run.AgentTrace;
 import com.aiinsight.model.run.AnalysisContextMessage;
@@ -336,9 +337,15 @@ public class AnalysisWorkflowService {
                 eventBroker.publish(run, "run_cancelled", "分析工作流已取消");
                 return;
             }
-            run.setStatus(AnalysisStatus.SUCCEEDED);
-            repository.save(run);
-            eventBroker.publish(run, "run_succeeded", "分析工作流已完成");
+            if (requiresUserInputAfterWorkflow(run)) {
+                run.setStatus(AnalysisStatus.NEEDS_USER_INPUT);
+                repository.save(run);
+                eventBroker.publish(run, "run_needs_user_input", "分析工作流已封版，但仍有复核项需要人工确认");
+            } else {
+                run.setStatus(AnalysisStatus.SUCCEEDED);
+                repository.save(run);
+                eventBroker.publish(run, "run_succeeded", "分析工作流已完成");
+            }
         } catch (CancellationException ex) {
             run = repository.findById(runId).orElse(run);
             if (run.getStatus() != AnalysisStatus.CANCELLED) {
@@ -353,6 +360,14 @@ public class AnalysisWorkflowService {
             repository.save(run);
             eventBroker.publish(run, "run_failed", ex.getMessage());
         }
+    }
+
+    private boolean requiresUserInputAfterWorkflow(AnalysisRun run) {
+        if (run.getReviewDecision() != null && run.getReviewDecision().getAction() != ReviewAction.PASS) {
+            return true;
+        }
+        return run.getReviewFindings().stream()
+                .anyMatch(finding -> finding.getSeverity() == ReviewSeverity.HIGH);
     }
 
     private boolean isCompleteProfile(CompetitorProfile profile) {

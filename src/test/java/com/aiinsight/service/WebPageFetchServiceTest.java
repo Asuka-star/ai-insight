@@ -258,6 +258,37 @@ class WebPageFetchServiceTest {
     }
 
     @Test
+    void extractsSameOriginNavigationLinksFromFetchedHtml() throws IOException {
+        HttpServer server = serverWithPage("""
+                <html>
+                  <head><title>Product page</title></head>
+                  <body>
+                    <nav>
+                      <a href="/docs/context#intro">Docs</a>
+                      <a href="/security?ref=nav">Security</a>
+                      <a href="https://external.example.test/review">External review</a>
+                    </nav>
+                    <main>
+                      Product page with AI coding features, documentation, security controls, integrations,
+                      enterprise administration, pricing plan boundaries, release notes, customer support,
+                      collaboration workflows, permission governance, and enough body text for extraction.
+                    </main>
+                  </body>
+                </html>
+                """);
+        try {
+            var page = new WebPageFetchService().fetch(url(server, "/"));
+
+            assertThat(page.isUsable()).isTrue();
+            assertThat(page.getInternalLinks())
+                    .contains(url(server, "/docs/context"), url(server, "/security"))
+                    .doesNotContain("https://external.example.test/review");
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
     void cachesRobotsRulesPerOrigin() throws IOException {
         AtomicInteger robotsRequests = new AtomicInteger();
         HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);

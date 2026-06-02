@@ -55,6 +55,12 @@ class SourceTypeClassifierTest {
                 .isEqualTo("pricing_page");
         assertThat(classifier.qualityFor("pricing_page", "FETCHED", "LIVE_FETCHED"))
                 .isEqualTo("HIGH");
+
+        assertThat(classifier.classify("https://cursor.com/cn/pricing", "Cursor 定价"))
+                .isEqualTo("pricing_page");
+
+        assertThat(classifier.classify("https://cursor.com/integrations", "Cursor integrations"))
+                .isEqualTo("official_site");
     }
 
     @Test

@@ -9,7 +9,7 @@ export type AnalysisStatus =
   | "SUCCEEDED"
   | "FAILED"
   | "CANCELLED";
-export type StepStatus = "PENDING" | "RUNNING" | "SUCCEEDED" | "FAILED";
+export type StepStatus = "PENDING" | "RUNNING" | "SUCCEEDED" | "FAILED" | "CANCELLED";
 export type AgentName =
   | "CLARIFIER"
   | "RESEARCHER"
@@ -241,11 +241,16 @@ export interface ReviewRepairTask {
   id?: string;
   targetAgent?: AgentName;
   findingId?: string;
+  artifactId?: string;
   claimId?: string;
   citationKey?: string;
+  paragraphIndex?: number;
+  excerpt?: string;
+  currentText?: string;
   category?: string;
   action?: string;
   instruction?: string;
+  expectedFix?: string;
   acceptanceCriteria?: string;
   requiredEvidenceTypes?: string[];
 }

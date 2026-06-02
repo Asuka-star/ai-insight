@@ -75,6 +75,7 @@ public class ReviewerNode implements AgentNode {
     @Override
     public AnalysisRun execute(AnalysisRun run) {
         AnalysisArtifact draft = latestArtifact(run, ArtifactType.REPORT_DRAFT);
+        ReviewDecision previousDecision = run.getReviewDecision();
         run.getReviewFindings().clear();
         if (draft != null) {
             // 规则结果进入结构化 finding，不能只存在于 LLM 文本回复里。
@@ -109,6 +110,7 @@ public class ReviewerNode implements AgentNode {
                     run.getReviewFindings().size());
             deterministicFallback = true;
         }
+        applyRepairVerificationScope(run, previousDecision);
         run.setReviewDecision(buildDecision(run));
         String content = StringUtils.hasText(semanticReviewContent)
                 ? semanticReviewContent + "\n\n" + fallbackReviewReportFactory.build(run)
@@ -118,6 +120,70 @@ public class ReviewerNode implements AgentNode {
         }
         run.addArtifact(new AnalysisArtifact(ArtifactType.REVIEW_FINDINGS, "Reviewer 复核结果", content, List.of()));
         return run;
+    }
+
+    private void applyRepairVerificationScope(AnalysisRun run, ReviewDecision previousDecision) {
+        if (!isRepairVerificationMode(previousDecision)) {
+            return;
+        }
+        int downgradedNewHighFindings = 0;
+        for (ReviewFinding finding : run.getReviewFindings()) {
+            if (finding.getSeverity() == ReviewSeverity.HIGH
+                    && !matchesPreviousRepairTask(finding, previousDecision.getRepairTasks())) {
+                finding.setSeverity(ReviewSeverity.MEDIUM);
+                finding.setMessage("返工验证模式中发现的新问题（不阻断本轮修复验收）：" + finding.getMessage());
+                downgradedNewHighFindings++;
+            }
+        }
+        if (downgradedNewHighFindings > 0) {
+            run.getRecommendedActions().add(
+                    "返工验证模式已将 " + downgradedNewHighFindings
+                            + " 个非上一轮 blocker 的新 HIGH 问题降为质量提醒；本轮优先验证上一轮修复任务是否完成。");
+        }
+    }
+
+    private boolean isRepairVerificationMode(ReviewDecision previousDecision) {
+        return previousDecision != null
+                && previousDecision.getAction() != ReviewAction.PASS
+                && previousDecision.getRepairTasks() != null
+                && !previousDecision.getRepairTasks().isEmpty();
+    }
+
+    private boolean matchesPreviousRepairTask(ReviewFinding finding, List<ReviewRepairTask> repairTasks) {
+        return repairTasks.stream().anyMatch(task -> matchesRepairTask(finding, task));
+    }
+
+    private boolean matchesRepairTask(ReviewFinding finding, ReviewRepairTask task) {
+        if (task == null || finding == null) {
+            return false;
+        }
+        boolean hasLocator = false;
+        boolean matchedLocator = false;
+        if (StringUtils.hasText(task.getClaimId())) {
+            hasLocator = true;
+            matchedLocator = task.getClaimId().equals(finding.getClaimId());
+        }
+        if (StringUtils.hasText(task.getCitationKey())) {
+            hasLocator = true;
+            matchedLocator = matchedLocator || task.getCitationKey().equals(finding.getCitationKey());
+        }
+        if (task.getParagraphIndex() != null) {
+            hasLocator = true;
+            matchedLocator = matchedLocator || task.getParagraphIndex().equals(finding.getParagraphIndex());
+        }
+        if (StringUtils.hasText(task.getExcerpt())) {
+            hasLocator = true;
+            matchedLocator = matchedLocator
+                    || containsIgnoreCase(finding.getExcerpt(), task.getExcerpt())
+                    || containsIgnoreCase(finding.getMessage(), task.getExcerpt());
+        }
+        boolean matchedCategory = StringUtils.hasText(task.getCategory())
+                && StringUtils.hasText(finding.getCategory())
+                && normalizedCategory(finding).equals(task.getCategory().trim().toLowerCase(Locale.ROOT));
+        if (hasLocator) {
+            return matchedLocator;
+        }
+        return matchedCategory;
     }
 
     private ReviewDecision buildDecision(AnalysisRun run) {
@@ -146,7 +212,7 @@ public class ReviewerNode implements AgentNode {
                 .toList());
         decision.setFindingCategories(distinctCategories(blockingFindings));
         decision.setRepairInstructions(repairInstructions(decision, blockingFindings));
-        decision.setRepairTasks(repairTasks(decision, blockingFindings));
+        decision.setRepairTasks(repairTasks(run, decision, blockingFindings));
         // 决策元数据沿用前端“定位问题”使用的 claim 绑定；没有可绑定 finding 时再退回无证据 claim。
         List<String> affectedClaimIds = blockingFindings.stream()
                 .map(finding -> finding.getClaimId())
@@ -209,22 +275,27 @@ public class ReviewerNode implements AgentNode {
         return instructions;
     }
 
-    private List<ReviewRepairTask> repairTasks(ReviewDecision decision, List<ReviewFinding> blockingFindings) {
+    private List<ReviewRepairTask> repairTasks(AnalysisRun run, ReviewDecision decision, List<ReviewFinding> blockingFindings) {
         return blockingFindings.stream()
-                .map(finding -> repairTask(decision, finding))
+                .map(finding -> repairTask(run, decision, finding))
                 .toList();
     }
 
-    private ReviewRepairTask repairTask(ReviewDecision decision, ReviewFinding finding) {
+    private ReviewRepairTask repairTask(AnalysisRun run, ReviewDecision decision, ReviewFinding finding) {
         ReviewRepairTask task = new ReviewRepairTask();
         task.setTargetAgent(decision.getTargetAgent());
         task.setFindingId(finding.getId() == null ? null : finding.getId().toString());
+        task.setArtifactId(finding.getArtifactId());
         task.setClaimId(finding.getClaimId());
         task.setCitationKey(finding.getCitationKey());
+        task.setParagraphIndex(finding.getParagraphIndex());
+        task.setExcerpt(finding.getExcerpt());
+        task.setCurrentText(repairCurrentText(run, finding));
         task.setCategory(finding.getCategory());
         task.setRequiredEvidenceTypes(decision.getRequiredEvidenceTypes());
         task.setAction(repairAction(decision));
         task.setInstruction(repairTaskInstruction(decision, finding));
+        task.setExpectedFix(repairExpectedFix(decision, finding));
         task.setAcceptanceCriteria(repairAcceptanceCriteria(decision, finding));
         return task;
     }
@@ -242,6 +313,20 @@ public class ReviewerNode implements AgentNode {
         return "MANUAL_REVIEW";
     }
 
+    private String repairCurrentText(AnalysisRun run, ReviewFinding finding) {
+        if (StringUtils.hasText(finding.getExcerpt())) {
+            return abbreviate(finding.getExcerpt(), 240);
+        }
+        if (StringUtils.hasText(finding.getClaimId())) {
+            return run.getClaims().stream()
+                    .filter(claim -> finding.getClaimId().equals(claim.getId()))
+                    .map(claim -> abbreviate(claim.getContent(), 240))
+                    .findFirst()
+                    .orElse("-");
+        }
+        return "-";
+    }
+
     private String repairTaskInstruction(ReviewDecision decision, ReviewFinding finding) {
         String location = finding.getClaimId() != null ? "claim=" + finding.getClaimId()
                 : finding.getCitationKey() != null ? "citation=" + finding.getCitationKey()
@@ -257,6 +342,32 @@ public class ReviewerNode implements AgentNode {
             return "修订 " + location + " 对应报告表述或引用：" + finding.getRecommendation();
         }
         return finding.getRecommendation();
+    }
+
+    private String repairExpectedFix(ReviewDecision decision, ReviewFinding finding) {
+        String category = normalizedCategory(finding);
+        if (decision.getAction() == ReviewAction.RECOLLECT_EVIDENCE) {
+            String evidenceTypes = decision.getRequiredEvidenceTypes().isEmpty()
+                    ? "Reviewer 指定的证据类型"
+                    : String.join("、", decision.getRequiredEvidenceTypes());
+            return "补充可公开引用的 " + evidenceTypes + " 证据；新增来源必须能支撑当前 claim/段落，而不是泛泛搜索。";
+        }
+        if (decision.getAction() == ReviewAction.REWORK_ANALYSIS) {
+            if (category.contains("missing_evidence") || category.contains("mismatch")) {
+                return "重绑有效 evidenceIds；若现有证据无法支撑，降低置信度并把结论改成“待验证/证据不足”。";
+            }
+            return "只修复受影响 claim 的证据绑定、置信度或措辞，不重写无关 claims。";
+        }
+        if (decision.getAction() == ReviewAction.REVISE_REPORT) {
+            if (category.contains("citation")) {
+                return "在定位段落补有效 [S] citation；找不到可用证据时删除该强结论或改成待验证假设。";
+            }
+            if (category.contains("overclaim")) {
+                return "把超出证据边界的表述降级为“公开资料显示/待验证”，并保留或补齐 citation。";
+            }
+            return "只修订定位段落，补 citation、降级措辞或删除无证据表述。";
+        }
+        return "人工确认该问题是否已处理，或保留为非阻断风险。";
     }
 
     private String repairAcceptanceCriteria(ReviewDecision decision, ReviewFinding finding) {
@@ -942,6 +1053,13 @@ public class ReviewerNode implements AgentNode {
 
     private String nullToEmpty(String value) {
         return value == null ? "" : value;
+    }
+
+    private boolean containsIgnoreCase(String value, String expected) {
+        if (!StringUtils.hasText(value) || !StringUtils.hasText(expected)) {
+            return false;
+        }
+        return value.toLowerCase(Locale.ROOT).contains(expected.toLowerCase(Locale.ROOT));
     }
 
     private String abbreviate(String value, int maxLength) {

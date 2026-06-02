@@ -215,13 +215,16 @@ public class LlmSearchQueryPlanner {
     }
 
     private String repairTaskLine(ReviewRepairTask task) {
-        return "- category=%s; claimId=%s; citation=%s; requiredTypes=%s; instruction=%s; acceptance=%s"
+        return "- category=%s; claimId=%s; citation=%s; paragraph=%s; excerpt=%s; requiredTypes=%s; instruction=%s; expectedFix=%s; acceptance=%s"
                 .formatted(
                         text(task.getCategory()),
                         text(task.getClaimId()),
                         text(task.getCitationKey()),
+                        task.getParagraphIndex() == null ? "-" : task.getParagraphIndex(),
+                        text(task.getExcerpt()),
                         String.join("/", task.getRequiredEvidenceTypes()),
                         text(task.getInstruction()),
+                        text(task.getExpectedFix()),
                         text(task.getAcceptanceCriteria())
                 );
     }

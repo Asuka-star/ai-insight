@@ -232,7 +232,7 @@ function reworkLimitProfile(
   workflowTransitions: WorkflowTransition[] = [],
   maxReviewReworkAttempts?: number
 ) {
-  if (status !== "SUCCEEDED" || !decision?.action || decision.action === "PASS") {
+  if ((status !== "SUCCEEDED" && status !== "NEEDS_USER_INPUT") || !decision?.action || decision.action === "PASS") {
     return "";
   }
   const latestTransition = workflowTransitions.at(-1);

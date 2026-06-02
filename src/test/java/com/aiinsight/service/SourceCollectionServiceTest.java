@@ -261,7 +261,7 @@ class SourceCollectionServiceTest {
     }
 
     @Test
-    void keepsUserProvidedUrlEvenWhenFetchedContentLooksLikeChallengePage() {
+    void marksUserProvidedUrlAsUnusableWhenFetchedContentLooksLikeChallengePage() {
         WebPageFetchService fetchService = new WebPageFetchService() {
             @Override
             public FetchedPage fetch(String url) {
@@ -287,8 +287,11 @@ class SourceCollectionServiceTest {
 
         assertThat(sources).hasSize(1);
         assertThat(sources.get(0).getSourceType()).isEqualTo("user_source_url");
-        assertThat(sources.get(0).getCollectionStatus()).isEqualTo("FETCHED");
-        assertThat(sources.get(0).getRawText()).contains("Cloudflare Ray ID");
+        assertThat(sources.get(0).getCollectionStatus()).isEqualTo("UNUSABLE_CONTENT");
+        assertThat(sources.get(0).getFailureReason()).isEqualTo("anti_bot_or_redirect_page");
+        assertThat(sources.get(0).getRawText()).isEmpty();
+        assertThat(run.getRecommendedActions()).anyMatch(action -> action.contains("anti-bot")
+                || action.contains("placeholder"));
     }
 
     @Test
@@ -682,6 +685,278 @@ class SourceCollectionServiceTest {
         assertThat(queries).anyMatch(query -> query.contains("销售自动化"));
         assertThat(queries).anyMatch(query -> query.contains("pricing"));
         assertThat(queries).anyMatch(query -> query.contains("reviews"));
+    }
+
+    @Test
+    void derivesOfficialPricingCandidateFromUserProvidedOfficialUrlBeforeSearch() {
+        WebPageFetchService fetchService = new WebPageFetchService() {
+            @Override
+            public FetchedPage fetch(String url) {
+                if (url.equals("https://cursor.com/pricing") || url.equals("https://cursor.com/plans")) {
+                    return FetchedPage.failed(url, "simulated not found", "HTTP_4XX");
+                }
+                if (url.equals("https://cursor.com/cn/pricing")) {
+                    return FetchedPage.success(
+                            url,
+                            "Cursor pricing",
+                            """
+                                    Cursor official pricing page with Pro, Business, and enterprise plan details for AI coding teams.
+                                    The page explains monthly and annual billing, team administration, model access, usage limits,
+                                    privacy controls, and enterprise procurement options for software engineering organizations.
+                                    """,
+                            "robots.txt checked: allowed for public fetch.",
+                            "pricing_page",
+                            "HIGH",
+                            200,
+                            "text/html"
+                    );
+                }
+                return FetchedPage.success(
+                        url,
+                        "Cursor homepage",
+                        "Cursor official homepage for AI coding agents and developer productivity.",
+                        "robots.txt checked: allowed for public fetch.",
+                        "official_site",
+                        "HIGH",
+                        200,
+                        "text/html"
+                );
+            }
+        };
+        SourceCollectionService service = new SourceCollectionService(fetchService, new NoopSearchProvider());
+        AnalysisRun run = new AnalysisRun(new AnalysisRequirement(
+                "Analyze Cursor pricing",
+                "AI coding tools",
+                List.of("Cursor"),
+                List.of("定价模式"),
+                List.of("official_site", "pricing_page"),
+                List.of("https://cursor.com")
+        ));
+
+        var sources = service.collect(run, false);
+
+        assertThat(sources)
+                .extracting(EvidenceSource::getUrl)
+                .contains("https://cursor.com", "https://cursor.com/cn/pricing");
+        assertThat(sources)
+                .filteredOn(source -> source.getUrl().equals("https://cursor.com/cn/pricing"))
+                .singleElement()
+                .satisfies(source -> {
+                    assertThat(source.getCitationKey()).isEqualTo("S2");
+                    assertThat(source.getSourceType()).isEqualTo("pricing_page");
+                    assertThat(source.getSourceQuality()).isEqualTo("HIGH");
+                });
+    }
+
+    @Test
+    void derivesRelevantOfficialReferencePagesFromUserProvidedOfficialUrl() {
+        WebPageFetchService fetchService = new WebPageFetchService() {
+            @Override
+            public FetchedPage fetch(String url) {
+                if (url.equals("https://cursor.com/docs")) {
+                    return FetchedPage.success(
+                            url,
+                            "Cursor docs",
+                            """
+                                    Cursor official documentation explains codebase indexing, context management, IDE integration,
+                                    terminal workflows, agent tools, model controls, and team setup guidance for engineering teams.
+                                    """,
+                            "robots.txt checked: allowed for public fetch.",
+                            "docs",
+                            "HIGH",
+                            200,
+                            "text/html"
+                    );
+                }
+                if (url.equals("https://cursor.com/security")) {
+                    return FetchedPage.success(
+                            url,
+                            "Cursor security",
+                            """
+                                    Cursor official security page explains enterprise controls, privacy protections, permission models,
+                                    compliance posture, data retention boundaries, access management, and team administration settings.
+                                    """,
+                            "robots.txt checked: allowed for public fetch.",
+                            "official_site",
+                            "HIGH",
+                            200,
+                            "text/html"
+                    );
+                }
+                if (url.equals("https://cursor.com")) {
+                    return FetchedPage.success(
+                            url,
+                            "Cursor homepage",
+                            "Cursor official homepage for AI coding agents and developer productivity.",
+                            "robots.txt checked: allowed for public fetch.",
+                            "official_site",
+                            "HIGH",
+                            200,
+                            "text/html"
+                    );
+                }
+                return FetchedPage.failed(url, "simulated missing official section", "HTTP_4XX");
+            }
+        };
+        SourceCollectionService service = new SourceCollectionService(fetchService, new NoopSearchProvider());
+        AnalysisRun run = new AnalysisRun(new AnalysisRequirement(
+                "Analyze Cursor official capabilities",
+                "AI coding tools",
+                List.of("Cursor"),
+                List.of("代码理解与生成能力", "IDE/终端集成", "企业安全与权限"),
+                List.of("official_site", "product_docs", "security"),
+                List.of("https://cursor.com")
+        ));
+
+        var sources = service.collect(run, false);
+
+        assertThat(sources)
+                .extracting(EvidenceSource::getUrl)
+                .contains("https://cursor.com", "https://cursor.com/docs", "https://cursor.com/security");
+        assertThat(sources)
+                .extracting(EvidenceSource::getComplianceNote)
+                .anyMatch(note -> note.contains("requestedOfficialSection=docs"))
+                .anyMatch(note -> note.contains("requestedOfficialSection=security"));
+    }
+
+    @Test
+    void prefersDiscoveredOfficialNavigationLinksBeforeFallbackPaths() {
+        WebPageFetchService fetchService = new WebPageFetchService() {
+            @Override
+            public FetchedPage fetch(String url) {
+                if (url.equals("https://cursor.com")) {
+                    return FetchedPage.success(
+                            url,
+                            "Cursor homepage",
+                            "Cursor homepage with AI coding features, agent workflows, IDE integration, and enterprise security.",
+                            "robots.txt checked: allowed for public fetch.",
+                            "official_site",
+                            "HIGH",
+                            "NONE",
+                            200,
+                            "text/html",
+                            List.of("https://cursor.com/docs/context", "https://cursor.com/trust/security")
+                    );
+                }
+                if (url.equals("https://cursor.com/docs/context")) {
+                    return FetchedPage.success(
+                            url,
+                            "Cursor context docs",
+                            """
+                                    Cursor official context documentation explains codebase indexing, repository understanding,
+                                    prompt context windows, IDE workflows, agent operations, model controls, and team usage patterns.
+                                    """,
+                            "robots.txt checked: allowed for public fetch.",
+                            "docs",
+                            "HIGH",
+                            200,
+                            "text/html"
+                    );
+                }
+                if (url.equals("https://cursor.com/trust/security")) {
+                    return FetchedPage.success(
+                            url,
+                            "Cursor trust security",
+                            """
+                                    Cursor official trust and security page explains privacy controls, enterprise permissions,
+                                    access management, compliance posture, audit readiness, data retention, and procurement security.
+                                    """,
+                            "robots.txt checked: allowed for public fetch.",
+                            "official_site",
+                            "HIGH",
+                            200,
+                            "text/html"
+                    );
+                }
+                return FetchedPage.failed(url, "fallback path should not be needed", "HTTP_4XX");
+            }
+        };
+        SourceCollectionService service = new SourceCollectionService(fetchService, new NoopSearchProvider());
+        AnalysisRun run = new AnalysisRun(new AnalysisRequirement(
+                "Analyze Cursor docs and security",
+                "AI coding tools",
+                List.of("Cursor"),
+                List.of("上下文管理", "企业安全与权限"),
+                List.of("official_site", "product_docs", "security"),
+                List.of("https://cursor.com")
+        ));
+
+        var sources = service.collect(run, false);
+
+        assertThat(sources)
+                .extracting(EvidenceSource::getUrl)
+                .contains("https://cursor.com/docs/context", "https://cursor.com/trust/security");
+        assertThat(sources)
+                .extracting(EvidenceSource::getUrl)
+                .doesNotContain("https://cursor.com/docs", "https://cursor.com/security");
+    }
+
+    @Test
+    void prioritizesOfficialSearchResultsOverThirdPartyPricingReferences() {
+        SourceCollectionService service = new SourceCollectionService(fetchUsefulPages(), new SearchProvider() {
+            @Override
+            public boolean isAvailable() {
+                return true;
+            }
+
+            @Override
+            public List<SearchResult> search(String query, int count) {
+                return List.of(
+                        new SearchResult("Cursor pricing explained", "https://example-blog.test/cursor-pricing", "Third-party pricing summary.", query, 1),
+                        new SearchResult("Cursor pricing", "https://cursor.com/cn/pricing", "Official Cursor pricing page.", query, 2)
+                );
+            }
+        });
+        AnalysisRun run = new AnalysisRun(new AnalysisRequirement(
+                "Analyze Cursor pricing",
+                "AI coding tools",
+                List.of("Cursor"),
+                List.of("定价模式"),
+                List.of("pricing_page"),
+                List.of()
+        ));
+
+        var sources = service.collect(run, false);
+
+        assertThat(sources).isNotEmpty();
+        assertThat(sources.get(0).getUrl()).isEqualTo("https://cursor.com/cn/pricing");
+    }
+
+    @Test
+    void dropsRegionUnavailableSearchResultPages() {
+        WebPageFetchService fetchService = new WebPageFetchService() {
+            @Override
+            public FetchedPage fetch(String url) {
+                return FetchedPage.success(
+                        url,
+                        "App unavailable in region | Claude",
+                        "App unavailable in region. Claude is not currently available in your region.",
+                        "robots.txt checked: allowed for public fetch.",
+                        "article",
+                        "MEDIUM",
+                        200,
+                        "text/html"
+                );
+            }
+        };
+        SourceCollectionService service = new SourceCollectionService(fetchService, searchProviderWithSnippet(
+                "App unavailable in region | Claude",
+                "https://claude.com/app-unavailable-in-region",
+                "App unavailable in region"
+        ));
+        AnalysisRun run = new AnalysisRun(new AnalysisRequirement(
+                "Analyze Claude Code",
+                "AI coding tools",
+                List.of("Claude Code"),
+                List.of("Agent workflow"),
+                List.of("official_site"),
+                List.of()
+        ));
+
+        var sources = service.collect(run, false);
+
+        assertThat(sources).isEmpty();
+        assertThat(run.getRecommendedActions()).anyMatch(action -> action.contains("没有形成可用网页证据"));
     }
 
     private WebPageFetchService fetchAlwaysFails() {

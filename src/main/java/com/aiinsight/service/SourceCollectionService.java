@@ -10,6 +10,7 @@ import org.springframework.util.StringUtils;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Comparator;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
@@ -25,6 +26,7 @@ public class SourceCollectionService {
 
     private static final int SNIPPET_LENGTH = 220;
     private static final int MIN_SEARCH_FETCH_TEXT_LENGTH = 180;
+    private static final int MAX_OFFICIAL_REFERENCE_SOURCES_PER_URL = 4;
 
     private final WebPageFetchService webPageFetchService;
     private final SearchProvider searchProvider;
@@ -66,6 +68,7 @@ public class SourceCollectionService {
         run.getResearchPackage().setActualSearchQueries(List.of());
         List<EvidenceSource> sources = new ArrayList<>(run.getEvidenceSources());
         Set<String> seenUrls = new LinkedHashSet<>();
+        List<OfficialSeed> officialSeeds = new ArrayList<>();
         sources.stream()
                 .map(EvidenceSource::getUrl)
                 .filter(StringUtils::hasText)
@@ -85,14 +88,17 @@ public class SourceCollectionService {
             if (!seenUrls.add(normalizeUrl(url))) {
                 continue;
             }
-            EvidenceSource source = fromUserUrl("S" + index, url);
+            OfficialSeed seed = fromUserUrlSeed("S" + index, url);
+            EvidenceSource source = seed.source();
             sources.add(source);
+            officialSeeds.add(seed);
             index++;
             if (userUrlNeedsAttention(source)) {
                 run.getRecommendedActions().add(userUrlAction(url, source));
             }
         }
 
+        index = appendOfficialReferenceCandidates(run, sources, seenUrls, officialSeeds, index);
         appendSearchEvidence(run, sources, index, recollecting, plannedSearchBatches);
         return sources;
     }
@@ -153,6 +159,162 @@ public class SourceCollectionService {
             return "First-party survey evidence; preserve sample size, question wording, and response distribution when summarizing.";
         }
         return "";
+    }
+
+    private int appendOfficialReferenceCandidates(AnalysisRun run,
+                                                  List<EvidenceSource> sources,
+                                                  Set<String> seenUrls,
+                                                  List<OfficialSeed> officialSeeds,
+                                                  int index) {
+        List<OfficialCandidateGroup> candidateGroups = officialReferenceCandidateGroups(run);
+        if (candidateGroups.isEmpty()) {
+            return index;
+        }
+        for (OfficialSeed officialSeed : officialSeeds) {
+            if (!isStrongUserProvidedOfficialSource(officialSeed.source())) {
+                continue;
+            }
+            int promotedForUrl = 0;
+            for (OfficialCandidateGroup candidateGroup : candidateGroups) {
+                for (String candidateUrl : officialCandidateUrls(
+                        officialSeed.source().getUrl(),
+                        officialSeed.internalLinks(),
+                        candidateGroup.paths()
+                )) {
+                    if (!seenUrls.add(normalizeUrl(candidateUrl))) {
+                        continue;
+                    }
+                    EvidenceSource source = fromUrl(
+                            "S" + index,
+                            candidateUrl,
+                            "official_" + candidateGroup.name() + "_candidate",
+                            "Derived from user-provided official URL. requestedOfficialSection=" + candidateGroup.name() + ". ",
+                            true
+                    );
+                    if (source == null) {
+                        continue;
+                    }
+                    sources.add(source);
+                    log.info("Official reference candidate promoted to evidence: citationKey={}, url={}, section={}, sourceType={}, sourceQuality={}",
+                            source.getCitationKey(),
+                            source.getUrl(),
+                            candidateGroup.name(),
+                            source.getSourceType(),
+                            source.getSourceQuality());
+                    index++;
+                    promotedForUrl++;
+                    break;
+                }
+                if (promotedForUrl >= MAX_OFFICIAL_REFERENCE_SOURCES_PER_URL) {
+                    break;
+                }
+            }
+        }
+        return index;
+    }
+
+    private boolean isStrongUserProvidedOfficialSource(EvidenceSource source) {
+        return source != null
+                && "FETCHED".equals(source.getCollectionStatus())
+                && !"METADATA_ONLY".equals(source.getFailureReason())
+                && !"LOW".equals(source.getSourceQuality())
+                && !"UNUSABLE".equals(source.getSourceQuality());
+    }
+
+    private List<OfficialCandidateGroup> officialReferenceCandidateGroups(AnalysisRun run) {
+        if (run == null || run.getRequirement() == null || run.getRequirement().getSourceUrls().isEmpty()) {
+            return List.of();
+        }
+        LinkedHashSet<OfficialCandidateGroup> groups = new LinkedHashSet<>();
+        List<String> dimensions = run.getRequirement().getDimensions();
+        List<String> sourcePreferences = run.getRequirement().getSourcePreferences();
+        List<String> missingEvidenceTypes = run.getResearchPackage().getMissingEvidenceTypes();
+
+        addGroup(groups, "product", List.of("/product", "/features", "/platform"),
+                mentionsAny(sourcePreferences, "official", "官网", "product", "产品")
+                        || mentionsAny(dimensions, "功能", "能力", "workflow", "工作流", "agent", "协作", "生成", "理解"));
+        addGroup(groups, "docs", List.of("/docs", "/documentation", "/help", "/guide", "/guides"),
+                mentionsAny(sourcePreferences, "doc", "docs", "文档", "help")
+                        || mentionsAny(dimensions, "context", "上下文", "代码理解", "代码生成", "ide", "终端", "terminal", "api", "integration", "集成"));
+        addGroup(groups, "security", List.of("/security", "/enterprise", "/trust", "/privacy"),
+                mentionsAny(sourcePreferences, "security", "安全", "权限", "合规", "enterprise", "企业")
+                        || mentionsAny(dimensions, "security", "安全", "权限", "合规", "enterprise", "企业", "privacy", "隐私"));
+        addGroup(groups, "pricing", List.of("/pricing", "/plans"),
+                mentionsAny(dimensions, "pricing", "price", "价格", "定价", "商业模式")
+                        || mentionsAny(sourcePreferences, "pricing", "price", "价格", "定价")
+                        || mentionsAny(missingEvidenceTypes, "pricing", "pricing_page"));
+        addGroup(groups, "customers", List.of("/customers", "/case-studies", "/solutions"),
+                mentionsAny(sourcePreferences, "case", "customer", "客户", "案例")
+                        || mentionsAny(dimensions, "target", "用户", "团队", "协作", "客户", "案例", "persona"));
+        addGroup(groups, "release", List.of("/changelog", "/release-notes", "/releases", "/updates", "/blog"),
+                mentionsAny(sourcePreferences, "release", "changelog", "更新", "blog", "博客")
+                        || mentionsAny(dimensions, "roadmap", "版本", "更新", "发布", "release", "changelog"));
+
+        if (groups.isEmpty() && mentionsAny(sourcePreferences, "official", "官网", "official_site")) {
+            groups.add(new OfficialCandidateGroup("product", List.of("/product", "/features", "/platform")));
+            groups.add(new OfficialCandidateGroup("docs", List.of("/docs", "/documentation", "/help")));
+        }
+        return new ArrayList<>(groups);
+    }
+
+    private boolean mentionsAny(List<String> values, String... patterns) {
+        if (values == null) {
+            return false;
+        }
+        return values.stream().anyMatch(value -> containsAny(normalizeText(value), patterns));
+    }
+
+    private void addGroup(LinkedHashSet<OfficialCandidateGroup> groups,
+                          String name,
+                          List<String> paths,
+                          boolean enabled) {
+        if (enabled) {
+            groups.add(new OfficialCandidateGroup(name, paths));
+        }
+    }
+
+    private List<String> officialCandidateUrls(String sourceUrl, List<String> internalLinks, List<String> paths) {
+        UrlParts parts = parseUrl(sourceUrl);
+        if (parts == null) {
+            return List.of();
+        }
+        LinkedHashSet<String> candidates = new LinkedHashSet<>();
+        for (String internalLink : internalLinks == null ? List.<String>of() : internalLinks) {
+            if (matchesOfficialGroupPath(internalLink, paths)) {
+                candidates.add(internalLink);
+            }
+        }
+        if (!candidates.isEmpty()) {
+            return new ArrayList<>(candidates);
+        }
+        String origin = parts.scheme() + "://" + parts.host();
+        String locale = firstLocaleSegment(parts.path());
+        for (String path : paths) {
+            String normalizedPath = path.startsWith("/") ? path : "/" + path;
+            candidates.add(origin + normalizedPath);
+            if (StringUtils.hasText(locale)) {
+                candidates.add(origin + "/" + locale + normalizedPath);
+            }
+            candidates.add(origin + "/cn" + normalizedPath);
+        }
+        return new ArrayList<>(candidates);
+    }
+
+    private boolean matchesOfficialGroupPath(String url, List<String> paths) {
+        UrlParts parts = parseUrl(url);
+        if (parts == null || !StringUtils.hasText(parts.path())) {
+            return false;
+        }
+        String path = normalizeText(parts.path());
+        for (String groupPath : paths) {
+            String normalizedPath = groupPath.startsWith("/") ? groupPath : "/" + groupPath;
+            if (path.equals(normalizedPath)
+                    || path.startsWith(normalizedPath + "/")
+                    || path.matches("/[a-z]{2}" + java.util.regex.Pattern.quote(normalizedPath) + "(/.*)?")) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private void appendSearchEvidence(AnalysisRun run,
@@ -396,7 +558,7 @@ public class SourceCollectionService {
                 failures.add("Search query failed: " + query + ": " + ex.getMessage());
                 continue;
             }
-            for (SearchResult result : results) {
+            for (SearchResult result : prioritizedSearchResults(batch, results)) {
                 if (!StringUtils.hasText(result.getUrl())) {
                     continue;
                 }
@@ -413,6 +575,47 @@ public class SourceCollectionService {
             }
         }
         return new SearchBatchResult(batch.competitor(), collected, failures);
+    }
+
+    private List<SearchResult> prioritizedSearchResults(SearchQueryPlanner.SearchQueryBatch batch, List<SearchResult> results) {
+        return results.stream()
+                .sorted(Comparator
+                        .comparingInt((SearchResult result) -> searchResultPriority(batch, result))
+                        .thenComparingInt(SearchResult::getRank))
+                .toList();
+    }
+
+    private int searchResultPriority(SearchQueryPlanner.SearchQueryBatch batch, SearchResult result) {
+        String searchable = normalizeText(result.getTitle() + " " + result.getUrl() + " " + result.getSnippet());
+        if (isUnavailableRegionText(searchable)) {
+            return 1000;
+        }
+        String sourceType = sourceTypeClassifier.classify(result.getUrl(), result.getTitle());
+        int score = switch (sourceType) {
+            case "pricing_page" -> 0;
+            case "docs", "product_docs" -> 10;
+            case "release_notes" -> 20;
+            case "official_site" -> 30;
+            case "pricing_reference" -> 65;
+            case "public_review", "public_reviews", "forum", "video" -> 80;
+            default -> 70;
+        };
+        if (containsCompetitorToken(searchable, batch.competitor())) {
+            score -= 5;
+        }
+        return score;
+    }
+
+    private boolean containsCompetitorToken(String searchable, String competitor) {
+        if (!StringUtils.hasText(searchable) || !StringUtils.hasText(competitor)) {
+            return false;
+        }
+        for (String token : normalizeText(competitor).split("[^a-z0-9\\u4e00-\\u9fa5]+")) {
+            if (token.length() >= 3 && searchable.contains(token)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private EvidenceSource fromSearchResult(String citationKey, SearchResult result) {
@@ -442,14 +645,22 @@ public class SourceCollectionService {
     }
 
     private EvidenceSource fromUserUrl(String citationKey, String url) {
+        return fromUserUrlSeed(citationKey, url).source();
+    }
+
+    private OfficialSeed fromUserUrlSeed(String citationKey, String url) {
         WebPageFetchService.FetchedPage page;
         try {
             page = webPageFetchService.fetch(url);
         } catch (RuntimeException ex) {
-            return failedUserUrl(citationKey, url, "FETCH_FAILED", "FETCH_FAILED", "Page fetch failed: " + ex.getMessage());
+            return new OfficialSeed(failedUserUrl(citationKey, url, "FETCH_FAILED", "FETCH_FAILED", "Page fetch failed: " + ex.getMessage()), List.of());
         }
         if (!page.isUsable() || !StringUtils.hasText(page.getRawText())) {
-            return failedUserUrl(citationKey, url, page.getStatus(), page.getFailureReason(), page.getComplianceNote());
+            return new OfficialSeed(failedUserUrl(citationKey, url, page.getStatus(), page.getFailureReason(), page.getComplianceNote()), List.of());
+        }
+        String blockingIssue = blockingFetchedContentIssue(page);
+        if (blockingIssue != null) {
+            return new OfficialSeed(failedUserUrl(citationKey, url, "UNUSABLE_CONTENT", blockingIssue, page.getComplianceNote()), List.of());
         }
         EvidenceSource source = new EvidenceSource(
                 citationKey,
@@ -466,7 +677,7 @@ public class SourceCollectionService {
         );
         source.setContentHash(page.getContentHash());
         source.setCacheHit(page.isCacheHit());
-        return source;
+        return new OfficialSeed(source, page.getInternalLinks());
     }
 
     private EvidenceSource failedUserUrl(String citationKey,
@@ -524,6 +735,12 @@ public class SourceCollectionService {
         }
         if ("ANTI_BOT_PAGE".equals(reason)) {
             return "page appears to be an anti-bot challenge.";
+        }
+        if ("region_unavailable_page".equals(reason)) {
+            return "page only reports regional unavailability and cannot support factual claims.";
+        }
+        if ("anti_bot_or_redirect_page".equals(reason)) {
+            return "page appears to be an anti-bot, redirect, or placeholder page.";
         }
         if ("LOGIN_REQUIRED".equals(reason)) {
             return "page requires login or restricted access.";
@@ -613,10 +830,30 @@ public class SourceCollectionService {
                 "challenge-platform")) {
             return "anti_bot_or_redirect_page";
         }
+        if (isUnavailableRegionText(searchable)) {
+            return "region_unavailable_page";
+        }
         if (text.length() < MIN_SEARCH_FETCH_TEXT_LENGTH) {
             return "thin_page_text";
         }
         return null;
+    }
+
+    private String blockingFetchedContentIssue(WebPageFetchService.FetchedPage page) {
+        String issue = searchFetchedContentIssue(page);
+        if ("anti_bot_or_redirect_page".equals(issue) || "region_unavailable_page".equals(issue)) {
+            return issue;
+        }
+        return null;
+    }
+
+    private boolean isUnavailableRegionText(String searchable) {
+        return containsAny(searchable,
+                "app unavailable in region",
+                "unavailable in your region",
+                "not available in your region",
+                "not currently available in your region",
+                "service is not available in your region");
     }
 
     private boolean containsIgnoreCase(String text, String pattern) {
@@ -640,6 +877,31 @@ public class SourceCollectionService {
         return text == null ? "" : text.trim().toLowerCase(Locale.ROOT);
     }
 
+    private UrlParts parseUrl(String url) {
+        if (!StringUtils.hasText(url)) {
+            return null;
+        }
+        try {
+            java.net.URI uri = java.net.URI.create(url);
+            String scheme = StringUtils.hasText(uri.getScheme()) ? uri.getScheme().toLowerCase(Locale.ROOT) : "https";
+            String host = uri.getHost();
+            if (!StringUtils.hasText(host)) {
+                return null;
+            }
+            return new UrlParts(scheme, host.toLowerCase(Locale.ROOT), uri.getPath() == null ? "" : uri.getPath());
+        } catch (RuntimeException ex) {
+            return null;
+        }
+    }
+
+    private String firstLocaleSegment(String path) {
+        if (!StringUtils.hasText(path) || !path.startsWith("/")) {
+            return "";
+        }
+        String firstSegment = path.substring(1).split("/")[0].toLowerCase(Locale.ROOT);
+        return firstSegment.matches("[a-z]{2}") ? firstSegment : "";
+    }
+
     private String snippet(String text) {
         String normalized = text.replaceAll("\\s+", " ").trim();
         if (normalized.length() <= SNIPPET_LENGTH) {
@@ -650,5 +912,14 @@ public class SourceCollectionService {
 
     private record SearchBatchResult(String competitor, List<EvidenceSource> sources, List<String> failures) {
         private static final SearchBatchResult EMPTY = new SearchBatchResult("", Collections.emptyList(), Collections.emptyList());
+    }
+
+    private record OfficialSeed(EvidenceSource source, List<String> internalLinks) {
+    }
+
+    private record OfficialCandidateGroup(String name, List<String> paths) {
+    }
+
+    private record UrlParts(String scheme, String host, String path) {
     }
 }

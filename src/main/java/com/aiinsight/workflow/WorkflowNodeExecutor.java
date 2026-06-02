@@ -82,6 +82,10 @@ public class WorkflowNodeExecutor {
             pauseForReadableEvents();
             return run;
         } catch (CancellationException ex) {
+            AnalysisRun latest = repository.findById(runId).orElse(run);
+            markCancelled(latest, step, trace, ex, startedAt);
+            repository.save(latest);
+            eventBroker.publish(latest, "agent_cancelled", node.name() + " cancelled");
             log.info("Agent node stopped because run was cancelled: runId={}, agent={}, stepId={}",
                     runId,
                     node.name(),
@@ -138,6 +142,41 @@ public class WorkflowNodeExecutor {
         if (!exists) {
             run.getTraces().add(trace);
         }
+    }
+
+    private void markCancelled(AnalysisRun run,
+                               AgentStep step,
+                               AgentTrace trace,
+                               CancellationException ex,
+                               long startedAt) {
+        String issue = ex.getMessage() == null || ex.getMessage().isBlank()
+                ? "Analysis workflow cancelled"
+                : ex.getMessage();
+        step.cancel(issue);
+        completeTrace(trace, step, run, "CANCELLED", startedAt);
+        trace.setErrorMessage(issue);
+        replaceStep(run, step);
+        replaceTrace(run, trace);
+    }
+
+    private void replaceStep(AnalysisRun run, AgentStep step) {
+        for (int i = 0; i < run.getSteps().size(); i++) {
+            if (run.getSteps().get(i).getId().equals(step.getId())) {
+                run.getSteps().set(i, step);
+                return;
+            }
+        }
+        run.getSteps().add(step);
+    }
+
+    private void replaceTrace(AnalysisRun run, AgentTrace trace) {
+        for (int i = 0; i < run.getTraces().size(); i++) {
+            if (run.getTraces().get(i).getId().equals(trace.getId())) {
+                run.getTraces().set(i, trace);
+                return;
+            }
+        }
+        run.getTraces().add(trace);
     }
 
     private String buildInputSummary(AnalysisRun run, AgentNode node, String routeSummary) {

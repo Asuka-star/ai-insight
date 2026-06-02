@@ -106,6 +106,8 @@ public class WriterNode implements AgentNode {
                 10. 报告主体只写“已验证/可初步判断”的内容；“待验证/证据不足”集中放到“风险与证据缺口”或“下一步补证清单”，不要铺满对比表。
                 11. 如果某个维度只有公开说明而没有体验证据，请写成“公开资料显示...”而不是直接判定体验优劣。
                 12. 不要出现 Analyst、Reviewer、Researcher、Writer、打回采集、重跑 Agent 等内部流程措辞。
+                13. 如果 Reviewer 修复计划包含结构化修复任务，优先只修订 task 定位的 paragraph/excerpt/currentText；不要为了一个 citation 问题重写整份报告。
+                14. 每个 task 必须满足 expectedFix 和 criteria；无法满足时，把对应表述降级为“待验证/证据不足”，并放入风险与证据缺口。
 
                 用户需求:
                 %s
@@ -307,11 +309,16 @@ public class WriterNode implements AgentNode {
                 ? "暂无结构化修复任务。"
                 : run.getReviewDecision().getRepairTasks().stream()
                 .filter(task -> task.getTargetAgent() == AgentName.WRITER)
-                .map(task -> "- action=%s claim=%s citation=%s instruction=%s criteria=%s".formatted(
+                .map(task -> "- action=%s claim=%s claimContent=%s citation=%s paragraph=%s excerpt=%s currentText=%s instruction=%s expectedFix=%s criteria=%s".formatted(
                         task.getAction(),
                         textOrDefault(task.getClaimId(), "-"),
+                        claimContent(run, task.getClaimId()),
                         textOrDefault(task.getCitationKey(), "-"),
+                        task.getParagraphIndex() == null ? "-" : task.getParagraphIndex(),
+                        textOrDefault(task.getExcerpt(), "-"),
+                        textOrDefault(task.getCurrentText(), "-"),
                         textOrDefault(task.getInstruction(), "-"),
+                        textOrDefault(task.getExpectedFix(), "-"),
                         textOrDefault(task.getAcceptanceCriteria(), "-")
                 ))
                 .collect(Collectors.joining("\n"));
@@ -334,6 +341,17 @@ public class WriterNode implements AgentNode {
                 instructions,
                 tasks
         );
+    }
+
+    private String claimContent(AnalysisRun run, String claimId) {
+        if (claimId == null || claimId.isBlank()) {
+            return "-";
+        }
+        return run.getClaims().stream()
+                .filter(claim -> claimId.equals(claim.getId()))
+                .map(claim -> abbreviate(claim.getContent(), 120))
+                .findFirst()
+                .orElse("-");
     }
 
     private Set<String> reportCitationKeys(AnalysisRun run) {

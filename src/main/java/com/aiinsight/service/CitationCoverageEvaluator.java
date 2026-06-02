@@ -314,6 +314,28 @@ public class CitationCoverageEvaluator {
         String collectionStatus = normalize(source.getCollectionStatus());
         String freshness = normalize(source.getFreshness());
         String complianceNote = normalize(source.getComplianceNote());
+        String searchable = String.join(" ",
+                nullToEmpty(source.getTitle()),
+                nullToEmpty(source.getUrl()),
+                nullToEmpty(source.getSnippet()),
+                nullToEmpty(source.getRawText()),
+                nullToEmpty(source.getFailureReason()),
+                nullToEmpty(source.getComplianceNote())
+        ).toLowerCase(Locale.ROOT);
+        if (containsAny(searchable,
+                "region_unavailable_page",
+                "app unavailable in region",
+                "unavailable in your region",
+                "not available in your region",
+                "not currently available in your region",
+                "service is not available in your region")) {
+            return new SourceQualityRisk(
+                    ReviewSeverity.HIGH,
+                    "citation_region_unavailable_source",
+                    "来源只是区域不可用或占位说明，不能作为产品能力、定价或部署结论的证据。",
+                    "删除该引用，改用官方文档、官方价格页、可访问的产品页面或供应商确认材料。"
+            );
+        }
         if ("BLOCKED_BY_ROBOTS".equals(collectionStatus)) {
             return new SourceQualityRisk(
                     ReviewSeverity.MEDIUM,

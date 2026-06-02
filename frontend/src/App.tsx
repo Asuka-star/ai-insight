@@ -292,10 +292,12 @@ export function App() {
       "agent_started",
       "agent_succeeded",
       "agent_failed",
+      "agent_cancelled",
       "agent_rerun_completed",
       "review_rework_started",
       "review_rework_completed",
       "run_cancelled",
+      "run_needs_user_input",
       "run_succeeded",
       "run_failed"
     ];

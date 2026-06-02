@@ -72,13 +72,15 @@ class LlmSearchQueryPlannerTest {
         ReviewRepairTask repairTask = new ReviewRepairTask();
         repairTask.setTargetAgent(AgentName.RESEARCHER);
         repairTask.setCategory("claim_weak_support");
+        repairTask.setExcerpt("Copilot 支持多模型切换");
         repairTask.setInstruction("补充 GitHub Copilot 多模型支持的官方文档。");
+        repairTask.setExpectedFix("找到可引用的官方 docs 证明多模型支持。");
         repairTask.setRequiredEvidenceTypes(List.of("docs"));
         run.getReviewDecision().getRepairTasks().add(repairTask);
 
         var batches = new LlmSearchQueryPlanner(llmClient, new ObjectMapper()).plan(run, true);
 
-        assertThat(promptCapture.toString()).contains("Reviewer 补采要求", "多模型支持");
+        assertThat(promptCapture.toString()).contains("Reviewer 补采要求", "多模型支持", "官方 docs");
         assertThat(batches).hasSize(1);
         assertThat(batches.get(0).competitor()).isEqualTo("GitHub Copilot");
         assertThat(batches.get(0).queries())

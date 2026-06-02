@@ -311,6 +311,7 @@ public class WebPageFetchService {
             String finalUrl = finalUri.toString();
             String contentType = response.headers().firstValue(HttpHeaders.CONTENT_TYPE).orElse("");
             String title = extractTitle(html, finalUri);
+            List<String> internalLinks = extractInternalLinks(html, finalUri);
             TextExtractionResult extraction = extractText(html, title);
             String text = extraction.text();
             String truncatedText = truncate(text);
@@ -349,6 +350,7 @@ public class WebPageFetchService {
                     );
                     if (renderImprovesPage(quality, extraction, renderedQuality, renderedExtraction)) {
                         finalUrl = renderedFinalUrl;
+                        internalLinks = extractInternalLinks(renderResult.html(), URI.create(renderedFinalUrl));
                         title = renderedTitle;
                         extraction = renderedExtraction;
                         text = renderedText;
@@ -405,7 +407,8 @@ public class WebPageFetchService {
                         sourceQuality,
                         failureReason,
                         response.statusCode(),
-                        contentType
+                        contentType,
+                        internalLinks
                 );
                 fetchedPageCache.put(uri, page);
                 return page;
@@ -419,7 +422,8 @@ public class WebPageFetchService {
                     sourceQuality,
                     failureReason,
                     response.statusCode(),
-                    contentType
+                    contentType,
+                    internalLinks
             );
             fetchedPageCache.put(uri, page);
             return page;
@@ -583,6 +587,63 @@ public class WebPageFetchService {
         return uri.getHost();
     }
 
+    private List<String> extractInternalLinks(String html, URI pageUri) {
+        if (html == null || html.isBlank()) {
+            return List.of();
+        }
+        String pageHost = normalizeHost(pageUri.getHost());
+        LinkedHashSet<String> links = new LinkedHashSet<>();
+        Document document = Jsoup.parse(html, pageUri.toString());
+        for (Element link : document.select("a[href]")) {
+            String absoluteUrl = normalizeNavigationUrl(link.absUrl("href"));
+            if (!StringUtils.hasText(absoluteUrl)) {
+                continue;
+            }
+            try {
+                URI linkUri = URI.create(absoluteUrl);
+                if (normalizeHost(linkUri.getHost()).equals(pageHost)) {
+                    links.add(absoluteUrl);
+                }
+            } catch (RuntimeException ignored) {
+                // Ignore malformed navigation links.
+            }
+        }
+        return new ArrayList<>(links);
+    }
+
+    private String normalizeNavigationUrl(String url) {
+        if (!StringUtils.hasText(url)) {
+            return "";
+        }
+        try {
+            URI uri = URI.create(url).normalize();
+            String scheme = uri.getScheme();
+            String host = uri.getHost();
+            if (!StringUtils.hasText(scheme) || !StringUtils.hasText(host)) {
+                return "";
+            }
+            String path = StringUtils.hasText(uri.getPath()) ? uri.getPath().replaceFirst("/+$", "") : "";
+            if (!StringUtils.hasText(path)) {
+                path = "/";
+            }
+            return new URI(
+                    scheme.toLowerCase(Locale.ROOT),
+                    uri.getUserInfo(),
+                    host.toLowerCase(Locale.ROOT),
+                    uri.getPort(),
+                    path,
+                    null,
+                    null
+            ).toString();
+        } catch (Exception ex) {
+            return "";
+        }
+    }
+
+    private String normalizeHost(String host) {
+        return host == null ? "" : host.toLowerCase(Locale.ROOT);
+    }
+
     private TextExtractionResult extractText(String html, String title) {
         if (html == null || html.isBlank()) {
             return new TextExtractionResult("", false, "empty_html");
@@ -708,6 +769,7 @@ public class WebPageFetchService {
         private final int statusCode;
         private final String contentType;
         private final String contentHash;
+        private final List<String> internalLinks;
         private final Instant fetchedAt;
         private final boolean cacheHit;
         private final boolean usable;
@@ -723,6 +785,7 @@ public class WebPageFetchService {
                             int statusCode,
                             String contentType,
                             String contentHash,
+                            List<String> internalLinks,
                             Instant fetchedAt,
                             boolean cacheHit,
                             boolean usable,
@@ -737,6 +800,7 @@ public class WebPageFetchService {
             this.statusCode = statusCode;
             this.contentType = contentType;
             this.contentHash = contentHash;
+            this.internalLinks = internalLinks == null ? List.of() : List.copyOf(internalLinks);
             this.fetchedAt = fetchedAt;
             this.cacheHit = cacheHit;
             this.usable = usable;
@@ -767,11 +831,24 @@ public class WebPageFetchService {
                                    String failureReason,
                                    int statusCode,
                                    String contentType) {
-            return new FetchedPage(url, title, rawText, complianceNote, sourceType, sourceQuality, failureReason, statusCode, contentType, contentHash(rawText), Instant.now(), false, true, "FETCHED");
+            return success(url, title, rawText, complianceNote, sourceType, sourceQuality, failureReason, statusCode, contentType, List.of());
+        }
+
+        static FetchedPage success(String url,
+                                   String title,
+                                   String rawText,
+                                   String complianceNote,
+                                   String sourceType,
+                                   String sourceQuality,
+                                   String failureReason,
+                                   int statusCode,
+                                   String contentType,
+                                   List<String> internalLinks) {
+            return new FetchedPage(url, title, rawText, complianceNote, sourceType, sourceQuality, failureReason, statusCode, contentType, contentHash(rawText), internalLinks, Instant.now(), false, true, "FETCHED");
         }
 
         static FetchedPage blocked(String url, String complianceNote) {
-            return new FetchedPage(url, url, "", complianceNote, "article", "UNUSABLE", "ROBOTS_BLOCKED", 0, "", contentHash(""), Instant.now(), false, false, "BLOCKED_BY_ROBOTS");
+            return new FetchedPage(url, url, "", complianceNote, "article", "UNUSABLE", "ROBOTS_BLOCKED", 0, "", contentHash(""), List.of(), Instant.now(), false, false, "BLOCKED_BY_ROBOTS");
         }
 
         static FetchedPage failed(String url, String complianceNote) {
@@ -779,7 +856,7 @@ public class WebPageFetchService {
         }
 
         static FetchedPage failed(String url, String complianceNote, String failureReason) {
-            return new FetchedPage(url, url, "", complianceNote, "article", "UNUSABLE", failureReason, 0, "", contentHash(""), Instant.now(), false, false, "FETCH_FAILED");
+            return new FetchedPage(url, url, "", complianceNote, "article", "UNUSABLE", failureReason, 0, "", contentHash(""), List.of(), Instant.now(), false, false, "FETCH_FAILED");
         }
 
         static FetchedPage unusable(String url,
@@ -791,7 +868,20 @@ public class WebPageFetchService {
                                     String failureReason,
                                     int statusCode,
                                     String contentType) {
-            return new FetchedPage(url, title, rawText, complianceNote, sourceType, sourceQuality, failureReason, statusCode, contentType, contentHash(rawText), Instant.now(), false, false, "UNUSABLE_CONTENT");
+            return unusable(url, title, rawText, complianceNote, sourceType, sourceQuality, failureReason, statusCode, contentType, List.of());
+        }
+
+        static FetchedPage unusable(String url,
+                                    String title,
+                                    String rawText,
+                                    String complianceNote,
+                                    String sourceType,
+                                    String sourceQuality,
+                                    String failureReason,
+                                    int statusCode,
+                                    String contentType,
+                                    List<String> internalLinks) {
+            return new FetchedPage(url, title, rawText, complianceNote, sourceType, sourceQuality, failureReason, statusCode, contentType, contentHash(rawText), internalLinks, Instant.now(), false, false, "UNUSABLE_CONTENT");
         }
 
         boolean isCacheable() {
@@ -799,7 +889,7 @@ public class WebPageFetchService {
         }
 
         FetchedPage fetchedCopy() {
-            return new FetchedPage(url, title, rawText, stripCacheHit(complianceNote), sourceType, sourceQuality, failureReason, statusCode, contentType, contentHash, fetchedAt, false, usable, status);
+            return new FetchedPage(url, title, rawText, stripCacheHit(complianceNote), sourceType, sourceQuality, failureReason, statusCode, contentType, contentHash, internalLinks, fetchedAt, false, usable, status);
         }
 
         static FetchedPage restored(String url,
@@ -826,6 +916,7 @@ public class WebPageFetchService {
                     statusCode,
                     contentType == null ? "" : contentType,
                     contentHash == null || contentHash.isBlank() ? contentHash(rawText) : contentHash,
+                    List.of(),
                     fetchedAt == null ? Instant.now() : fetchedAt,
                     false,
                     usable,
@@ -835,7 +926,7 @@ public class WebPageFetchService {
 
         FetchedPage cachedCopy(Instant cachedAt) {
             String note = stripCacheHit(complianceNote) + " cacheHit=true; cachedAt=" + cachedAt + "; contentHash=" + contentHash + ".";
-            return new FetchedPage(url, title, rawText, note.trim(), sourceType, sourceQuality, failureReason, statusCode, contentType, contentHash, fetchedAt, true, usable, status);
+            return new FetchedPage(url, title, rawText, note.trim(), sourceType, sourceQuality, failureReason, statusCode, contentType, contentHash, internalLinks, fetchedAt, true, usable, status);
         }
 
         private static String stripCacheHit(String note) {
