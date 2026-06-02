@@ -857,8 +857,107 @@ class AnalysisWorkflowServiceTest {
                 });
         assertThat(promptCapture.toString())
                 .contains("证据索引", "按维度整理的证据覆盖", "不要把“证据不足”本身当成主要洞察")
-                .contains("[S1] Notion permission audit", "结构化 Claims", "应优先围绕权限审计和 AI 搜索做差异化产品规划")
-                .doesNotContain("相关证据切片", "S1-C1", "enterprise governance");
+                .contains("[S1] Notion permission audit")
+                .doesNotContain("competitiveMatrixMarkdown", "swotMarkdown", "S1-C1", "enterprise governance");
+    }
+
+    @Test
+    void analystNormalizesCompetitorAliasesAndRanksMatrixClaims() {
+        LlmClient structuredLlm = new LlmClient() {
+            @Override
+            public boolean isAvailable() {
+                return true;
+            }
+
+            @Override
+            public String complete(com.aiinsight.llm.ChatRequest request) {
+                return """
+                        {
+                          "claims": [
+                            {
+                              "type": "FACT",
+                              "content": "Unverified broad fact should not occupy the matrix summary.",
+                              "confidence": "HIGH",
+                              "competitorNames": ["Atlassian Confluence"],
+                              "evidenceIds": []
+                            },
+                            {
+                              "type": "RISK",
+                              "content": "Weak review evidence mentions migration friction.",
+                              "confidence": "LOW",
+                              "competitorNames": ["Atlassian Confluence"],
+                              "evidenceIds": ["S1"]
+                            },
+                            {
+                              "type": "COMPARISON",
+                              "content": "Official docs support enterprise admin controls.",
+                              "confidence": "MEDIUM",
+                              "competitorNames": ["Atlassian Confluence"],
+                              "evidenceIds": ["S2"]
+                            },
+                            {
+                              "type": "RECOMMENDATION",
+                              "content": "Prioritize enterprise admin controls in the roadmap.",
+                              "confidence": "HIGH",
+                              "competitorNames": ["Atlassian Confluence"],
+                              "evidenceIds": ["S2"]
+                            }
+                          ]
+                        }
+                        """;
+            }
+        };
+        AnalysisRun run = new AnalysisRun(new AnalysisRequirement(
+                "Analyze Notion and Confluence enterprise readiness.",
+                "Collaboration docs",
+                List.of("Notion", "Confluence"),
+                List.of("enterprise admin"),
+                List.of("official_site", "public_review"),
+                List.of()
+        ));
+        run.getEvidenceSources().add(new EvidenceSource(
+                "S1",
+                "Confluence review",
+                "https://example.test/confluence/review",
+                "public_review",
+                "FETCHED",
+                "LIVE_FETCHED",
+                "LOW",
+                "NONE",
+                "User review mentions migration friction.",
+                "",
+                "test evidence"
+        ));
+        run.getEvidenceSources().add(new EvidenceSource(
+                "S2",
+                "Confluence admin docs",
+                "https://example.test/confluence/admin",
+                "docs",
+                "FETCHED",
+                "LIVE_FETCHED",
+                "HIGH",
+                "NONE",
+                "Official docs describe enterprise admin controls.",
+                "Official docs describe enterprise admin controls.",
+                "test evidence"
+        ));
+
+        new AnalystNode(structuredLlm, new ObjectMapper(), new FallbackAnalysisDraftFactory()).execute(run);
+
+        assertThat(run.getClaims())
+                .anySatisfy(claim -> {
+                    assertThat(claim.getContent()).contains("enterprise admin controls");
+                    assertThat(claim.getCompetitorNames()).containsExactly("Confluence");
+                });
+        String matrixContent = run.getArtifacts().stream()
+                .filter(artifact -> artifact.getType() == ArtifactType.COMPETITIVE_MATRIX)
+                .reduce((first, second) -> second)
+                .orElseThrow()
+                .getContent();
+        String matrixSummary = matrixContent.substring(0, matrixContent.indexOf("## 结构化结论明细"));
+        assertThat(matrixSummary)
+                .contains("Confluence", "Prioritize enterprise admin controls", "Official docs support enterprise admin controls")
+                .doesNotContain("Unverified broad fact");
     }
 
     @Test
@@ -1065,7 +1164,7 @@ class AnalysisWorkflowServiceTest {
                 .filteredOn(artifact -> artifact.getType() == ArtifactType.COMPETITIVE_MATRIX)
                 .last()
                 .satisfies(artifact -> {
-                    assertThat(artifact.getContent()).contains("[S1]", "证据不足");
+                    assertThat(artifact.getContent()).contains("[S1]", "基于结构化结论的竞品矩阵");
                     assertThat(artifact.getContent()).doesNotContain("[S404]");
                     assertThat(artifact.getCitationKeys()).containsExactly("S1");
                 });
@@ -1073,7 +1172,7 @@ class AnalysisWorkflowServiceTest {
                 .filteredOn(artifact -> artifact.getType() == ArtifactType.SWOT_ANALYSIS)
                 .last()
                 .satisfies(artifact -> {
-                    assertThat(artifact.getContent()).contains("证据不足");
+                    assertThat(artifact.getContent()).contains("[S1]", "SWOT 仅由结构化结论渲染");
                     assertThat(artifact.getContent()).doesNotContain("[S404]");
                     assertThat(artifact.getCitationKeys()).containsExactly("S1");
                 });

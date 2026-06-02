@@ -211,8 +211,8 @@ public class ExtractorNode implements AgentNode {
         profile.setCompanyName(textOrDefault(draft.companyName, fallback.getCompanyName()));
         profile.setPositioning(textOrDefault(draft.positioning, fallback.getPositioning()));
         profile.setTargetUsers(nonEmptyStrings(draft.targetUsers, fallback.getTargetUsers()));
-        profile.setStrengths(nonEmptyStrings(draft.strengths, fallback.getStrengths()));
-        profile.setWeaknesses(nonEmptyStrings(draft.weaknesses, fallback.getWeaknesses()));
+        profile.setStrengths(observedFactsOnly(draft.strengths, fallback.getStrengths(), run, profile.getProductName(), "strengths"));
+        profile.setWeaknesses(observedFactsOnly(draft.weaknesses, fallback.getWeaknesses(), run, profile.getProductName(), "weaknesses"));
         profile.setEvidenceIds(knownEvidenceIds(run, draft.evidenceIds, fallback.getEvidenceIds()));
         profile.setFeatureTree(featureTree(profile.getProductName(), draft.features, fallback.getFeatureTree(), run));
         profile.setPricingModel(pricingModel(draft.pricing, fallback.getPricingModel(), run));
@@ -435,6 +435,40 @@ public class ExtractorNode implements AgentNode {
                 .distinct()
                 .toList();
         return cleaned.isEmpty() ? fallback : cleaned;
+    }
+
+    private List<String> observedFactsOnly(List<String> values, List<String> fallback, AnalysisRun run, String productName, String fieldName) {
+        List<String> cleaned = (values == null ? List.<String>of() : values).stream()
+                .filter(StringUtils::hasText)
+                .map(String::trim)
+                .filter(value -> !looksLikeAnalysisJudgment(value))
+                .distinct()
+                .toList();
+        if (cleaned.isEmpty() && values != null && values.stream().anyMatch(StringUtils::hasText)) {
+            run.getRecommendedActions().add("Extractor filtered non-factual " + fieldName + " for " + productName);
+        }
+        return cleaned.isEmpty() ? fallback : cleaned;
+    }
+
+    private boolean looksLikeAnalysisJudgment(String value) {
+        String normalized = normalizeName(value);
+        if (containsAny(normalized,
+                "风险管理", "风险控制", "风险仪表盘", "机会管理",
+                "risk management", "risk control", "risk dashboard", "opportunity management")) {
+            return false;
+        }
+        return containsAny(normalized,
+                "建议", "应该", "机会", "风险", "威胁", "战略", "取舍", "推荐", "优先",
+                "recommend", "should", "opportunity", "risk", "threat", "strategy", "priority");
+    }
+
+    private boolean containsAny(String text, String... patterns) {
+        for (String pattern : patterns) {
+            if (text.contains(pattern.toLowerCase(Locale.ROOT))) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private String textOrDefault(String value, String fallback) {

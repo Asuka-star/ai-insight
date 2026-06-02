@@ -35,7 +35,6 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
-import java.util.concurrent.CompletableFuture;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
@@ -109,26 +108,8 @@ public class AnalystNode implements AgentNode {
         List<AnalysisClaim> effectiveClaims = claimsResult.succeeded() && !claimsResult.value().isEmpty()
                 ? claimsResult.value()
                 : fallback.claims();
-        CompletableFuture<LlmSubtaskResult<String>> matrixTask = CompletableFuture.supplyAsync(
-                AgentTraceContext.wrap(() -> runAnalystSubtask(
-                        run,
-                        "competitive-matrix",
-                        () -> generateMatrixWithLlm(context, effectiveClaims)
-                ))
-        );
-        CompletableFuture<LlmSubtaskResult<String>> swotTask = CompletableFuture.supplyAsync(
-                AgentTraceContext.wrap(() -> runAnalystSubtask(
-                        run,
-                        "swot",
-                        () -> generateSwotWithLlm(context, effectiveClaims)
-                ))
-        );
-        CompletableFuture.allOf(matrixTask, swotTask).join();
-
-        LlmSubtaskResult<String> matrixResult = matrixTask.join();
-        LlmSubtaskResult<String> swotResult = swotTask.join();
-        List<LlmSubtaskResult<?>> results = List.of(claimsResult, matrixResult, swotResult);
-        recordParallelAnalystTrace(results);
+        List<LlmSubtaskResult<?>> results = List.of(claimsResult);
+        recordAnalystTrace(results);
         results.stream()
                 .filter(result -> !result.succeeded())
                 .forEach(result -> run.getRecommendedActions().add(
@@ -142,8 +123,8 @@ public class AnalystNode implements AgentNode {
         }
         return new AnalysisDraft(
                 effectiveClaims,
-                matrixResult.succeeded() && hasText(matrixResult.value()) ? matrixResult.value() : fallback.matrixMarkdown(),
-                swotResult.succeeded() && hasText(swotResult.value()) ? swotResult.value() : fallback.swotMarkdown()
+                renderMatrixFromClaims(context, effectiveClaims),
+                renderSwotFromClaims(effectiveClaims)
         );
     }
 
@@ -151,7 +132,7 @@ public class AnalystNode implements AgentNode {
         String prompt = """
                 你是竞品分析工作流中的分析 Agent。请只生成结构化 claims，不要生成矩阵或 SWOT。
                 你的职责是把 Extractor 生成的事实画像转化为可复核的分析断言。
-                矩阵和 SWOT 会在下一阶段基于你生成的 claims 并行生成。
+                矩阵和 SWOT 会由系统基于你生成的 claims 统一渲染。
 
                 输出约束：
                 1. 只输出 JSON，不要 Markdown 代码块。
@@ -160,7 +141,7 @@ public class AnalystNode implements AgentNode {
                 4. confidence 只能取 LOW、MEDIUM、HIGH。
                 5. content 不超过 120 字，必须围绕用户关注维度、业务目标或已采集证据生成。
                 6. evidenceIds 只能使用已知证据编号；证据不足时可以为空，但 content 必须明确写“待验证”或“证据不足”。
-                7. 不要输出 competitiveMatrixMarkdown 或 swotMarkdown。
+                7. 不要输出矩阵、SWOT、报告正文或其他展示型字段。
                 8. 不要编造价格、营收、客户案例、市场份额或证据中没有的信息。
                 9. 不要把“证据不足”本身当成主要洞察；RISK 类型最多 1 条，其余优先产出有证据支撑的差异、取舍和建议。
                 10. 对已有 strong/medium 证据覆盖的维度，不要写“待验证”；应给出保守但可行动的判断。
@@ -217,106 +198,6 @@ public class AnalystNode implements AgentNode {
         return parsed.claims();
     }
 
-    private String generateMatrixWithLlm(AnalystContext context, List<AnalysisClaim> claims) {
-        String prompt = """
-                你是竞品分析工作流中的矩阵分析 Agent。请单独生成竞品横向矩阵 Markdown。
-                你必须基于上一步 Analyst Claims 展开，不要提出和 Claims 冲突的新判断。
-                输出必须是 JSON 对象，不要 Markdown 代码块，不要解释。
-
-                JSON 结构：
-                {"matrixMarkdown":"## 竞品横向矩阵\\n\\n| 竞品 | ... | 证据 |\\n| --- | --- | --- |\\n..."}
-
-                约束：
-                1. 必须是 Markdown 表格，覆盖所有竞品。
-                2. 列必须贴合用户关注维度，建议包含：竞品、已验证优势、已验证短板/限制、关键取舍、待补证项、证据。
-                3. 证据列只能使用已知 citation，如 [S1]；证据不足只写入“待补证项”，不要在主体单元格反复铺陈“待验证”。
-                4. 不要编造价格、客户、市场份额或证据外事实。
-                5. 必须尽量复用“结构化 Claims”中的判断、置信度和 evidenceIds。
-                6. 表格应突出可比较差异；不要输出每个维度一列且大面积填“待验证”的矩阵。
-
-                分析需求：
-                %s
-
-                结构化竞品画像：
-                %s
-
-                按维度整理的证据覆盖：
-                %s
-
-                结构化 Claims：
-                %s
-
-                证据索引：
-                %s
-
-                Reviewer 修复计划：
-                %s
-                """.formatted(
-                context.requirementSummary(),
-                context.profileBlock(),
-                context.dimensionEvidence(),
-                claimsBlock(claims),
-                context.evidenceIndex(),
-                context.repairPlan()
-        );
-        String raw = llmClient.complete(new ChatRequest(
-                List.of(
-                        ChatMessage.system("你是严谨的竞品矩阵分析 Agent。只输出可解析 JSON。"),
-                        ChatMessage.user(prompt)
-                ),
-                ChatOptions.analyst()
-        ));
-        return parseMarkdownField(raw, "matrixMarkdown");
-    }
-
-    private String generateSwotWithLlm(AnalystContext context, List<AnalysisClaim> claims) {
-        String prompt = """
-                你是竞品分析工作流中的 SWOT 分析 Agent。请单独生成 SWOT Markdown。
-                你必须基于上一步 Analyst Claims 展开，不要提出和 Claims 冲突的新判断。
-                输出必须是 JSON 对象，不要 Markdown 代码块，不要解释。
-
-                JSON 结构：
-                {"swotMarkdown":"| 维度 | 结论 | 证据 |\\n| --- | --- | --- |\\n..."}
-
-                约束：
-                1. 必须包含 Strengths、Weaknesses、Opportunities、Threats 四行。
-                2. 每行结论不超过 120 字，并绑定证据 citation；证据不足只在 Threats 或补证语气里呈现。
-                3. 机会和威胁必须面向用户输出目标，不要泛泛而谈。
-                4. 不要编造价格、客户、市场份额或证据外事实。
-                5. 优先从“结构化 Claims”的 STRENGTH、WEAKNESS、OPPORTUNITY、RISK、RECOMMENDATION 中归纳。
-                6. Strengths/Opportunities 必须优先使用已有证据支持的内容，不要被证据缺口淹没。
-
-                分析需求：
-                %s
-
-                结构化竞品画像：
-                %s
-
-                结构化 Claims：
-                %s
-
-                证据缺口与一手洞察：
-                %s
-
-                Reviewer 修复计划：
-                %s
-                """.formatted(
-                context.requirementSummary(),
-                context.profileBlock(),
-                claimsBlock(claims),
-                context.researchContext(),
-                context.repairPlan()
-        );
-        String raw = llmClient.complete(new ChatRequest(
-                List.of(
-                        ChatMessage.system("你是严谨的 SWOT 分析 Agent。只输出可解析 JSON。"),
-                        ChatMessage.user(prompt)
-                ),
-                ChatOptions.analyst()
-        ));
-        return parseMarkdownField(raw, "swotMarkdown");
-    }
-
     private <T> LlmSubtaskResult<T> runAnalystSubtask(AnalysisRun run, String name, LlmSubtask<T> subtask) {
         try {
             return new LlmSubtaskResult<>(name, subtask.run(), null);
@@ -332,7 +213,7 @@ public class AnalystNode implements AgentNode {
         }
     }
 
-    private void recordParallelAnalystTrace(List<LlmSubtaskResult<?>> results) {
+    private void recordAnalystTrace(List<LlmSubtaskResult<?>> results) {
         String summary = results.stream()
                 .map(result -> "%s=%s%s".formatted(
                         result.name(),
@@ -340,7 +221,7 @@ public class AnalystNode implements AgentNode {
                         result.succeeded() ? "" : " (" + result.errorMessage() + ")"
                 ))
                 .collect(Collectors.joining("\n"));
-        AgentTraceContext.recordProcessSummary("Staged Analyst LLM subtasks:\n" + summary);
+        AgentTraceContext.recordProcessSummary("Analyst LLM subtasks:\n" + summary);
     }
 
     private AnalysisDraft parseAnalysisDraft(String raw, AnalysisRun run) {
@@ -356,27 +237,9 @@ public class AnalystNode implements AgentNode {
                     .map(draft -> toClaim(draft, run))
                     .filter(claim -> claim != null && hasText(claim.getContent()))
                     .toList();
-            String matrix = root.has("competitiveMatrixMarkdown") ? root.get("competitiveMatrixMarkdown").asText() : null;
-            String swot = root.has("swotMarkdown") ? root.get("swotMarkdown").asText() : null;
-            return new AnalysisDraft(claims, matrix, swot);
+            return new AnalysisDraft(claims, null, null);
         } catch (IllegalArgumentException | JsonProcessingException ex) {
             return null;
-        }
-    }
-
-    private String parseMarkdownField(String raw, String fieldName) {
-        if (!hasText(raw)) {
-            throw new IllegalStateException("模型输出为空");
-        }
-        try {
-            JsonNode root = objectMapper.readTree(extractJson(raw));
-            String markdown = root.has(fieldName) ? root.get(fieldName).asText() : "";
-            if (!hasText(markdown)) {
-                throw new IllegalStateException("模型输出缺少字段：" + fieldName);
-            }
-            return markdown;
-        } catch (JsonProcessingException ex) {
-            throw new IllegalStateException("无法解析 " + fieldName + " JSON", ex);
         }
     }
 
@@ -389,9 +252,7 @@ public class AnalystNode implements AgentNode {
         claim.setType(parseClaimType(draft.type));
         claim.setContent(draft.content.trim());
         claim.setConfidence(parseConfidence(draft.confidence, draft.evidenceIds));
-        claim.setCompetitorNames(draft.competitorNames == null || draft.competitorNames.isEmpty()
-                ? run.getRequirement().getCompetitors()
-                : draft.competitorNames);
+        claim.setCompetitorNames(normalizeCompetitorNames(run, draft.competitorNames));
         // evidenceIds 是 claim 进入 Writer/Reviewer 的硬约束，只允许已知 citation；
         // 模型编造的 [S404] 会被过滤，避免后续报告携带不可追溯引用。
         claim.setEvidenceIds(distinctKnownEvidenceIds(run, draft.evidenceIds));
@@ -592,6 +453,238 @@ public class AnalystNode implements AgentNode {
                         claim.getContent()
                 ))
                 .collect(Collectors.joining("\n"));
+    }
+
+    private String renderMatrixFromClaims(AnalystContext context, List<AnalysisClaim> claims) {
+        AnalysisRun run = context.run();
+        List<String> competitors = matrixCompetitors(run, claims);
+        String rows = competitors.stream()
+                .map(competitor -> matrixRowForCompetitor(run, competitor, claims))
+                .collect(Collectors.joining("\n"));
+        String claimRows = claims.stream()
+                .map(claim -> "| %s | %s | %s | %s | %s |".formatted(
+                        claim.getType(),
+                        claim.getConfidence(),
+                        competitorText(claim.getCompetitorNames()),
+                        escapeCell(claim.getContent()),
+                        citationText(claim.getEvidenceIds())
+                ))
+                .collect(Collectors.joining("\n"));
+        return """
+                ## 基于结构化结论的竞品矩阵
+
+                | 竞品 | 基于结论的判断 | 置信度 | 证据 |
+                | --- | --- | --- | --- |
+                %s
+
+                ## 结构化结论明细
+
+                | 类型 | 置信度 | 竞品 | 结论 | 证据 |
+                | --- | --- | --- | --- | --- |
+                %s
+
+                说明：该矩阵仅由结构化结论渲染，不引入结论之外的新事实或新判断。
+                """.formatted(
+                rows.isBlank() ? "| - | 暂无结构化结论。 | LOW | 证据不足 |" : rows,
+                claimRows.isBlank() ? "| - | LOW | - | 暂无结构化结论。 | 证据不足 |" : claimRows
+        );
+    }
+
+    private String matrixRowForCompetitor(AnalysisRun run, String competitor, List<AnalysisClaim> claims) {
+        Map<String, EvidenceSource> sourceByCitationKey = sourceByCitationKey(run);
+        List<AnalysisClaim> relatedClaims = claims.stream()
+                .filter(claim -> claimAppliesToCompetitor(claim, competitor))
+                .sorted((left, right) -> Integer.compare(claimDisplayScore(right, sourceByCitationKey),
+                        claimDisplayScore(left, sourceByCitationKey)))
+                .limit(3)
+                .toList();
+        if (relatedClaims.isEmpty()) {
+            return "| %s | 暂无可归属的结构化结论。 | LOW | 证据不足 |".formatted(escapeCell(competitor));
+        }
+        String summary = relatedClaims.stream()
+                .map(claim -> "%s: %s".formatted(claim.getType(), claim.getContent()))
+                .collect(Collectors.joining("<br>"));
+        String confidence = relatedClaims.stream()
+                .map(claim -> String.valueOf(claim.getConfidence()))
+                .distinct()
+                .collect(Collectors.joining("/"));
+        List<String> evidenceIds = relatedClaims.stream()
+                .flatMap(claim -> claim.getEvidenceIds().stream())
+                .distinct()
+                .toList();
+        return "| %s | %s | %s | %s |".formatted(
+                escapeCell(competitor),
+                escapeCell(summary),
+                confidence,
+                citationText(evidenceIds)
+        );
+    }
+
+    private String renderSwotFromClaims(List<AnalysisClaim> claims) {
+        return """
+                | 维度 | 基于结构化结论的判断 | 证据 |
+                | --- | --- | --- |
+                | 优势 | %s | %s |
+                | 短板 | %s | %s |
+                | 机会 | %s | %s |
+                | 威胁 | %s | %s |
+
+                说明：SWOT 仅由结构化结论渲染；证据不足的想法应留在证据缺口中，不作为新的 SWOT 结论。
+                """.formatted(
+                swotText(claims, ClaimType.STRENGTH, ClaimType.COMPARISON),
+                citationText(evidenceIdsForClaimType(claims, ClaimType.STRENGTH, ClaimType.COMPARISON)),
+                swotText(claims, ClaimType.WEAKNESS),
+                citationText(evidenceIdsForClaimType(claims, ClaimType.WEAKNESS)),
+                swotText(claims, ClaimType.OPPORTUNITY, ClaimType.RECOMMENDATION),
+                citationText(evidenceIdsForClaimType(claims, ClaimType.OPPORTUNITY, ClaimType.RECOMMENDATION)),
+                swotText(claims, ClaimType.RISK),
+                citationText(evidenceIdsForClaimType(claims, ClaimType.RISK))
+        );
+    }
+
+    private String swotText(List<AnalysisClaim> claims, ClaimType... types) {
+        Set<ClaimType> accepted = Set.of(types);
+        String text = claims.stream()
+                .filter(claim -> accepted.contains(claim.getType()))
+                .map(AnalysisClaim::getContent)
+                .filter(this::hasText)
+                .limit(2)
+                .collect(Collectors.joining("<br>"));
+        return text.isBlank() ? "暂无结构化结论。" : escapeCell(text);
+    }
+
+    private List<String> matrixCompetitors(AnalysisRun run, List<AnalysisClaim> claims) {
+        LinkedHashSet<String> competitors = new LinkedHashSet<>();
+        if (run.getRequirement() != null && run.getRequirement().getCompetitors() != null) {
+            run.getRequirement().getCompetitors().stream().filter(this::hasText).forEach(competitors::add);
+        }
+        run.getCompetitorProfiles().stream()
+                .map(profile -> textOrDash(profile.getProductName()))
+                .filter(this::hasText)
+                .forEach(competitors::add);
+        claims.stream()
+                .flatMap(claim -> safeList(claim.getCompetitorNames()).stream())
+                .filter(this::hasText)
+                .forEach(competitors::add);
+        return competitors.isEmpty() ? List.of("-") : new ArrayList<>(competitors);
+    }
+
+    private boolean claimAppliesToCompetitor(AnalysisClaim claim, String competitor) {
+        if (claim.getCompetitorNames() == null || claim.getCompetitorNames().isEmpty()) {
+            return true;
+        }
+        return claim.getCompetitorNames().stream()
+                .anyMatch(name -> name.equalsIgnoreCase(competitor));
+    }
+
+    private List<String> normalizeCompetitorNames(AnalysisRun run, List<String> candidateNames) {
+        List<String> configuredCompetitors = run.getRequirement() == null
+                ? List.of()
+                : safeList(run.getRequirement().getCompetitors()).stream()
+                .filter(this::hasText)
+                .toList();
+        List<String> candidates = safeList(candidateNames).stream()
+                .filter(this::hasText)
+                .map(String::trim)
+                .toList();
+        if (candidates.isEmpty()) {
+            return configuredCompetitors;
+        }
+        LinkedHashSet<String> normalized = new LinkedHashSet<>();
+        for (String candidate : candidates) {
+            normalized.add(matchConfiguredCompetitor(candidate, configuredCompetitors));
+        }
+        return normalized.stream().filter(this::hasText).toList();
+    }
+
+    private String matchConfiguredCompetitor(String candidate, List<String> configuredCompetitors) {
+        String candidateKey = competitorKey(candidate);
+        for (String configured : configuredCompetitors) {
+            String configuredKey = competitorKey(configured);
+            if (candidateKey.equals(configuredKey)
+                    || candidateKey.contains(configuredKey)
+                    || configuredKey.contains(candidateKey)) {
+                return configured;
+            }
+        }
+        return candidate.trim();
+    }
+
+    private String competitorKey(String value) {
+        return normalizeLower(value).replaceAll("[^\\p{IsAlphabetic}\\p{IsDigit}]+", "");
+    }
+
+    private int claimDisplayScore(AnalysisClaim claim, Map<String, EvidenceSource> sourceByCitationKey) {
+        int bestEvidenceScore = safeList(claim.getEvidenceIds()).stream()
+                .map(sourceByCitationKey::get)
+                .mapToInt(this::evidenceConfidenceScore)
+                .max()
+                .orElse(0);
+        return bestEvidenceScore * 100 + confidenceScore(claim.getConfidence()) * 10 + claimTypeDisplayScore(claim.getType());
+    }
+
+    private int confidenceScore(ConfidenceLevel confidence) {
+        if (confidence == ConfidenceLevel.HIGH) {
+            return 3;
+        }
+        if (confidence == ConfidenceLevel.MEDIUM) {
+            return 2;
+        }
+        return 1;
+    }
+
+    private int claimTypeDisplayScore(ClaimType type) {
+        if (type == null) {
+            return 0;
+        }
+        return switch (type) {
+            case RECOMMENDATION -> 7;
+            case OPPORTUNITY -> 6;
+            case COMPARISON -> 5;
+            case STRENGTH -> 4;
+            case WEAKNESS -> 3;
+            case RISK -> 2;
+            case FACT -> 1;
+        };
+    }
+
+    private List<String> evidenceIdsForClaimType(List<AnalysisClaim> claims, ClaimType... types) {
+        Set<ClaimType> accepted = Set.of(types);
+        return claims.stream()
+                .filter(claim -> accepted.contains(claim.getType()))
+                .flatMap(claim -> claim.getEvidenceIds().stream())
+                .distinct()
+                .toList();
+    }
+
+    private String citationText(List<String> evidenceIds) {
+        if (evidenceIds == null || evidenceIds.isEmpty()) {
+            return "证据不足";
+        }
+        return evidenceIds.stream()
+                .filter(this::hasText)
+                .distinct()
+                .map(id -> "[" + id + "]")
+                .collect(Collectors.joining(" "));
+    }
+
+    private String competitorText(List<String> competitors) {
+        if (competitors == null || competitors.isEmpty()) {
+            return "-";
+        }
+        return competitors.stream().filter(this::hasText).collect(Collectors.joining(", "));
+    }
+
+    private String escapeCell(String value) {
+        return textOrDash(value).replace("|", "\\|").replace("\n", "<br>");
+    }
+
+    private String textOrDash(String value) {
+        return value == null || value.isBlank() ? "-" : value.trim();
+    }
+
+    private List<String> safeList(List<String> values) {
+        return values == null ? List.of() : values;
     }
 
     private String evidenceIndexBlock(AnalysisRun run) {

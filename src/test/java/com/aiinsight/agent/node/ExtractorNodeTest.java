@@ -195,6 +195,55 @@ class ExtractorNodeTest {
                 .containsExactly("S1");
     }
 
+    @Test
+    void keepsRiskManagementFactsButFiltersAnalyticalJudgments() {
+        LlmClient llmClient = new LlmClient() {
+            @Override
+            public boolean isAvailable() {
+                return true;
+            }
+
+            @Override
+            public String complete(ChatRequest request) {
+                return """
+                        {
+                          "profiles": [
+                            {
+                              "productName": "Cursor",
+                              "companyName": "Cursor",
+                              "positioning": "AI code editor",
+                              "targetUsers": ["Developers"],
+                              "features": [
+                                {"name":"Composer","description":"Multi-file code editing","evidenceIds":["S1"]}
+                              ],
+                              "pricing": {
+                                "strategySummary": "Pro plan is available",
+                                "hasFreePlan": true,
+                                "plans": [],
+                                "evidenceIds": ["S1"]
+                              },
+                              "personas": [],
+                              "strengths": ["Risk management dashboard is documented", "should prioritize enterprise governance"],
+                              "weaknesses": ["recommend deeper pricing validation"],
+                              "evidenceIds": ["S1"]
+                            }
+                          ]
+                        }
+                        """;
+            }
+        };
+        AnalysisRun run = runWithCursorEvidence();
+
+        new ExtractorNode(llmClient, new FallbackExtractionFactory()).execute(run);
+
+        assertThat(run.getCompetitorProfiles()).hasSize(1);
+        assertThat(run.getCompetitorProfiles().get(0).getStrengths())
+                .contains("Risk management dashboard is documented")
+                .doesNotContain("should prioritize enterprise governance");
+        assertThat(run.getRecommendedActions())
+                .anyMatch(action -> action.contains("Extractor filtered non-factual weaknesses for Cursor"));
+    }
+
     private AnalysisRun runWithCursorEvidence() {
         AnalysisRun run = new AnalysisRun(new AnalysisRequirement(
                 "Analyze Cursor",
