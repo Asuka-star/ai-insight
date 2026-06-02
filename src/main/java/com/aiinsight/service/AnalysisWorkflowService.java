@@ -30,6 +30,7 @@ import com.aiinsight.repository.AnalysisRunRepository;
 import com.aiinsight.service.fallback.FallbackClarificationDraftFactory;
 import com.aiinsight.workflow.AnalysisLangGraphWorkflow;
 import com.aiinsight.workflow.WorkflowNodeExecutor;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.core.task.AsyncTaskExecutor;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
@@ -58,6 +59,34 @@ public class AnalysisWorkflowService {
     private final EvidenceRetrievalService evidenceRetrievalService;
     private final SourceCollectionService sourceCollectionService;
     private final EvidenceChunkService evidenceChunkService;
+    private final EvidenceEmbeddingService evidenceEmbeddingService;
+
+    @Autowired
+    public AnalysisWorkflowService(AnalysisRunRepository repository,
+            AnalysisRequestNormalizer normalizer,
+            AnalysisEventBroker eventBroker,
+            AsyncTaskExecutor analysisTaskExecutor,
+            AnalysisLangGraphWorkflow graphWorkflow,
+            WorkflowNodeExecutor nodeExecutor,
+            ClarifierNode clarifierNode,
+            FallbackClarificationDraftFactory fallbackClarificationDraftFactory,
+            EvidenceRetrievalService evidenceRetrievalService,
+            SourceCollectionService sourceCollectionService,
+            EvidenceChunkService evidenceChunkService,
+            EvidenceEmbeddingService evidenceEmbeddingService) {
+        this.repository = repository;
+        this.normalizer = normalizer;
+        this.eventBroker = eventBroker;
+        this.analysisTaskExecutor = analysisTaskExecutor;
+        this.graphWorkflow = graphWorkflow;
+        this.nodeExecutor = nodeExecutor;
+        this.clarifierNode = clarifierNode;
+        this.fallbackClarificationDraftFactory = fallbackClarificationDraftFactory;
+        this.evidenceRetrievalService = evidenceRetrievalService;
+        this.sourceCollectionService = sourceCollectionService;
+        this.evidenceChunkService = evidenceChunkService;
+        this.evidenceEmbeddingService = evidenceEmbeddingService;
+    }
 
     public AnalysisWorkflowService(AnalysisRunRepository repository,
             AnalysisRequestNormalizer normalizer,
@@ -70,17 +99,18 @@ public class AnalysisWorkflowService {
             EvidenceRetrievalService evidenceRetrievalService,
             SourceCollectionService sourceCollectionService,
             EvidenceChunkService evidenceChunkService) {
-        this.repository = repository;
-        this.normalizer = normalizer;
-        this.eventBroker = eventBroker;
-        this.analysisTaskExecutor = analysisTaskExecutor;
-        this.graphWorkflow = graphWorkflow;
-        this.nodeExecutor = nodeExecutor;
-        this.clarifierNode = clarifierNode;
-        this.fallbackClarificationDraftFactory = fallbackClarificationDraftFactory;
-        this.evidenceRetrievalService = evidenceRetrievalService;
-        this.sourceCollectionService = sourceCollectionService;
-        this.evidenceChunkService = evidenceChunkService;
+        this(repository,
+                normalizer,
+                eventBroker,
+                analysisTaskExecutor,
+                graphWorkflow,
+                nodeExecutor,
+                clarifierNode,
+                fallbackClarificationDraftFactory,
+                evidenceRetrievalService,
+                sourceCollectionService,
+                evidenceChunkService,
+                EvidenceEmbeddingService.disabled());
     }
 
     public AnalysisRun createDraft(CreateAnalysisRunRequest request) {
@@ -536,7 +566,7 @@ public class AnalysisWorkflowService {
         String citationKey = nextCitationKey(run);
         EvidenceSource source = sourceCollectionService.fromUserProvidedEvidence(citationKey, evidence);
         run.getEvidenceSources().add(source);
-        run.getEvidenceChunks().addAll(evidenceChunkService.chunk(List.of(source)));
+        run.getEvidenceChunks().addAll(evidenceEmbeddingService.embedChunks(evidenceChunkService.chunk(List.of(source))));
         run.getResearchPackage().setSources(new ArrayList<>(run.getEvidenceSources()));
         run.getResearchPackage().setCollectedAt(Instant.now());
         run.getRecommendedActions().add("用户证据 " + citationKey + " 已加入。可重跑 RESEARCHER 或下游 Agent 刷新输出。");

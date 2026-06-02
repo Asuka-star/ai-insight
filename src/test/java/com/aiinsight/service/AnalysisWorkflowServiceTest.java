@@ -583,7 +583,8 @@ class AnalysisWorkflowServiceTest {
                 new FallbackClarificationDraftFactory(),
                 new EvidenceRetrievalService(),
                 sourceCollectionService,
-                new EvidenceChunkService()
+                new EvidenceChunkService(),
+                EvidenceEmbeddingService.disabled()
         );
 
         AnalysisRun finished = service.startExecution(run.getId());
@@ -2757,7 +2758,8 @@ class AnalysisWorkflowServiceTest {
                 fallbackClarificationDraftFactory,
                 new EvidenceRetrievalService(),
                 sourceCollectionService,
-                new EvidenceChunkService()
+                new EvidenceChunkService(),
+                EvidenceEmbeddingService.disabled()
         );
     }
 
@@ -2856,6 +2858,7 @@ class AnalysisWorkflowServiceTest {
         return new ResearcherNode(
                 sourceCollectionService,
                 new EvidenceChunkService(),
+                EvidenceEmbeddingService.disabled(),
                 llmClient,
                 new LlmSearchQueryPlanner(llmClient, new ObjectMapper()),
                 new ObjectMapper(),

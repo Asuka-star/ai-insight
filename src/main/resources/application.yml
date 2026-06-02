@@ -49,6 +49,14 @@ ai-insight:
       completions-path: ${XIAOMI_LLM_COMPLETIONS_PATH:/chat/completions}
       model: ${XIAOMI_LLM_MODEL:mimo-v2.5-pro}
       timeout: 60s
+  embedding:
+    api-key: ${AI_INSIGHT_EMBEDDING_API_KEY:}
+    base-url: ${AI_INSIGHT_EMBEDDING_BASE_URL:https://api.openai.com/v1}
+    embeddings-path: ${AI_INSIGHT_EMBEDDING_PATH:/embeddings}
+    model: ${AI_INSIGHT_EMBEDDING_MODEL:text-embedding-3-small}
+    dimensions: ${AI_INSIGHT_EMBEDDING_DIMENSIONS:0}
+    max-batch-size: ${AI_INSIGHT_EMBEDDING_MAX_BATCH_SIZE:32}
+    timeout: ${AI_INSIGHT_EMBEDDING_TIMEOUT:30s}
   search:
     tavily:
       api-key: ${TAVILY_API_KEY:}

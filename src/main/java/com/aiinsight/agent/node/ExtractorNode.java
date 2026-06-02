@@ -25,8 +25,8 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 import org.springframework.util.StringUtils;
 
@@ -39,14 +39,28 @@ import java.util.Set;
 import java.util.stream.Collectors;
 
 @Component
-@RequiredArgsConstructor
 @Slf4j
 public class ExtractorNode implements AgentNode {
 
     private final LlmClient llmClient;
     private final FallbackExtractionFactory fallbackExtractionFactory;
-    private final EvidenceRetrievalService evidenceRetrievalService = new EvidenceRetrievalService();
-    private final ObjectMapper objectMapper = new ObjectMapper();
+    private final EvidenceRetrievalService evidenceRetrievalService;
+    private final ObjectMapper objectMapper;
+
+    public ExtractorNode(LlmClient llmClient, FallbackExtractionFactory fallbackExtractionFactory) {
+        this(llmClient, fallbackExtractionFactory, new EvidenceRetrievalService(), new ObjectMapper());
+    }
+
+    @Autowired
+    public ExtractorNode(LlmClient llmClient,
+                         FallbackExtractionFactory fallbackExtractionFactory,
+                         EvidenceRetrievalService evidenceRetrievalService,
+                         ObjectMapper objectMapper) {
+        this.llmClient = llmClient;
+        this.fallbackExtractionFactory = fallbackExtractionFactory;
+        this.evidenceRetrievalService = evidenceRetrievalService;
+        this.objectMapper = objectMapper;
+    }
 
     @Override
     public AgentName name() {

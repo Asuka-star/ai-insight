@@ -18,6 +18,7 @@ import java.sql.Timestamp;
 import java.time.Instant;
 import java.util.Collection;
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -89,6 +90,100 @@ class PostgresAnalysisRunRepositoryTest {
         repository.save(new AnalysisRun());
 
         verify(jdbcTemplate, never()).update(eq("delete from analysis_artifact where run_id = ?"), any(UUID.class));
+    }
+
+    @Test
+    void saveWritesPgvectorProjectionWhenSchemaIsAvailable() {
+        JdbcTemplate jdbcTemplate = mock(JdbcTemplate.class);
+        PostgresAnalysisRunRepository repository = new PostgresAnalysisRunRepository(
+                jdbcTemplate,
+                new ObjectMapper().findAndRegisterModules()
+        );
+        repository.ensureSchema();
+        when(jdbcTemplate.update(contains("insert into analysis_run"), any(Object[].class))).thenReturn(1);
+        AnalysisRun run = new AnalysisRun();
+        EvidenceChunk chunk = new EvidenceChunk(
+                "S1-C1",
+                "S1",
+                1,
+                "Pricing",
+                "https://example.test/pricing",
+                "Pricing details"
+        );
+        chunk.setEmbedding(List.of(0.1, 0.2));
+        chunk.setEmbeddingModel("test-embedding-model");
+        chunk.setTextHash("hash-1");
+        chunk.setEmbeddedAt(Instant.parse("2026-06-02T08:00:00Z"));
+        run.getEvidenceChunks().add(chunk);
+
+        repository.save(run);
+
+        ArgumentCaptor<Object[]> argsCaptor = ArgumentCaptor.forClass(Object[].class);
+        verify(jdbcTemplate).update(contains("insert into evidence_chunk_embedding"), argsCaptor.capture());
+        Object[] args = argsCaptor.getValue();
+        assertThat(args[0]).isEqualTo(chunk.getId());
+        assertThat(args[1]).isEqualTo(run.getId());
+        assertThat(args[2]).isEqualTo("S1");
+        assertThat(args[3]).isEqualTo("S1-C1");
+        assertThat(args[4]).isEqualTo("[0.100000000,0.200000000]");
+        assertThat(args[5]).isEqualTo("test-embedding-model");
+        assertThat(args[6]).isEqualTo("hash-1");
+        assertThat(args[7]).isEqualTo(Timestamp.from(Instant.parse("2026-06-02T08:00:00Z")));
+        verify(jdbcTemplate).update("delete from evidence_chunk_embedding where run_id = ?", run.getId());
+    }
+
+    @Test
+    void retrieveEvidenceByVectorQueriesPgvectorProjection() throws Exception {
+        JdbcTemplate jdbcTemplate = mock(JdbcTemplate.class);
+        ObjectMapper objectMapper = new ObjectMapper().findAndRegisterModules();
+        PostgresAnalysisRunRepository repository = new PostgresAnalysisRunRepository(jdbcTemplate, objectMapper);
+        repository.ensureSchema();
+        UUID runId = UUID.randomUUID();
+        EvidenceChunk chunk = new EvidenceChunk(
+                "S1-C1",
+                "S1",
+                1,
+                "Admin docs",
+                "https://example.test/admin",
+                "Admin controls"
+        );
+        when(jdbcTemplate.query(contains("from evidence_chunk_embedding"), any(RowMapper.class), any(Object[].class)))
+                .thenAnswer(invocation -> {
+                    @SuppressWarnings("unchecked")
+                    RowMapper<EvidenceChunk> mapper = invocation.getArgument(1);
+                    ResultSet rs = mock(ResultSet.class);
+                    when(rs.getString("chunk_payload")).thenReturn(objectMapper.writeValueAsString(chunk));
+                    when(rs.getString("embedding_text")).thenReturn("[0.500000000,0.100000000]");
+                    when(rs.getDouble("semantic_score")).thenReturn(0.94);
+                    return List.of(mapper.mapRow(rs, 0));
+                });
+
+        Optional<List<EvidenceChunk>> results = repository.retrieveEvidenceByVector(
+                runId,
+                List.of(1.0, 0.0),
+                "test-embedding-model",
+                3
+        );
+
+        assertThat(results).isPresent();
+        assertThat(results.get())
+                .singleElement()
+                .satisfies(result -> {
+                    assertThat(result.getChunkKey()).isEqualTo("S1-C1");
+                    assertThat(result.getEmbedding()).containsExactly(0.5, 0.1);
+                    assertThat(result.getEmbeddingModel()).isEqualTo("test-embedding-model");
+                    assertThat(result.getScore()).isEqualTo(0.94);
+                });
+        ArgumentCaptor<Object[]> argsCaptor = ArgumentCaptor.forClass(Object[].class);
+        verify(jdbcTemplate).query(contains("from evidence_chunk_embedding"), any(RowMapper.class), argsCaptor.capture());
+        assertThat(argsCaptor.getValue()).containsExactly(
+                "[1.000000000,0.000000000]",
+                runId,
+                "test-embedding-model",
+                2,
+                "[1.000000000,0.000000000]",
+                3
+        );
     }
 
     @Test

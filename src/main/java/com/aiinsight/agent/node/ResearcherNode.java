@@ -17,6 +17,7 @@ import com.aiinsight.model.schema.Questionnaire;
 import com.aiinsight.model.schema.ResearchPlan;
 import com.aiinsight.model.schema.SurveyQuestion;
 import com.aiinsight.service.EvidenceChunkService;
+import com.aiinsight.service.EvidenceEmbeddingService;
 import com.aiinsight.service.InterviewInsightExtractor;
 import com.aiinsight.service.LlmSearchQueryPlanner;
 import com.aiinsight.service.SearchQueryPlanner;
@@ -45,6 +46,7 @@ public class ResearcherNode implements AgentNode {
 
     private final SourceCollectionService sourceCollectionService;
     private final EvidenceChunkService evidenceChunkService;
+    private final EvidenceEmbeddingService evidenceEmbeddingService;
     private final LlmClient llmClient;
     private final LlmSearchQueryPlanner llmSearchQueryPlanner;
     private final ObjectMapper objectMapper;
@@ -72,7 +74,7 @@ public class ResearcherNode implements AgentNode {
         run.getEvidenceSources().clear();
         run.getEvidenceChunks().clear();
         run.getEvidenceSources().addAll(collectedSources);
-        run.getEvidenceChunks().addAll(evidenceChunkService.chunk(run.getEvidenceSources()));
+        run.getEvidenceChunks().addAll(evidenceEmbeddingService.embedChunks(evidenceChunkService.chunk(run.getEvidenceSources())));
         run.getResearchPackage().setSources(new ArrayList<>(run.getEvidenceSources()));
         // missingEvidenceTypes 是 Reviewer 是否打回采集的主要依据。
         // 每次采集后都重新计算，避免补采成功后仍保留旧缺口。

@@ -27,6 +27,7 @@ public class EvidenceChunk {
     private String textHash;
     private String embeddingModel;
     private Instant embeddedAt;
+    private List<Double> embedding = List.of();
     private String text;
     private double score;
     private Instant createdAt = Instant.now();

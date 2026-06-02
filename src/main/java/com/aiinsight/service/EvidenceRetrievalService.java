@@ -1,21 +1,46 @@
 package com.aiinsight.service;
 
+import com.aiinsight.repository.AnalysisRunRepository;
 import com.aiinsight.model.run.AnalysisRun;
 import com.aiinsight.model.run.EvidenceChunk;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Set;
 
 @Service
+@Slf4j
 public class EvidenceRetrievalService {
 
     private static final int DEFAULT_TOP_K = 5;
+    private static final double SEMANTIC_MATCH_THRESHOLD = 0.35;
+    private static final double SEMANTIC_SCORE_WEIGHT = 4.0;
+
+    private final EmbeddingClient embeddingClient;
+    private final AnalysisRunRepository repository;
+
+    public EvidenceRetrievalService() {
+        this(new NoopEmbeddingClient());
+    }
+
+    public EvidenceRetrievalService(EmbeddingClient embeddingClient) {
+        this(embeddingClient, null);
+    }
+
+    @Autowired
+    public EvidenceRetrievalService(EmbeddingClient embeddingClient, AnalysisRunRepository repository) {
+        this.embeddingClient = embeddingClient == null ? new NoopEmbeddingClient() : embeddingClient;
+        this.repository = repository;
+    }
 
     public List<EvidenceChunk> retrieve(AnalysisRun run, String query, Integer topK) {
         return retrieve(run, query, null, null, topK);
@@ -29,21 +54,26 @@ public class EvidenceRetrievalService {
                 dimension == null ? "" : dimension
         );
         Set<String> queryTerms = expandedTerms(effectiveQuery, dimension);
-        if (queryTerms.isEmpty()) {
+        List<Double> queryEmbedding = queryEmbedding(effectiveQuery);
+        if (queryTerms.isEmpty() && queryEmbedding.isEmpty()) {
             return run.getEvidenceChunks().stream()
                     .limit(limit)
                     .map(this::copy)
                     .toList();
         }
-        return run.getEvidenceChunks().stream()
-                .map(chunk -> scoredCopy(chunk, queryTerms, competitor, dimension))
+        return retrievalCandidates(run, queryEmbedding, limit).stream()
+                .map(chunk -> scoredCopy(chunk, queryTerms, competitor, dimension, queryEmbedding))
                 .filter(chunk -> chunk.getScore() > 0)
                 .sorted(Comparator.comparingDouble(EvidenceChunk::getScore).reversed())
                 .limit(limit)
                 .toList();
     }
 
-    private EvidenceChunk scoredCopy(EvidenceChunk chunk, Set<String> queryTerms, String competitor, String dimension) {
+    private EvidenceChunk scoredCopy(EvidenceChunk chunk,
+                                     Set<String> queryTerms,
+                                     String competitor,
+                                     String dimension,
+                                     List<Double> queryEmbedding) {
         EvidenceChunk copy = copy(chunk);
         String haystack = String.join(" ",
                 nullToEmpty(chunk.getTitle()),
@@ -62,8 +92,16 @@ public class EvidenceRetrievalService {
         }
         double contentBoost = contentKindBoost(chunk, dimension);
         double competitorBoost = StringUtils.hasText(competitor) && containsCompetitorToken(haystack, competitor) ? 1.5 : 0;
-        double score = keywordScore > 0 || (contentBoost > 0 && competitorBoost > 0)
-                ? keywordScore + contentBoost + competitorBoost + sourceAuthorityBoost(chunk) + sourceQualityBoost(chunk)
+        double semanticScore = semanticScore(queryEmbedding, chunk);
+        double score = keywordScore > 0
+                || semanticScore >= SEMANTIC_MATCH_THRESHOLD
+                || (contentBoost > 0 && competitorBoost > 0)
+                ? keywordScore
+                + (semanticScore * SEMANTIC_SCORE_WEIGHT)
+                + contentBoost
+                + competitorBoost
+                + sourceAuthorityBoost(chunk)
+                + sourceQualityBoost(chunk)
                 : 0;
         copy.setScore(score);
         return copy;
@@ -121,9 +159,92 @@ public class EvidenceRetrievalService {
         copy.setTextHash(chunk.getTextHash());
         copy.setEmbeddingModel(chunk.getEmbeddingModel());
         copy.setEmbeddedAt(chunk.getEmbeddedAt());
+        copy.setEmbedding(chunk.getEmbedding() == null ? List.of() : new ArrayList<>(chunk.getEmbedding()));
         copy.setScore(chunk.getScore());
         copy.setCreatedAt(chunk.getCreatedAt());
         return copy;
+    }
+
+    private List<EvidenceChunk> retrievalCandidates(AnalysisRun run, List<Double> queryEmbedding, int limit) {
+        Map<String, EvidenceChunk> candidates = new LinkedHashMap<>();
+        for (EvidenceChunk chunk : run.getEvidenceChunks()) {
+            candidates.put(chunkIdentity(chunk), chunk);
+        }
+        if (repository != null && queryEmbedding != null && !queryEmbedding.isEmpty()) {
+            repository.retrieveEvidenceByVector(
+                            run.getId(),
+                            queryEmbedding,
+                            embeddingClient.model(),
+                            Math.max(limit * 4, DEFAULT_TOP_K)
+                    )
+                    .ifPresent(vectorChunks -> vectorChunks.forEach(chunk ->
+                            candidates.put(chunkIdentity(chunk), chunk)));
+        }
+        return new ArrayList<>(candidates.values());
+    }
+
+    private String chunkIdentity(EvidenceChunk chunk) {
+        if (chunk.getId() != null) {
+            return chunk.getId().toString();
+        }
+        if (StringUtils.hasText(chunk.getChunkKey())) {
+            return chunk.getChunkKey();
+        }
+        return "%s-%d".formatted(chunk.getSourceCitationKey(), chunk.getChunkIndex());
+    }
+
+    private List<Double> queryEmbedding(String query) {
+        if (!StringUtils.hasText(query) || !embeddingClient.isAvailable()) {
+            return List.of();
+        }
+        try {
+            List<List<Double>> embeddings = embeddingClient.embed(List.of(query));
+            if (embeddings.isEmpty() || embeddings.get(0) == null) {
+                return List.of();
+            }
+            return embeddings.get(0);
+        } catch (RuntimeException ex) {
+            log.warn("Evidence semantic query embedding failed; keyword retrieval fallback remains available: model={}, exceptionType={}, message={}",
+                    embeddingClient.model(),
+                    ex.getClass().getName(),
+                    ex.getMessage());
+            return List.of();
+        }
+    }
+
+    private boolean hasCompatibleEmbedding(EvidenceChunk chunk) {
+        return chunk != null
+                && chunk.getEmbedding() != null
+                && !chunk.getEmbedding().isEmpty()
+                && embeddingClient.model().equals(chunk.getEmbeddingModel());
+    }
+
+    private double semanticScore(List<Double> queryEmbedding, EvidenceChunk chunk) {
+        if (!hasCompatibleEmbedding(chunk)) {
+            return 0;
+        }
+        List<Double> chunkEmbedding = chunk.getEmbedding();
+        if (queryEmbedding == null || queryEmbedding.isEmpty() || chunkEmbedding == null || chunkEmbedding.isEmpty()) {
+            return 0;
+        }
+        int dimensions = Math.min(queryEmbedding.size(), chunkEmbedding.size());
+        if (dimensions == 0) {
+            return 0;
+        }
+        double dot = 0;
+        double queryNorm = 0;
+        double chunkNorm = 0;
+        for (int i = 0; i < dimensions; i++) {
+            double queryValue = queryEmbedding.get(i) == null ? 0 : queryEmbedding.get(i);
+            double chunkValue = chunkEmbedding.get(i) == null ? 0 : chunkEmbedding.get(i);
+            dot += queryValue * chunkValue;
+            queryNorm += queryValue * queryValue;
+            chunkNorm += chunkValue * chunkValue;
+        }
+        if (queryNorm == 0 || chunkNorm == 0) {
+            return 0;
+        }
+        return Math.max(0, dot / (Math.sqrt(queryNorm) * Math.sqrt(chunkNorm)));
     }
 
     private Set<String> expandedTerms(String query, String dimension) {

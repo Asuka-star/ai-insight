@@ -3,13 +3,18 @@ package com.aiinsight.repository;
 import com.aiinsight.dto.AnalysisRunSummary;
 import com.aiinsight.model.enums.AnalysisStatus;
 import com.aiinsight.model.run.AnalysisRun;
+import com.aiinsight.model.run.EvidenceChunk;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.annotation.PostConstruct;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.dao.EmptyResultDataAccessException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Repository;
+import org.springframework.transaction.TransactionStatus;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.interceptor.TransactionAspectSupport;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import java.sql.ResultSet;
 import java.sql.SQLException;
@@ -17,14 +22,18 @@ import java.sql.Timestamp;
 import java.time.Instant;
 import java.util.Collection;
 import java.util.List;
+import java.util.Locale;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.stream.Collectors;
 
 @Repository
+@Slf4j
 public class PostgresAnalysisRunRepository implements AnalysisRunRepository {
 
     private final JdbcTemplate jdbcTemplate;
     private final ObjectMapper objectMapper;
+    private boolean vectorSchemaAvailable;
 
     public PostgresAnalysisRunRepository(JdbcTemplate jdbcTemplate, ObjectMapper objectMapper) {
         this.jdbcTemplate = jdbcTemplate;
@@ -142,6 +151,7 @@ public class PostgresAnalysisRunRepository implements AnalysisRunRepository {
                 create index if not exists idx_evidence_chunk_run_source
                 on evidence_chunk (run_id, source_citation_key, chunk_index)
                 """);
+        ensureVectorSchema();
         jdbcTemplate.execute("""
                 create table if not exists review_finding (
                     id uuid primary key,
@@ -159,6 +169,34 @@ public class PostgresAnalysisRunRepository implements AnalysisRunRepository {
                 create index if not exists idx_review_finding_run_category
                 on review_finding (run_id, category, severity)
                 """);
+    }
+
+    private void ensureVectorSchema() {
+        try {
+            jdbcTemplate.execute("create extension if not exists vector");
+            jdbcTemplate.execute("""
+                    create table if not exists evidence_chunk_embedding (
+                        chunk_id uuid primary key references evidence_chunk(id) on delete cascade,
+                        run_id uuid not null references analysis_run(id) on delete cascade,
+                        source_citation_key varchar(32),
+                        chunk_key varchar(128),
+                        embedding vector,
+                        embedding_model varchar(128),
+                        embedding_text_hash varchar(128),
+                        embedded_at timestamptz
+                    )
+                    """);
+            jdbcTemplate.execute("""
+                    create index if not exists idx_evidence_chunk_embedding_run
+                    on evidence_chunk_embedding (run_id)
+                    """);
+            vectorSchemaAvailable = true;
+        } catch (RuntimeException ex) {
+            vectorSchemaAvailable = false;
+            log.warn("pgvector schema is unavailable; evidence embeddings will stay in JSON payload only: exceptionType={}, message={}",
+                    ex.getClass().getName(),
+                    ex.getMessage());
+        }
     }
 
     @Override
@@ -249,6 +287,50 @@ public class PostgresAnalysisRunRepository implements AnalysisRunRepository {
     }
 
     @Override
+    public Optional<List<EvidenceChunk>> retrieveEvidenceByVector(UUID runId,
+                                                                  List<Double> queryEmbedding,
+                                                                  String embeddingModel,
+                                                                  int topK) {
+        if (!vectorSchemaAvailable || queryEmbedding == null || queryEmbedding.isEmpty()
+                || embeddingModel == null || embeddingModel.isBlank()) {
+            return Optional.empty();
+        }
+        int limit = Math.max(1, Math.min(topK, 100));
+        String queryVector = embeddingLiteral(queryEmbedding);
+        try {
+            List<EvidenceChunk> chunks = jdbcTemplate.query("""
+                            select
+                                ec.chunk_payload,
+                                ece.embedding::text as embedding_text,
+                                1 - (ece.embedding <=> ?::vector) as semantic_score
+                            from evidence_chunk_embedding ece
+                            join evidence_chunk ec on ec.id = ece.chunk_id
+                            where ece.run_id = ?
+                              and ece.embedding_model = ?
+                              and vector_dims(ece.embedding) = ?
+                            order by ece.embedding <=> ?::vector
+                            limit ?
+                            """,
+                    (rs, rowNum) -> toVectorChunk(rs, embeddingModel),
+                    queryVector,
+                    runId,
+                    embeddingModel,
+                    queryEmbedding.size(),
+                    queryVector,
+                    limit
+            );
+            return Optional.of(chunks);
+        } catch (RuntimeException ex) {
+            vectorSchemaAvailable = false;
+            log.warn("pgvector evidence retrieval failed; in-memory retrieval fallback remains available: runId={}, exceptionType={}, message={}",
+                    runId,
+                    ex.getClass().getName(),
+                    ex.getMessage());
+            return Optional.empty();
+        }
+    }
+
+    @Override
     @Transactional
     public void deleteById(UUID id) {
         jdbcTemplate.update("""
@@ -280,11 +362,15 @@ public class PostgresAnalysisRunRepository implements AnalysisRunRepository {
         insertTraces(run);
         insertEvidenceSources(run);
         insertEvidenceChunks(run);
+        insertEvidenceChunkEmbeddings(run);
         insertReviewFindings(run);
     }
 
     private void deleteDetails(UUID runId) {
         jdbcTemplate.update("delete from review_finding where run_id = ?", runId);
+        if (vectorSchemaAvailable) {
+            jdbcTemplate.update("delete from evidence_chunk_embedding where run_id = ?", runId);
+        }
         jdbcTemplate.update("delete from evidence_chunk where run_id = ?", runId);
         jdbcTemplate.update("delete from evidence_source where run_id = ?", runId);
         jdbcTemplate.update("delete from agent_trace where run_id = ?", runId);
@@ -308,6 +394,95 @@ public class PostgresAnalysisRunRepository implements AnalysisRunRepository {
                     timestamp(artifact.getCreatedAt()),
                     toJson(artifact)
             );
+        }
+    }
+
+    private void insertEvidenceChunkEmbeddings(AnalysisRun run) {
+        if (!vectorSchemaAvailable) {
+            return;
+        }
+        TransactionStatus transactionStatus = currentTransactionStatus();
+        Object savepoint = createSavepoint(transactionStatus);
+        try {
+            for (var chunk : run.getEvidenceChunks()) {
+                if (chunk.getEmbedding() == null || chunk.getEmbedding().isEmpty()) {
+                    continue;
+                }
+                jdbcTemplate.update("""
+                                insert into evidence_chunk_embedding
+                                    (chunk_id, run_id, source_citation_key, chunk_key, embedding,
+                                     embedding_model, embedding_text_hash, embedded_at)
+                                values (?, ?, ?, ?, ?::vector, ?, ?, ?)
+                        """,
+                        chunk.getId(),
+                        run.getId(),
+                        varchar(chunk.getSourceCitationKey(), 32),
+                        varchar(chunk.getChunkKey(), 128),
+                        embeddingLiteral(chunk.getEmbedding()),
+                        varchar(chunk.getEmbeddingModel(), 128),
+                        chunk.getTextHash(),
+                        timestamp(chunk.getEmbeddedAt())
+                );
+            }
+            releaseSavepoint(transactionStatus, savepoint);
+        } catch (RuntimeException ex) {
+            rollbackToSavepoint(transactionStatus, savepoint);
+            vectorSchemaAvailable = false;
+            log.warn("Failed to write pgvector evidence projection; JSON payload remains authoritative: runId={}, exceptionType={}, message={}",
+                    run.getId(),
+                    ex.getClass().getName(),
+                    ex.getMessage());
+        }
+    }
+
+    private TransactionStatus currentTransactionStatus() {
+        if (!TransactionSynchronizationManager.isActualTransactionActive()) {
+            return null;
+        }
+        try {
+            return TransactionAspectSupport.currentTransactionStatus();
+        } catch (RuntimeException ex) {
+            return null;
+        }
+    }
+
+    private Object createSavepoint(TransactionStatus transactionStatus) {
+        if (transactionStatus == null) {
+            return null;
+        }
+        try {
+            return transactionStatus.createSavepoint();
+        } catch (RuntimeException ex) {
+            log.warn("Unable to create pgvector projection savepoint; projection failure may roll back the save transaction: exceptionType={}, message={}",
+                    ex.getClass().getName(),
+                    ex.getMessage());
+            return null;
+        }
+    }
+
+    private void rollbackToSavepoint(TransactionStatus transactionStatus, Object savepoint) {
+        if (transactionStatus == null || savepoint == null) {
+            return;
+        }
+        try {
+            transactionStatus.rollbackToSavepoint(savepoint);
+        } catch (RuntimeException rollbackEx) {
+            log.warn("Unable to roll back pgvector projection savepoint: exceptionType={}, message={}",
+                    rollbackEx.getClass().getName(),
+                    rollbackEx.getMessage());
+        }
+    }
+
+    private void releaseSavepoint(TransactionStatus transactionStatus, Object savepoint) {
+        if (transactionStatus == null || savepoint == null) {
+            return;
+        }
+        try {
+            transactionStatus.releaseSavepoint(savepoint);
+        } catch (RuntimeException ex) {
+            log.debug("Unable to release pgvector projection savepoint: exceptionType={}, message={}",
+                    ex.getClass().getName(),
+                    ex.getMessage());
         }
     }
 
@@ -427,6 +602,30 @@ public class PostgresAnalysisRunRepository implements AnalysisRunRepository {
         return value == null ? null : value.name();
     }
 
+    private String embeddingLiteral(List<Double> embedding) {
+        return embedding.stream()
+                .map(value -> value == null || !Double.isFinite(value)
+                        ? "0.0"
+                        : String.format(Locale.ROOT, "%.9f", value))
+                .collect(Collectors.joining(",", "[", "]"));
+    }
+
+    private List<Double> parseEmbeddingLiteral(String literal) {
+        if (literal == null || literal.isBlank()) {
+            return List.of();
+        }
+        String normalized = literal.trim();
+        if (normalized.startsWith("[") && normalized.endsWith("]")) {
+            normalized = normalized.substring(1, normalized.length() - 1);
+        }
+        if (normalized.isBlank()) {
+            return List.of();
+        }
+        return List.of(normalized.split(",")).stream()
+                .map(value -> Double.parseDouble(value.trim()))
+                .toList();
+    }
+
     private Timestamp timestamp(Instant instant) {
         return instant == null ? null : Timestamp.from(instant);
     }
@@ -444,6 +643,18 @@ public class PostgresAnalysisRunRepository implements AnalysisRunRepository {
             return objectMapper.readValue(rs.getString("run_payload"), AnalysisRun.class);
         } catch (JsonProcessingException ex) {
             throw new IllegalStateException("Failed to deserialize analysis run payload", ex);
+        }
+    }
+
+    private EvidenceChunk toVectorChunk(ResultSet rs, String embeddingModel) throws SQLException {
+        try {
+            EvidenceChunk chunk = objectMapper.readValue(rs.getString("chunk_payload"), EvidenceChunk.class);
+            chunk.setEmbedding(parseEmbeddingLiteral(rs.getString("embedding_text")));
+            chunk.setEmbeddingModel(embeddingModel);
+            chunk.setScore(rs.getDouble("semantic_score"));
+            return chunk;
+        } catch (JsonProcessingException ex) {
+            throw new IllegalStateException("Failed to deserialize vector evidence chunk payload", ex);
         }
     }
 
