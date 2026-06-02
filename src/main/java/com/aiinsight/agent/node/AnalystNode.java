@@ -22,7 +22,21 @@ import com.aiinsight.model.schema.UnknownFact;
 import com.aiinsight.observability.AgentTraceContext;
 import com.aiinsight.service.AnalysisDraft;
 import com.aiinsight.service.fallback.FallbackAnalysisDraftFactory;
+import com.aiinsight.util.AgentUtils;
 import com.aiinsight.util.JsonResponseExtractor;
+import com.aiinsight.util.LlmSubtaskSupport;
+import com.aiinsight.util.LlmSubtaskSupport.LlmSubtaskResult;
+import static com.aiinsight.util.AgentUtils.CITATION_PATTERN;
+import static com.aiinsight.util.AgentUtils.abbreviate;
+import static com.aiinsight.util.AgentUtils.containsAny;
+import static com.aiinsight.util.AgentUtils.hasText;
+import static com.aiinsight.util.AgentUtils.knownCitationKeys;
+import static com.aiinsight.util.AgentUtils.normalizeLower;
+import static com.aiinsight.util.AgentUtils.normalizeUpper;
+import static com.aiinsight.util.AgentUtils.nullToEmpty;
+import static com.aiinsight.util.AgentUtils.safeList;
+import static com.aiinsight.util.AgentUtils.sanitizeCitationText;
+import static com.aiinsight.util.AgentUtils.textOrDash;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -48,8 +62,6 @@ import java.util.stream.Collectors;
 // Analyst 是结构化分析层：把 Extractor 沉淀的竞品画像和证据索引转化为可复核 Claims，
 // 再基于这些 Claims 生成矩阵和 SWOT，避免 Writer 在报告阶段重新承担分析判断。
 public class AnalystNode implements AgentNode {
-
-    private static final Pattern CITATION_PATTERN = Pattern.compile("\\[(S\\d+)]");
 
     private final LlmClient llmClient;
     private final ObjectMapper objectMapper;
@@ -84,7 +96,11 @@ public class AnalystNode implements AgentNode {
         List<String> citationKeys = artifactCitationKeys(run, draft);
 
         run.getClaims().clear();
-        run.getClaims().addAll(draft.claims());
+        // prompt 约束最多 8 条，代码层兜底截断，防止 LLM 超量输出
+        List<AnalysisClaim> boundedClaims = draft.claims().size() <= MAX_CLAIMS
+                ? draft.claims()
+                : draft.claims().subList(0, MAX_CLAIMS);
+        run.getClaims().addAll(boundedClaims);
         run.addArtifact(new AnalysisArtifact(
                 ArtifactType.COMPETITIVE_MATRIX,
                 "竞品横向矩阵",
@@ -103,8 +119,8 @@ public class AnalystNode implements AgentNode {
     private AnalysisDraft analysisDraftWithLlm(AnalysisRun run) {
         AnalysisDraft fallback = fallbackAnalysisDraftFactory.build(run);
         AnalystContext context = analystContext(run);
-        LlmSubtaskResult<List<AnalysisClaim>> claimsResult = runAnalystSubtask(
-                run,
+        LlmSubtaskResult<List<AnalysisClaim>> claimsResult = LlmSubtaskSupport.runSubtask(
+                "Analyst",
                 "claims",
                 () -> generateClaimsWithLlm(context)
         );
@@ -112,7 +128,7 @@ public class AnalystNode implements AgentNode {
                 ? claimsResult.value()
                 : fallback.claims();
         List<LlmSubtaskResult<?>> results = List.of(claimsResult);
-        recordAnalystTrace(results);
+        LlmSubtaskSupport.recordSubtaskTrace("Analyst LLM subtasks", results);
         results.stream()
                 .filter(result -> !result.succeeded())
                 .forEach(result -> run.getRecommendedActions().add(
@@ -203,38 +219,12 @@ public class AnalystNode implements AgentNode {
         return parsed.claims();
     }
 
-    private <T> LlmSubtaskResult<T> runAnalystSubtask(AnalysisRun run, String name, LlmSubtask<T> subtask) {
-        try {
-            return new LlmSubtaskResult<>(name, subtask.run(), null);
-        } catch (Exception ex) {
-            log.warn("Analyst LLM subtask failed: name={}, exceptionType={}, message={}, competitors={}, evidenceSources={}, profiles={}",
-                    name,
-                    ex.getClass().getName(),
-                    ex.getMessage(),
-                    run.getRequirement().getCompetitors(),
-                    run.getEvidenceSources().size(),
-                    run.getCompetitorProfiles().size());
-            return new LlmSubtaskResult<>(name, null, ex.getMessage());
-        }
-    }
-
-    private void recordAnalystTrace(List<LlmSubtaskResult<?>> results) {
-        String summary = results.stream()
-                .map(result -> "%s=%s%s".formatted(
-                        result.name(),
-                        result.succeeded() ? "succeeded" : "failed",
-                        result.succeeded() ? "" : " (" + result.errorMessage() + ")"
-                ))
-                .collect(Collectors.joining("\n"));
-        AgentTraceContext.recordProcessSummary("Analyst LLM subtasks:\n" + summary);
-    }
-
     private AnalysisDraft parseAnalysisDraft(String raw, AnalysisRun run) {
         if (!hasText(raw)) {
             return null;
         }
         try {
-            JsonNode root = objectMapper.readTree(extractJson(raw));
+            JsonNode root = objectMapper.readTree(JsonResponseExtractor.extractJsonValue(raw));
             JsonNode claimsNode = root.has("claims") ? root.get("claims") : root;
             List<ClaimDraft> claimDrafts = objectMapper.convertValue(claimsNode, new TypeReference<>() {
             });
@@ -322,27 +312,6 @@ public class AnalystNode implements AgentNode {
         }
     }
 
-    private String sanitizeCitationText(AnalysisRun run, String text) {
-        if (!hasText(text)) {
-            return "";
-        }
-        // 对矩阵/SWOT 这类 Markdown 文本也做 citation 白名单清洗；
-        // 未知引用直接降级成“证据不足”，让 Reviewer 聚焦真实问题而不是模型幻觉编号。
-        Set<String> known = knownCitationKeys(run);
-        Matcher matcher = CITATION_PATTERN.matcher(text);
-        StringBuffer sanitized = new StringBuffer();
-        while (matcher.find()) {
-            String key = matcher.group(1);
-            if (known.contains(key)) {
-                matcher.appendReplacement(sanitized, Matcher.quoteReplacement(matcher.group(0)));
-            } else {
-                matcher.appendReplacement(sanitized, "证据不足");
-            }
-        }
-        matcher.appendTail(sanitized);
-        return sanitized.toString();
-    }
-
     private List<String> artifactCitationKeys(AnalysisRun run, AnalysisDraft draft) {
         Set<String> keys = new LinkedHashSet<>();
         draft.claims().stream()
@@ -365,13 +334,6 @@ public class AnalystNode implements AgentNode {
         }
         return keys;
     }
-
-    private Set<String> knownCitationKeys(AnalysisRun run) {
-        return run.getEvidenceSources().stream()
-                .map(EvidenceSource::getCitationKey)
-                .collect(Collectors.toCollection(LinkedHashSet::new));
-    }
-
     private Map<String, EvidenceSource> sourceByCitationKey(AnalysisRun run) {
         return run.getEvidenceSources().stream()
                 .filter(source -> hasText(source.getCitationKey()))
@@ -385,7 +347,7 @@ public class AnalystNode implements AgentNode {
     private List<String> distinctKnownEvidenceIds(AnalysisRun run, List<String> evidenceIds) {
         Set<String> known = knownCitationKeys(run);
         return (evidenceIds == null ? List.<String>of() : evidenceIds).stream()
-                .filter(this::hasText)
+                .filter(AgentUtils::hasText)
                 .filter(known::contains)
                 .distinct()
                 .toList();
@@ -395,10 +357,10 @@ public class AnalystNode implements AgentNode {
         Set<String> known = run.getCompetitorFactSets().stream()
                 .flatMap(factSet -> factSet.getFacts().stream())
                 .map(ExtractedFact::getId)
-                .filter(this::hasText)
+                .filter(AgentUtils::hasText)
                 .collect(Collectors.toCollection(LinkedHashSet::new));
         return safeList(factIds).stream()
-                .filter(this::hasText)
+                .filter(AgentUtils::hasText)
                 .filter(known::contains)
                 .distinct()
                 .toList();
@@ -407,10 +369,10 @@ public class AnalystNode implements AgentNode {
     private List<String> distinctKnownChunkKeys(AnalysisRun run, List<String> chunkKeys) {
         Set<String> known = run.getEvidenceChunks().stream()
                 .map(com.aiinsight.model.run.EvidenceChunk::getChunkKey)
-                .filter(this::hasText)
+                .filter(AgentUtils::hasText)
                 .collect(Collectors.toCollection(LinkedHashSet::new));
         return safeList(chunkKeys).stream()
-                .filter(this::hasText)
+                .filter(AgentUtils::hasText)
                 .filter(known::contains)
                 .distinct()
                 .toList();
@@ -421,7 +383,7 @@ public class AnalystNode implements AgentNode {
         if (claim.getFactIds().isEmpty()) {
             claim.setFactIds(selectedFacts.stream()
                     .map(ExtractedFact::getId)
-                    .filter(this::hasText)
+                    .filter(AgentUtils::hasText)
                     .distinct()
                     .limit(6)
                     .toList());
@@ -429,7 +391,7 @@ public class AnalystNode implements AgentNode {
         if (claim.getEvidenceIds().isEmpty()) {
             claim.setEvidenceIds(selectedFacts.stream()
                     .flatMap(fact -> fact.getEvidenceIds().stream())
-                    .filter(this::hasText)
+                    .filter(AgentUtils::hasText)
                     .distinct()
                     .limit(6)
                     .toList());
@@ -437,7 +399,7 @@ public class AnalystNode implements AgentNode {
         if (claim.getChunkKeys().isEmpty()) {
             claim.setChunkKeys(selectedFacts.stream()
                     .flatMap(fact -> fact.getChunkKeys().stream())
-                    .filter(this::hasText)
+                    .filter(AgentUtils::hasText)
                     .distinct()
                     .limit(8)
                     .toList());
@@ -459,12 +421,17 @@ public class AnalystNode implements AgentNode {
         Set<String> claimTerms = termsForBinding(claim.getContent());
         return allFacts.stream()
                 .map(fact -> new FactMatch(fact, factMatchScore(fact, requestedFactIds, evidenceIds, competitors, claimTerms)))
-                .filter(match -> match.score() > 0)
+                .filter(match -> match.score() >= MIN_AUTO_BIND_SCORE)
                 .sorted((left, right) -> Integer.compare(right.score(), left.score()))
                 .map(FactMatch::fact)
                 .limit(6)
                 .toList();
     }
+
+    // 自动绑定的最低分数阈值：低于此分数认为术语重叠是偶然的，不绑定，
+    // 避免 Claim 带上语义不相关的 Fact 和 Evidence ID。
+    private static final int MIN_AUTO_BIND_SCORE = 3;
+    private static final int MAX_CLAIMS = 8;
 
     private int factMatchScore(ExtractedFact fact,
                                Set<String> requestedFactIds,
@@ -528,11 +495,6 @@ public class AnalystNode implements AgentNode {
             return evidenceIds == null || evidenceIds.isEmpty() ? ConfidenceLevel.LOW : ConfidenceLevel.MEDIUM;
         }
     }
-
-    private String extractJson(String raw) {
-        return JsonResponseExtractor.extractJsonValue(raw);
-    }
-
     private String requirementSummary(AnalysisRun run) {
         AnalysisRequirement requirement = run.getRequirement();
         if (requirement == null) {
@@ -675,7 +637,7 @@ public class AnalystNode implements AgentNode {
         String text = claims.stream()
                 .filter(claim -> accepted.contains(claim.getType()))
                 .map(AnalysisClaim::getContent)
-                .filter(this::hasText)
+                .filter(AgentUtils::hasText)
                 .limit(2)
                 .collect(Collectors.joining("<br>"));
         return text.isBlank() ? "暂无结构化结论。" : escapeCell(text);
@@ -684,15 +646,15 @@ public class AnalystNode implements AgentNode {
     private List<String> matrixCompetitors(AnalysisRun run, List<AnalysisClaim> claims) {
         LinkedHashSet<String> competitors = new LinkedHashSet<>();
         if (run.getRequirement() != null && run.getRequirement().getCompetitors() != null) {
-            run.getRequirement().getCompetitors().stream().filter(this::hasText).forEach(competitors::add);
+            run.getRequirement().getCompetitors().stream().filter(AgentUtils::hasText).forEach(competitors::add);
         }
         run.getCompetitorProfiles().stream()
                 .map(profile -> textOrDash(profile.getProductName()))
-                .filter(this::hasText)
+                .filter(AgentUtils::hasText)
                 .forEach(competitors::add);
         claims.stream()
                 .flatMap(claim -> safeList(claim.getCompetitorNames()).stream())
-                .filter(this::hasText)
+                .filter(AgentUtils::hasText)
                 .forEach(competitors::add);
         return competitors.isEmpty() ? List.of("-") : new ArrayList<>(competitors);
     }
@@ -709,10 +671,10 @@ public class AnalystNode implements AgentNode {
         List<String> configuredCompetitors = run.getRequirement() == null
                 ? List.of()
                 : safeList(run.getRequirement().getCompetitors()).stream()
-                .filter(this::hasText)
+                .filter(AgentUtils::hasText)
                 .toList();
         List<String> candidates = safeList(candidateNames).stream()
-                .filter(this::hasText)
+                .filter(AgentUtils::hasText)
                 .map(String::trim)
                 .toList();
         if (candidates.isEmpty()) {
@@ -722,7 +684,7 @@ public class AnalystNode implements AgentNode {
         for (String candidate : candidates) {
             normalized.add(matchConfiguredCompetitor(candidate, configuredCompetitors));
         }
-        return normalized.stream().filter(this::hasText).toList();
+        return normalized.stream().filter(AgentUtils::hasText).toList();
     }
 
     private String matchConfiguredCompetitor(String candidate, List<String> configuredCompetitors) {
@@ -790,7 +752,7 @@ public class AnalystNode implements AgentNode {
             return "证据不足";
         }
         return evidenceIds.stream()
-                .filter(this::hasText)
+                .filter(AgentUtils::hasText)
                 .distinct()
                 .map(id -> "[" + id + "]")
                 .collect(Collectors.joining(" "));
@@ -800,21 +762,12 @@ public class AnalystNode implements AgentNode {
         if (competitors == null || competitors.isEmpty()) {
             return "-";
         }
-        return competitors.stream().filter(this::hasText).collect(Collectors.joining(", "));
+        return competitors.stream().filter(AgentUtils::hasText).collect(Collectors.joining(", "));
     }
 
     private String escapeCell(String value) {
         return textOrDash(value).replace("|", "\\|").replace("\n", "<br>");
     }
-
-    private String textOrDash(String value) {
-        return value == null || value.isBlank() ? "-" : value.trim();
-    }
-
-    private List<String> safeList(List<String> values) {
-        return values == null ? List.of() : values;
-    }
-
     private String evidenceIndexBlock(AnalysisRun run) {
         List<EvidenceSource> sources = selectedEvidenceSources(run);
         if (sources.isEmpty()) {
@@ -839,7 +792,7 @@ public class AnalystNode implements AgentNode {
         }
         List<EvidenceSource> sources = selectedEvidenceSources(run);
         return run.getRequirement().getDimensions().stream()
-                .filter(this::hasText)
+                .filter(AgentUtils::hasText)
                 .map(dimension -> {
                     List<EvidenceSource> matched = sources.stream()
                             .filter(source -> dimensionMatchesSource(dimension, source))
@@ -1119,47 +1072,12 @@ public class AnalystNode implements AgentNode {
                 ))
                 .collect(Collectors.joining("\n"));
     }
-
-    private boolean hasText(String text) {
-        return text != null && !text.isBlank();
-    }
-
     private boolean containsUncertaintyMarker(String text) {
         String normalized = nullToEmpty(text);
         return normalized.contains("待验证")
                 || normalized.contains("证据不足")
                 || normalized.toLowerCase(Locale.ROOT).contains("insufficient evidence");
     }
-
-    private String nullToEmpty(String text) {
-        return text == null ? "" : text;
-    }
-
-    private String normalizeUpper(String text) {
-        return nullToEmpty(text).trim().toUpperCase(Locale.ROOT);
-    }
-
-    private String normalizeLower(String text) {
-        return nullToEmpty(text).trim().toLowerCase(Locale.ROOT);
-    }
-
-    private boolean containsAny(String text, String... patterns) {
-        for (String pattern : patterns) {
-            if (text != null && pattern != null && text.contains(pattern.toLowerCase(Locale.ROOT))) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    private String abbreviate(String value, int maxLength) {
-        String normalized = nullToEmpty(value).replaceAll("\\s+", " ").trim();
-        if (normalized.length() <= maxLength) {
-            return normalized;
-        }
-        return normalized.substring(0, maxLength) + "...";
-    }
-
     private static class ClaimDraft {
         public String type;
         public String content;
@@ -1182,25 +1100,5 @@ public class AnalystNode implements AgentNode {
             String researchContext,
             String repairPlan
     ) {
-    }
-
-    private interface LlmSubtask<T> {
-        T run() throws Exception;
-    }
-
-    private record LlmSubtaskResult<T>(String name, T value, String errorMessage) {
-        boolean succeeded() {
-            if (value instanceof List<?> list) {
-                return !list.isEmpty() && errorMessage == null;
-            }
-            if (value instanceof String text) {
-                return hasStaticText(text) && errorMessage == null;
-            }
-            return value != null && errorMessage == null;
-        }
-
-        private static boolean hasStaticText(String text) {
-            return text != null && !text.isBlank();
-        }
     }
 }

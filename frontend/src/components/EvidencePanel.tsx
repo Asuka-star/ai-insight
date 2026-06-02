@@ -27,14 +27,24 @@ export function EvidencePanel({
   onToggle
 }: EvidencePanelProps) {
   const itemRefs = useRef<Record<string, HTMLElement | null>>({});
+  const prevCitationKeyRef = useRef<string | undefined>(undefined);
+  const prevCollapsedRef = useRef(collapsed);
 
   useEffect(() => {
+    const wasCollapsed = prevCollapsedRef.current;
+    prevCollapsedRef.current = collapsed;
     if (!selectedCitationKey || collapsed) return;
-    itemRefs.current[selectedCitationKey]?.scrollIntoView({
+    const shouldScroll = selectedCitationKey !== prevCitationKeyRef.current || wasCollapsed;
+    if (!shouldScroll) return;
+    const selectedItem = itemRefs.current[selectedCitationKey];
+    if (!selectedItem) return;
+    // citation 变化或面板重新展开时滚动；轮询刷新 sources 不会反复抢滚动位置。
+    prevCitationKeyRef.current = selectedCitationKey;
+    selectedItem.scrollIntoView({
       block: "center",
       behavior: "smooth"
     });
-  }, [collapsed, selectedCitationKey, sources]);
+  }, [collapsed, selectedCitationKey]);
 
   return (
     <CollapsiblePanel

@@ -2569,7 +2569,11 @@ class AnalysisWorkflowServiceTest {
         assertThat(run.getReviewDecision().getRepairTasks())
                 .anySatisfy(task -> {
                     assertThat(task.getTargetAgent()).isEqualTo(AgentName.WRITER);
-                    assertThat(task.getInstruction()).contains("paragraph=1");
+                    // matchClaimId 现在能正确绑定到 claim，locator 可能是 claim=C-ACT-1 或 paragraph=1
+                    assertThat(task.getInstruction()).satisfiesAnyOf(
+                            instruction -> assertThat(instruction).contains("paragraph=1"),
+                            instruction -> assertThat(instruction).contains("claim=C-ACT-1")
+                    );
                 });
     }
 

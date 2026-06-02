@@ -25,6 +25,11 @@ import com.aiinsight.service.SourceCollectionService;
 import com.aiinsight.service.fallback.FallbackResearchPlanFactory;
 import com.aiinsight.observability.AgentTraceContext;
 import com.aiinsight.util.JsonResponseExtractor;
+import com.aiinsight.util.LlmSubtaskSupport;
+import com.aiinsight.util.LlmSubtaskSupport.LlmSubtask;
+import com.aiinsight.util.LlmSubtaskSupport.LlmSubtaskResult;
+import static com.aiinsight.util.AgentUtils.hasText;
+import static com.aiinsight.util.AgentUtils.abbreviate;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -211,13 +216,13 @@ public class ResearcherNode implements AgentNode {
 
     private ResearchPlan generateResearchPlanWithLlm(AnalysisRun run, ResearchPlan fallback) {
         CompletableFuture<LlmSubtaskResult<ResearchPlan>> strategyTask = CompletableFuture.supplyAsync(
-                AgentTraceContext.wrap(() -> runResearchPlanSubtask("research-strategy", () -> generateResearchStrategyWithLlm(run)))
+                AgentTraceContext.wrap(() -> LlmSubtaskSupport.runSubtask("Researcher", "research-strategy", () -> generateResearchStrategyWithLlm(run)))
         );
         CompletableFuture<LlmSubtaskResult<Questionnaire>> questionnaireTask = CompletableFuture.supplyAsync(
-                AgentTraceContext.wrap(() -> runResearchPlanSubtask("questionnaire", () -> generateQuestionnaireWithLlm(run)))
+                AgentTraceContext.wrap(() -> LlmSubtaskSupport.runSubtask("Researcher", "questionnaire", () -> generateQuestionnaireWithLlm(run)))
         );
         CompletableFuture<LlmSubtaskResult<InterviewGuide>> interviewTask = CompletableFuture.supplyAsync(
-                AgentTraceContext.wrap(() -> runResearchPlanSubtask("interview-guide", () -> generateInterviewGuideWithLlm(run)))
+                AgentTraceContext.wrap(() -> LlmSubtaskSupport.runSubtask("Researcher", "interview-guide", () -> generateInterviewGuideWithLlm(run)))
         );
         CompletableFuture.allOf(strategyTask, questionnaireTask, interviewTask).join();
 
@@ -230,7 +235,7 @@ public class ResearcherNode implements AgentNode {
         plan.setInterviewGuide(interviewResult.value());
 
         List<LlmSubtaskResult<?>> results = List.of(strategyResult, questionnaireResult, interviewResult);
-        recordParallelResearchTrace(results);
+        LlmSubtaskSupport.recordSubtaskTrace("Parallel Researcher LLM subtasks", results);
         results.stream()
                 .filter(result -> !result.succeeded())
                 .forEach(result -> run.getRecommendedActions().add(
@@ -375,30 +380,9 @@ public class ResearcherNode implements AgentNode {
     }
 
     private <T> T readNestedOrRoot(String response, String fieldName, Class<T> type) throws Exception {
-        var root = objectMapper.readTree(extractJsonObject(response));
+        var root = objectMapper.readTree(JsonResponseExtractor.extractJsonObject(response));
         var target = root.has(fieldName) ? root.get(fieldName) : root;
         return objectMapper.treeToValue(target, type);
-    }
-
-    private <T> LlmSubtaskResult<T> runResearchPlanSubtask(String name, LlmSubtask<T> subtask) {
-        try {
-            return new LlmSubtaskResult<>(name, subtask.run(), null);
-        } catch (Exception ex) {
-            log.warn("Researcher LLM subtask failed: name={}, exceptionType={}, message={}",
-                    name, ex.getClass().getName(), ex.getMessage());
-            return new LlmSubtaskResult<>(name, null, ex.getMessage());
-        }
-    }
-
-    private void recordParallelResearchTrace(List<LlmSubtaskResult<?>> results) {
-        String summary = results.stream()
-                .map(result -> "%s=%s%s".formatted(
-                        result.name(),
-                        result.succeeded() ? "succeeded" : "failed",
-                        result.succeeded() ? "" : " (" + result.errorMessage() + ")"
-                ))
-                .collect(Collectors.joining("\n"));
-        AgentTraceContext.recordProcessSummary("Parallel Researcher LLM subtasks:\n" + summary);
     }
 
     private String compactEvidenceSources(AnalysisRun run, int limit) {
@@ -414,27 +398,12 @@ public class ResearcherNode implements AgentNode {
                 .collect(Collectors.joining("\n"));
     }
 
-    private String abbreviate(String value, int maxLength) {
-        if (value == null) {
-            return "";
-        }
-        String normalized = value.replaceAll("\\s+", " ").trim();
-        if (normalized.length() <= maxLength) {
-            return normalized;
-        }
-        return normalized.substring(0, maxLength) + "...";
-    }
-
     private ResearchPlan parseResearchPlanJson(String response) {
         try {
-            return objectMapper.readValue(extractJsonObject(response), ResearchPlan.class);
+            return objectMapper.readValue(JsonResponseExtractor.extractJsonObject(response), ResearchPlan.class);
         } catch (Exception ex) {
             throw new IllegalStateException("无法解析调研计划 JSON", ex);
         }
-    }
-
-    private String extractJsonObject(String response) {
-        return JsonResponseExtractor.extractJsonObject(response);
     }
 
     private ResearchPlan mergeResearchPlan(ResearchPlan generated, ResearchPlan fallback) {
@@ -493,10 +462,6 @@ public class ResearcherNode implements AgentNode {
             return "目标领域";
         }
         return industry;
-    }
-
-    private boolean hasText(String value) {
-        return value != null && !value.isBlank();
     }
 
     private String researchPlanMarkdown(ResearchPlan plan, List<InterviewInsight> interviewInsights) {
@@ -588,15 +553,5 @@ public class ResearcherNode implements AgentNode {
                 interviewQuestions,
                 interviewInsights.isEmpty() ? "暂无已结构化访谈洞察。" : insights
         );
-    }
-
-    private interface LlmSubtask<T> {
-        T run() throws Exception;
-    }
-
-    private record LlmSubtaskResult<T>(String name, T value, String errorMessage) {
-        boolean succeeded() {
-            return value != null && errorMessage == null;
-        }
     }
 }

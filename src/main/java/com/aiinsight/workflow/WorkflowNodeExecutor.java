@@ -25,6 +25,9 @@ import java.util.UUID;
 import java.util.concurrent.CancellationException;
 import java.util.stream.Collectors;
 
+import static com.aiinsight.util.AgentUtils.hasText;
+import static com.aiinsight.util.AgentUtils.textOrDefault;
+
 @Component
 @RequiredArgsConstructor
 @Slf4j
@@ -322,14 +325,6 @@ public class WorkflowNodeExecutor {
                 .filter(value -> value != null && !value.isBlank())
                 .collect(Collectors.joining("、"));
         return joined.isBlank() ? "未指定" : joined;
-    }
-
-    private String textOrDefault(String value, String defaultValue) {
-        return value == null || value.isBlank() ? defaultValue : value;
-    }
-
-    private boolean hasText(String value) {
-        return value != null && !value.isBlank();
     }
 
     private void pauseForReadableEvents() {

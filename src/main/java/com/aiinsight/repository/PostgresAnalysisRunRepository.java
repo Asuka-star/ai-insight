@@ -33,7 +33,9 @@ public class PostgresAnalysisRunRepository implements AnalysisRunRepository {
 
     private final JdbcTemplate jdbcTemplate;
     private final ObjectMapper objectMapper;
-    private boolean vectorSchemaAvailable;
+    private volatile boolean vectorSchemaAvailable;
+    private volatile long vectorDisabledUntilMs = 0;
+    private static final long VECTOR_COOLDOWN_MS = 60_000;
 
     public PostgresAnalysisRunRepository(JdbcTemplate jdbcTemplate, ObjectMapper objectMapper) {
         this.jdbcTemplate = jdbcTemplate;
@@ -301,7 +303,7 @@ public class PostgresAnalysisRunRepository implements AnalysisRunRepository {
                                                                   List<Double> queryEmbedding,
                                                                   String embeddingModel,
                                                                   int topK) {
-        if (!vectorSchemaAvailable || queryEmbedding == null || queryEmbedding.isEmpty()
+        if (!isVectorSchemaAvailable() || queryEmbedding == null || queryEmbedding.isEmpty()
                 || embeddingModel == null || embeddingModel.isBlank()) {
             return Optional.empty();
         }
@@ -331,7 +333,7 @@ public class PostgresAnalysisRunRepository implements AnalysisRunRepository {
             );
             return Optional.of(chunks);
         } catch (RuntimeException ex) {
-            vectorSchemaAvailable = false;
+            disableVectorSchema();
             log.warn("pgvector evidence retrieval failed; in-memory retrieval fallback remains available: runId={}, exceptionType={}, message={}",
                     runId,
                     ex.getClass().getName(),
@@ -378,8 +380,16 @@ public class PostgresAnalysisRunRepository implements AnalysisRunRepository {
 
     private void deleteDetails(UUID runId) {
         jdbcTemplate.update("delete from review_finding where run_id = ?", runId);
-        if (vectorSchemaAvailable) {
-            jdbcTemplate.update("delete from evidence_chunk_embedding where run_id = ?", runId);
+        if (isVectorSchemaAvailable()) {
+            try {
+                jdbcTemplate.update("delete from evidence_chunk_embedding where run_id = ?", runId);
+            } catch (RuntimeException ex) {
+                disableVectorSchema();
+                log.warn("Failed to delete pgvector evidence projection; continuing with JSON/detail refresh: runId={}, exceptionType={}, message={}",
+                        runId,
+                        ex.getClass().getName(),
+                        ex.getMessage());
+            }
         }
         jdbcTemplate.update("delete from evidence_chunk where run_id = ?", runId);
         jdbcTemplate.update("delete from evidence_source where run_id = ?", runId);
@@ -408,7 +418,7 @@ public class PostgresAnalysisRunRepository implements AnalysisRunRepository {
     }
 
     private void insertEvidenceChunkEmbeddings(AnalysisRun run) {
-        if (!vectorSchemaAvailable) {
+        if (!isVectorSchemaAvailable()) {
             return;
         }
         TransactionStatus transactionStatus = currentTransactionStatus();
@@ -437,7 +447,7 @@ public class PostgresAnalysisRunRepository implements AnalysisRunRepository {
             releaseSavepoint(transactionStatus, savepoint);
         } catch (RuntimeException ex) {
             rollbackToSavepoint(transactionStatus, savepoint);
-            vectorSchemaAvailable = false;
+            disableVectorSchema();
             log.warn("Failed to write pgvector evidence projection; JSON payload remains authoritative: runId={}, exceptionType={}, message={}",
                     run.getId(),
                     ex.getClass().getName(),
@@ -612,6 +622,26 @@ public class PostgresAnalysisRunRepository implements AnalysisRunRepository {
 
     private String enumName(Enum<?> value) {
         return value == null ? null : value.name();
+    }
+
+    // vectorSchemaAvailable 加 volatile 保证线程可见；
+    // 单次 pgvector 失败后进入冷却期，冷却结束后自动重试，避免一次瞬时抖动就永久禁用向量检索。
+    private boolean isVectorSchemaAvailable() {
+        if (vectorSchemaAvailable) {
+            return true;
+        }
+        if (vectorDisabledUntilMs > 0 && System.currentTimeMillis() >= vectorDisabledUntilMs) {
+            log.info("pgvector cooldown expired; checking vector schema before re-enabling");
+            vectorDisabledUntilMs = 0;
+            ensureVectorSchema();
+            return vectorSchemaAvailable;
+        }
+        return false;
+    }
+
+    private void disableVectorSchema() {
+        vectorSchemaAvailable = false;
+        vectorDisabledUntilMs = System.currentTimeMillis() + VECTOR_COOLDOWN_MS;
     }
 
     private String embeddingLiteral(List<Double> embedding) {

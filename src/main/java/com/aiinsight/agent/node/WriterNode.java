@@ -13,6 +13,14 @@ import com.aiinsight.llm.ChatRequest;
 import com.aiinsight.llm.LlmClient;
 import com.aiinsight.agent.AgentNode;
 import com.aiinsight.observability.AgentTraceContext;
+import com.aiinsight.util.AgentUtils;
+import static com.aiinsight.util.AgentUtils.CITATION_PATTERN;
+import static com.aiinsight.util.AgentUtils.abbreviate;
+import static com.aiinsight.util.AgentUtils.hasText;
+import static com.aiinsight.util.AgentUtils.knownCitationKeys;
+import static com.aiinsight.util.AgentUtils.latestArtifact;
+import static com.aiinsight.util.AgentUtils.sanitizeCitationText;
+import static com.aiinsight.util.AgentUtils.textOrDefault;
 import com.aiinsight.service.fallback.FallbackReportDraftFactory;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -182,22 +190,6 @@ public class WriterNode implements AgentNode {
                 .trim();
     }
 
-    private String sanitizeCitationText(AnalysisRun run, String text) {
-        Set<String> known = knownCitationKeys(run);
-        Matcher matcher = CITATION_PATTERN.matcher(text);
-        StringBuffer sanitized = new StringBuffer();
-        while (matcher.find()) {
-            String key = matcher.group(1);
-            if (known.contains(key)) {
-                matcher.appendReplacement(sanitized, Matcher.quoteReplacement(matcher.group(0)));
-            } else {
-                matcher.appendReplacement(sanitized, "证据不足");
-            }
-        }
-        matcher.appendTail(sanitized);
-        return sanitized.toString();
-    }
-
     private List<String> extractKnownCitationKeys(AnalysisRun run, String text) {
         Set<String> known = knownCitationKeys(run);
         Set<String> citations = new LinkedHashSet<>();
@@ -209,12 +201,6 @@ public class WriterNode implements AgentNode {
             }
         }
         return citations.stream().toList();
-    }
-
-    private Set<String> knownCitationKeys(AnalysisRun run) {
-        return run.getEvidenceSources().stream()
-                .map(EvidenceSource::getCitationKey)
-                .collect(Collectors.toCollection(LinkedHashSet::new));
     }
 
     private String claimsBlock(AnalysisRun run) {
@@ -363,39 +349,18 @@ public class WriterNode implements AgentNode {
                 keys.addAll(profile.getPricingModel().getEvidenceIds());
             }
         });
-        latestArtifact(run, ArtifactType.COMPETITIVE_MATRIX).ifPresent(artifact -> keys.addAll(artifact.getCitationKeys()));
-        latestArtifact(run, ArtifactType.SWOT_ANALYSIS).ifPresent(artifact -> keys.addAll(artifact.getCitationKeys()));
+        latestArtifact(run.getArtifacts(), ArtifactType.COMPETITIVE_MATRIX).ifPresent(artifact -> keys.addAll(artifact.getCitationKeys()));
+        latestArtifact(run.getArtifacts(), ArtifactType.SWOT_ANALYSIS).ifPresent(artifact -> keys.addAll(artifact.getCitationKeys()));
         keys.retainAll(knownCitationKeys(run));
         return keys;
     }
 
     private String latestArtifactContent(AnalysisRun run, ArtifactType type) {
-        return latestArtifact(run, type)
+        return latestArtifact(run.getArtifacts(), type)
                 .map(artifact -> artifact.getContent() == null || artifact.getContent().isBlank()
                         ? "暂无 " + type + " 产物。"
                         : artifact.getContent())
                 .orElse("暂无 " + type + " 产物。");
     }
 
-    private java.util.Optional<AnalysisArtifact> latestArtifact(AnalysisRun run, ArtifactType type) {
-        List<AnalysisArtifact> artifacts = run.getArtifacts();
-        for (int i = artifacts.size() - 1; i >= 0; i--) {
-            AnalysisArtifact artifact = artifacts.get(i);
-            if (artifact.getType() == type) {
-                return java.util.Optional.of(artifact);
-            }
-        }
-        return java.util.Optional.empty();
-    }
-
-    private String textOrDefault(String value, String fallback) {
-        return value == null || value.isBlank() ? fallback : value;
-    }
-
-    private String abbreviate(String value, int maxChars) {
-        if (value == null || value.isBlank() || value.length() <= maxChars) {
-            return textOrDefault(value, "暂无摘要");
-        }
-        return value.substring(0, maxChars) + "...";
-    }
 }

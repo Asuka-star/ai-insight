@@ -8,6 +8,10 @@ import com.aiinsight.model.enums.ReviewSeverity;
 import com.aiinsight.model.run.AnalysisArtifact;
 import com.aiinsight.model.run.AnalysisRun;
 import com.aiinsight.model.run.WorkflowTransition;
+import com.aiinsight.util.AgentUtils;
+import static com.aiinsight.util.AgentUtils.countBySeverity;
+import static com.aiinsight.util.AgentUtils.latestArtifact;
+import static com.aiinsight.util.AgentUtils.textOrDefault;
 import org.springframework.stereotype.Component;
 
 import java.util.List;
@@ -29,7 +33,7 @@ public class FinalizerNode implements AgentNode {
 
     @Override
     public AnalysisRun execute(AnalysisRun run) {
-        AnalysisArtifact draft = latestArtifact(run, ArtifactType.REPORT_DRAFT);
+        AnalysisArtifact draft = latestArtifact(run.getArtifacts(), ArtifactType.REPORT_DRAFT).orElse(null);
         if (draft == null) {
             return run;
         }
@@ -84,9 +88,9 @@ public class FinalizerNode implements AgentNode {
         if (run.getReviewFindings().isEmpty()) {
             return "Reviewer 未发现高风险引用缺失，报告可进入人工确认。";
         }
-        long high = countBySeverity(run, ReviewSeverity.HIGH);
-        long medium = countBySeverity(run, ReviewSeverity.MEDIUM);
-        long low = countBySeverity(run, ReviewSeverity.LOW);
+        long high = countBySeverity(run.getReviewFindings(), ReviewSeverity.HIGH);
+        long medium = countBySeverity(run.getReviewFindings(), ReviewSeverity.MEDIUM);
+        long low = countBySeverity(run.getReviewFindings(), ReviewSeverity.LOW);
         return "Reviewer 当前决策为 `%s`。当前保留 %d 个 HIGH、%d 个 MEDIUM、%d 个 LOW 质检项；详细清单请查看 Reviewer 复核结果产物。目标处理 Agent：%s。".formatted(
                 run.getReviewDecision().getAction(),
                 high,
@@ -187,23 +191,4 @@ public class FinalizerNode implements AgentNode {
         return Optional.of(transitions.get(transitions.size() - 1));
     }
 
-    private long countBySeverity(AnalysisRun run, ReviewSeverity severity) {
-        return run.getReviewFindings().stream()
-                .filter(finding -> finding.getSeverity() == severity)
-                .count();
-    }
-
-    private String textOrDefault(String value, String fallback) {
-        return value == null || value.isBlank() ? fallback : value;
-    }
-
-    private AnalysisArtifact latestArtifact(AnalysisRun run, ArtifactType type) {
-        List<AnalysisArtifact> artifacts = run.getArtifacts();
-        for (int i = artifacts.size() - 1; i >= 0; i--) {
-            if (artifacts.get(i).getType() == type) {
-                return artifacts.get(i);
-            }
-        }
-        return null;
-    }
 }

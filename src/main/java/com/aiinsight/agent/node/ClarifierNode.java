@@ -16,6 +16,8 @@ import com.aiinsight.model.run.ClarificationOption;
 import com.aiinsight.observability.AgentTraceContext;
 import com.aiinsight.service.fallback.FallbackClarificationDraftFactory;
 import com.aiinsight.util.JsonResponseExtractor;
+import static com.aiinsight.util.AgentUtils.nullToEmpty;
+import static com.aiinsight.util.AgentUtils.safeList;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -162,7 +164,7 @@ public class ClarifierNode implements AgentNode {
 
     private ClarificationDraft parseLlmDraft(String raw) {
         try {
-            JsonNode root = objectMapper.readTree(extractJsonObject(raw));
+            JsonNode root = objectMapper.readTree(JsonResponseExtractor.extractJsonObject(raw));
             ClarificationDraft draft = new ClarificationDraft();
             draft.setIndustry(text(root, "industry"));
             draft.setCompetitors(textList(root, "competitors"));
@@ -208,7 +210,7 @@ public class ClarifierNode implements AgentNode {
     }
 
     private void addItems(List<ClarificationItem> target, LinkedHashSet<String> seen, List<ClarificationItem> items) {
-        for (ClarificationItem item : items == null ? List.<ClarificationItem>of() : items) {
+        for (ClarificationItem item : safeList(items)) {
             if (item == null || !StringUtils.hasText(item.getField()) || !StringUtils.hasText(item.getQuestion())) {
                 continue;
             }
@@ -264,10 +266,6 @@ public class ClarifierNode implements AgentNode {
 
     private boolean hasPlaceholderCompetitors(List<String> competitors) {
         return competitors.stream().anyMatch(PLACEHOLDER_COMPETITORS::contains);
-    }
-
-    private String extractJsonObject(String raw) {
-        return JsonResponseExtractor.extractJsonObject(raw);
     }
 
     private String text(JsonNode root, String field) {
@@ -477,10 +475,6 @@ public class ClarifierNode implements AgentNode {
             return fallback;
         }
         return defaultValue;
-    }
-
-    private String nullToEmpty(String value) {
-        return value == null ? "" : value;
     }
 
     private record ClarificationDraftResult(ClarificationDraft draft, boolean fallbackUsed, String fallbackReason) {

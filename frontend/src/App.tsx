@@ -766,17 +766,18 @@ export function App() {
     if (finding.citationKey) {
       handleSelectCitation(finding.citationKey);
     }
+    // 同时设置 claimId 和 artifactId，让用户既能看到结构化结论也能快速跳到报告段落
     if (finding.claimId) {
       setSelectedClaimId(finding.claimId);
-      setMainView("schema");
-      setEventMessage(`已定位到结构化结论 ${finding.claimId}`);
-      return;
     }
     if (finding.artifactId) {
       setSelectedArtifactId(finding.artifactId);
       setArtifactPinned(true);
       setMainView("report");
-      setEventMessage(`已定位到报告段落 ${finding.paragraphIndex ?? ""}`);
+      setEventMessage(`已定位到报告段落 ${finding.paragraphIndex ?? ""}${finding.claimId ? `，关联结论 ${finding.claimId}` : ""}`);
+    } else if (finding.claimId) {
+      setMainView("schema");
+      setEventMessage(`已定位到结构化结论 ${finding.claimId}`);
     }
   }
 

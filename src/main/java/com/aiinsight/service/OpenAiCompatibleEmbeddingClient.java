@@ -84,13 +84,45 @@ public class OpenAiCompatibleEmbeddingClient implements EmbeddingClient {
                 if (attempt >= MAX_ATTEMPTS || !isRetryable(ex)) {
                     throw ex;
                 }
-                log.warn("Embedding request failed transiently; retrying once: model={}, exceptionType={}, message={}",
+                long delayMs = retryDelayMs(ex);
+                log.warn("Embedding request failed transiently; retrying after {}ms: model={}, exceptionType={}, message={}",
+                        delayMs,
                         properties.getModel(),
                         ex.getClass().getName(),
                         ex.getMessage());
+                sleepQuietly(delayMs);
             }
         }
         throw lastFailure;
+    }
+
+    // 429 时优先用 Retry-After 头，否则默认 1.5 秒；5xx / IO 错误默认 500ms
+    private long retryDelayMs(RestClientException ex) {
+        if (ex instanceof RestClientResponseException responseException) {
+            if (responseException.getStatusCode().value() == 429) {
+                HttpHeaders headers = responseException.getResponseHeaders();
+                String retryAfter = headers == null ? null : headers.getFirst(HttpHeaders.RETRY_AFTER);
+                if (retryAfter != null) {
+                    try {
+                        long seconds = Long.parseLong(retryAfter.trim());
+                        return Math.min(seconds * 1000, 10_000);
+                    } catch (NumberFormatException ignored) {
+                        // Retry-After 可能是 HTTP-date 格式，直接用默认值
+                    }
+                }
+                return 1500;
+            }
+        }
+        return 500;
+    }
+
+    private void sleepQuietly(long millis) {
+        try {
+            Thread.sleep(millis);
+        } catch (InterruptedException ie) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException("Embedding retry interrupted", ie);
+        }
     }
 
     private String endpoint() {

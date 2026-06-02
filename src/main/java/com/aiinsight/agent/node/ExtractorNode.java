@@ -25,6 +25,13 @@ import com.aiinsight.observability.AgentTraceContext;
 import com.aiinsight.service.EvidenceRetrievalService;
 import com.aiinsight.service.fallback.FallbackExtractionFactory;
 import com.aiinsight.util.JsonResponseExtractor;
+import static com.aiinsight.util.AgentUtils.abbreviate;
+import static com.aiinsight.util.AgentUtils.containsAny;
+import static com.aiinsight.util.AgentUtils.normalizeLower;
+import static com.aiinsight.util.AgentUtils.nullToEmpty;
+import static com.aiinsight.util.AgentUtils.safeList;
+import static com.aiinsight.util.AgentUtils.textOrDash;
+import static com.aiinsight.util.AgentUtils.textOrDefault;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -40,6 +47,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Collectors;
 
 @Component
@@ -141,13 +149,13 @@ public class ExtractorNode implements AgentNode {
     }
 
     private List<CompetitorFactSet> buildFactSets(List<CompetitorProfile> profiles, AnalysisRun run) {
-        int[] sequence = {1};
+        AtomicInteger sequence = new AtomicInteger(1);
         return profiles.stream()
                 .map(profile -> buildFactSet(profile, run, sequence))
                 .toList();
     }
 
-    private CompetitorFactSet buildFactSet(CompetitorProfile profile, AnalysisRun run, int[] sequence) {
+    private CompetitorFactSet buildFactSet(CompetitorProfile profile, AnalysisRun run, AtomicInteger sequence) {
         CompetitorFactSet factSet = new CompetitorFactSet();
         factSet.setCompetitorName(profile.getProductName());
         List<ExtractedFact> facts = new ArrayList<>();
@@ -183,13 +191,13 @@ public class ExtractorNode implements AgentNode {
         Map<String, CompetitorProfile> originalsByName = (originalProfiles == null ? List.<CompetitorProfile>of() : originalProfiles).stream()
                 .filter(profile -> profile != null && StringUtils.hasText(profile.getProductName()))
                 .collect(Collectors.toMap(
-                        profile -> normalizeName(profile.getProductName()),
+                        profile -> normalizeLower(profile.getProductName()),
                         profile -> profile,
                         (first, ignored) -> first
                 ));
         return (factSets == null ? List.<CompetitorFactSet>of() : factSets).stream()
                 .filter(factSet -> factSet != null && StringUtils.hasText(factSet.getCompetitorName()))
-                .map(factSet -> projectProfileFromFacts(factSet, originalsByName.get(normalizeName(factSet.getCompetitorName()))))
+                .map(factSet -> projectProfileFromFacts(factSet, originalsByName.get(normalizeLower(factSet.getCompetitorName()))))
                 .toList();
     }
 
@@ -242,7 +250,7 @@ public class ExtractorNode implements AgentNode {
                 .toList();
         model.setPlans(plans);
         model.setHasFreePlan(plans.stream()
-                .anyMatch(plan -> containsAny(normalizeName(plan.getName() + " " + plan.getPriceText()), "free", "$0", "免费", "0元")));
+                .anyMatch(plan -> containsAny(normalizeLower(plan.getName() + " " + plan.getPriceText()), "free", "$0", "免费", "0元")));
         return model;
     }
 
@@ -350,7 +358,7 @@ public class ExtractorNode implements AgentNode {
     private void addFeatureFacts(List<ExtractedFact> facts,
                                  List<UnknownFact> unknowns,
                                  AnalysisRun run,
-                                 int[] sequence,
+                                 AtomicInteger sequence,
                                  String competitorName,
                                  List<FeatureNode> nodes) {
         for (FeatureNode node : nodes == null ? List.<FeatureNode>of() : nodes) {
@@ -364,7 +372,7 @@ public class ExtractorNode implements AgentNode {
     private void addPricingFacts(List<ExtractedFact> facts,
                                  List<UnknownFact> unknowns,
                                  AnalysisRun run,
-                                 int[] sequence,
+                                 AtomicInteger sequence,
                                  String competitorName,
                                  PricingModel pricingModel) {
         if (pricingModel == null) {
@@ -389,7 +397,7 @@ public class ExtractorNode implements AgentNode {
     private void addPersonaFacts(List<ExtractedFact> facts,
                                  List<UnknownFact> unknowns,
                                  AnalysisRun run,
-                                 int[] sequence,
+                                 AtomicInteger sequence,
                                  String competitorName,
                                  List<UserPersona> personas) {
         for (UserPersona persona : personas == null ? List.<UserPersona>of() : personas) {
@@ -409,7 +417,7 @@ public class ExtractorNode implements AgentNode {
     private void addFactIfKnown(List<ExtractedFact> facts,
                                 List<UnknownFact> unknowns,
                                 AnalysisRun run,
-                                int[] sequence,
+                                AtomicInteger sequence,
                                 String competitorName,
                                 FactType factType,
                                 String attribute,
@@ -426,7 +434,7 @@ public class ExtractorNode implements AgentNode {
             return;
         }
         ExtractedFact fact = new ExtractedFact();
-        fact.setId("F" + sequence[0]++);
+        fact.setId("F" + sequence.getAndIncrement());
         fact.setCompetitorName(competitorName);
         fact.setFactType(factType == null ? FactType.UNKNOWN : factType);
         fact.setAttribute(attribute);
@@ -454,7 +462,7 @@ public class ExtractorNode implements AgentNode {
     }
 
     private FactType factTypeForFeature(String value) {
-        String normalized = normalizeName(value);
+        String normalized = normalizeLower(value);
         if (containsAny(normalized, "ai", "assistant", "copilot", "search", "智能", "生成式", "搜索")) {
             return FactType.AI_CAPABILITY;
         }
@@ -505,10 +513,10 @@ public class ExtractorNode implements AgentNode {
     }
 
     private boolean isUnknownValue(String value) {
-        String normalized = normalizeName(value);
+        String normalized = normalizeLower(value);
         return containsAny(normalized,
                 "待验证", "证据不足", "unknown", "not verified", "needs verification",
-                "寰呴獙璇", "璇佹嵁涓嶈冻");
+                "unverified", "tbd", "n/a");
     }
 
     private List<String> coverageNotes(CompetitorProfile profile, List<ExtractedFact> facts, List<UnknownFact> unknowns) {
@@ -635,20 +643,20 @@ public class ExtractorNode implements AgentNode {
             return List.of();
         }
         try {
-            JsonNode root = objectMapper.readTree(extractJson(raw));
+            JsonNode root = objectMapper.readTree(JsonResponseExtractor.extractJsonValue(raw));
             JsonNode profilesNode = root.has("profiles") ? root.get("profiles") : root;
             List<ProfileDraft> drafts = profileDrafts(profilesNode);
             Map<String, ProfileDraft> draftByName = (drafts == null ? List.<ProfileDraft>of() : drafts).stream()
                     .filter(draft -> StringUtils.hasText(draft.productName))
                     .collect(Collectors.toMap(
-                            draft -> normalizeName(draft.productName),
+                            draft -> normalizeLower(draft.productName),
                             draft -> draft,
                             (first, ignored) -> first
                     ));
             return run.getRequirement().getCompetitors().stream()
                     .map(competitor -> {
                         CompetitorProfile fallback = fallbackFor(fallbackProfiles, competitor);
-                        ProfileDraft draft = draftByName.get(normalizeName(competitor));
+                        ProfileDraft draft = draftByName.get(normalizeLower(competitor));
                         return draft == null ? fallback : toProfile(draft, fallback, run);
                     })
                     .toList();
@@ -906,7 +914,7 @@ public class ExtractorNode implements AgentNode {
 
     private CompetitorProfile fallbackFor(List<CompetitorProfile> fallbackProfiles, String competitor) {
         return fallbackProfiles.stream()
-                .filter(profile -> normalizeName(profile.getProductName()).equals(normalizeName(competitor)))
+                .filter(profile -> normalizeLower(profile.getProductName()).equals(normalizeLower(competitor)))
                 .findFirst()
                 .orElseGet(() -> {
                     CompetitorProfile profile = new CompetitorProfile();
@@ -1007,7 +1015,7 @@ public class ExtractorNode implements AgentNode {
     }
 
     private boolean looksLikeAnalysisJudgment(String value) {
-        String normalized = normalizeName(value);
+        String normalized = normalizeLower(value);
         if (containsAny(normalized,
                 "风险管理", "风险控制", "风险仪表盘", "机会管理",
                 "risk management", "risk control", "risk dashboard", "opportunity management")) {
@@ -1016,43 +1024,6 @@ public class ExtractorNode implements AgentNode {
         return containsAny(normalized,
                 "建议", "应该", "机会", "风险", "威胁", "战略", "取舍", "推荐", "优先",
                 "recommend", "should", "opportunity", "risk", "threat", "strategy", "priority");
-    }
-
-    private boolean containsAny(String text, String... patterns) {
-        for (String pattern : patterns) {
-            if (text.contains(pattern.toLowerCase(Locale.ROOT))) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    private String textOrDefault(String value, String fallback) {
-        return StringUtils.hasText(value) ? value.trim() : fallback;
-    }
-
-    private String textOrDash(String value) {
-        return StringUtils.hasText(value) ? value.trim() : "-";
-    }
-
-    private String nullToEmpty(String value) {
-        return value == null ? "" : value;
-    }
-
-    private String normalizeName(String value) {
-        return value == null ? "" : value.trim().toLowerCase(Locale.ROOT);
-    }
-
-    private String abbreviate(String value, int maxChars) {
-        String normalized = value == null ? "" : value.replaceAll("\\s+", " ").trim();
-        if (normalized.length() <= maxChars) {
-            return normalized;
-        }
-        return normalized.substring(0, maxChars) + "...";
-    }
-
-    private String extractJson(String raw) {
-        return JsonResponseExtractor.extractJsonValue(raw);
     }
 
     private static class ProfileDraft {
