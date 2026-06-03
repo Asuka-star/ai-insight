@@ -103,7 +103,7 @@ class SourceCollectionServiceTest {
         ));
 
         assertThat(source.getSourceType()).isEqualTo("user_survey");
-        assertThat(source.getComplianceNote()).contains("First-party survey evidence");
+        assertThat(source.getComplianceNote()).contains("一手问卷证据");
         assertThat(source.getFreshness()).isEqualTo("USER_PROVIDED");
     }
 

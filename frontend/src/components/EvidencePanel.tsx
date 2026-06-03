@@ -1,11 +1,12 @@
 import { useEffect, useRef, useState } from "react";
 import type { MutableRefObject } from "react";
 import { ChevronDown, Database, ExternalLink, Search, ShieldAlert } from "lucide-react";
-import type { EvidenceSource } from "../types";
+import type { EvidenceChunk, EvidenceSource } from "../types";
 import { CollapsiblePanel } from "./CollapsiblePanel";
 
 interface EvidencePanelProps {
   sources: EvidenceSource[];
+  chunks?: EvidenceChunk[];
   selectedCitationKey?: string;
   selectedCitationRequestId: number;
   onSelectCitation: (citationKey: string) => void;
@@ -28,6 +29,7 @@ type SourceQualityGroup = typeof SOURCE_QUALITY_GROUPS[number];
 
 export function EvidencePanel({
   sources,
+  chunks = [],
   selectedCitationKey,
   selectedCitationRequestId,
   onSelectCitation,
@@ -120,6 +122,7 @@ export function EvidencePanel({
                       <EvidenceItem
                         key={source.id ?? source.citationKey}
                         source={source}
+                        chunks={chunks.filter((chunk) => chunk.sourceCitationKey === source.citationKey)}
                         selected={selectedCitationKey === source.citationKey}
                         onSelectCitation={onSelectCitation}
                         itemRefs={itemRefs}
@@ -147,11 +150,13 @@ export function EvidencePanel({
 
 function EvidenceItem({
   source,
+  chunks,
   selected,
   onSelectCitation,
   itemRefs
 }: {
   source: EvidenceSource;
+  chunks: EvidenceChunk[];
   selected: boolean;
   onSelectCitation: (citationKey: string) => void;
   itemRefs: MutableRefObject<Record<string, HTMLElement | null>>;
@@ -176,13 +181,14 @@ function EvidenceItem({
       <strong>{source.title}</strong>
       <p>{source.snippet}</p>
       <div className="evidence-badges">
-        <small className="evidence-source-type">{source.sourceType}</small>
-        {source.sourceQuality ? <small className={`quality-${source.sourceQuality.toLowerCase()}`}>{source.sourceQuality}</small> : null}
-        {source.collectionStatus ? <small>{source.collectionStatus}</small> : null}
-        {source.freshness ? <small>{source.freshness}</small> : null}
+        <small className="evidence-source-type">{sourceTypeLabel(source.sourceType)}</small>
+        {source.sourceQuality ? <small className={`quality-${source.sourceQuality.toLowerCase()}`}>{sourceQualityLabel(source.sourceQuality)}</small> : null}
+        {internalOnly(source) ? <small className="quality-internal_only">内部资料</small> : null}
+        {source.collectionStatus ? <small>{collectionStatusLabel(source.collectionStatus)}</small> : null}
+        {source.freshness ? <small>{freshnessLabel(source.freshness)}</small> : null}
         {source.cacheHit ? (
           <small className="cache-hit">
-            <Database size={11} /> CACHE
+            <Database size={11} /> 缓存
           </small>
         ) : null}
       </div>
@@ -194,6 +200,13 @@ function EvidenceItem({
       {source.contentHash ? <small className="evidence-hash">hash {shortHash(source.contentHash)}</small> : null}
       {displayComplianceNote(source.complianceNote) ? (
         <small className="evidence-note">{displayComplianceNote(source.complianceNote)}</small>
+      ) : null}
+      {chunks.length ? (
+        <div className="evidence-chunk-context">
+          <small>{chunks.length} 个片段</small>
+          {chunks[0].contentKind ? <small>{contentKindLabel(chunks[0].contentKind)}</small> : null}
+          {chunks[0].headingPath?.length ? <small>{chunks[0].headingPath.join(" / ")}</small> : null}
+        </div>
       ) : null}
       {isExternalUrl(source.url) ? (
         <a className="evidence-link" href={source.url} target="_blank" rel="noreferrer" onClick={(event) => event.stopPropagation()}>
@@ -207,9 +220,9 @@ function EvidenceItem({
 }
 
 const SOURCE_QUALITY_LABELS: Record<SourceQualityGroup, string> = {
-  HIGH: "High",
-  MEDIUM: "Medium",
-  LOW: "Low"
+  HIGH: "高可信",
+  MEDIUM: "中可信",
+  LOW: "低可信"
 };
 
 const SOURCE_QUALITY_DESCRIPTIONS: Record<SourceQualityGroup, string> = {
@@ -256,6 +269,114 @@ function citationNumber(citationKey: string) {
 
 function isExternalUrl(url: string) {
   return /^https?:\/\//i.test(url);
+}
+
+function internalOnly(source: EvidenceSource) {
+  return source.sourceAuthority === "INTERNAL_ONLY"
+    || source.sourceQuality === "INTERNAL_ONLY"
+    || source.freshness === "INTERNAL_ONLY";
+}
+
+function sourceTypeLabel(value?: string) {
+  const normalized = value?.replace(/^user_/, "") ?? "";
+  switch (normalized) {
+    case "interview":
+      return "访谈记录";
+    case "survey":
+      return "问卷摘要";
+    case "note":
+      return "手动资料";
+    case "pricing_document":
+      return "价格资料";
+    case "product_brief":
+      return "产品资料";
+    case "document_pdf":
+      return "PDF 文件";
+    case "document_docx":
+      return "DOCX 文件";
+    case "document_markdown":
+      return "Markdown 文件";
+    case "document_text":
+      return "文本文件";
+    case "document":
+      return "用户文档";
+    case "official_site":
+      return "官网";
+    case "pricing_page":
+      return "价格页";
+    case "product_docs":
+    case "docs":
+      return "产品文档";
+    case "public_review":
+    case "public_reviews":
+      return "公开评价";
+    default:
+      return value || "未分类";
+  }
+}
+
+function sourceQualityLabel(value: string) {
+  switch (value.toUpperCase()) {
+    case "HIGH":
+      return "高质量";
+    case "MEDIUM":
+      return "中等质量";
+    case "LOW":
+      return "低质量";
+    case "UNUSABLE":
+      return "不可用";
+    case "INTERNAL_ONLY":
+      return "内部可用";
+    default:
+      return value;
+  }
+}
+
+function collectionStatusLabel(value: string) {
+  switch (value.toUpperCase()) {
+    case "FETCHED":
+      return "已采集";
+    case "USER_PROVIDED":
+      return "用户提供";
+    case "FETCH_FAILED":
+      return "采集失败";
+    case "BLOCKED_BY_ROBOTS":
+      return "受 robots 限制";
+    default:
+      return value;
+  }
+}
+
+function freshnessLabel(value: string) {
+  switch (value.toUpperCase()) {
+    case "LIVE_FETCHED":
+      return "实时采集";
+    case "USER_PROVIDED":
+      return "用户提供";
+    case "INTERNAL_ONLY":
+      return "内部资料";
+    case "SEARCH_RESULT_SNIPPET":
+      return "搜索摘要";
+    default:
+      return value;
+  }
+}
+
+function contentKindLabel(value: string) {
+  switch (value.toLowerCase()) {
+    case "pricing":
+      return "价格片段";
+    case "security":
+      return "安全片段";
+    case "permission":
+      return "权限片段";
+    case "public_review":
+      return "评价片段";
+    case "feature":
+      return "功能片段";
+    default:
+      return value;
+  }
 }
 
 function shortHash(hash: string) {

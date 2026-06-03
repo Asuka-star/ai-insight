@@ -149,6 +149,14 @@ export interface AddUserEvidenceRequest {
   sensitive?: boolean;
 }
 
+export interface UploadDocumentRequest {
+  file: File;
+  title?: string;
+  sourceType?: string;
+  sensitive?: boolean;
+  notes?: string;
+}
+
 export interface AgentStep {
   id: string;
   agentName: AgentName;
@@ -167,6 +175,7 @@ export interface EvidenceSource {
   title: string;
   url: string;
   sourceType?: string;
+  sourceAuthority?: string;
   collectionStatus?: string;
   freshness?: string;
   sourceQuality?: string;
@@ -176,6 +185,24 @@ export interface EvidenceSource {
   snippet: string;
   complianceNote?: string;
   retrievedAt?: string;
+}
+
+export interface EvidenceChunk {
+  id: string;
+  chunkKey: string;
+  sourceCitationKey: string;
+  chunkIndex: number;
+  title?: string;
+  url?: string;
+  headingPath?: string[];
+  contentKind?: string;
+  sourceType?: string;
+  sourceAuthority?: string;
+  sourceQuality?: string;
+  textHash?: string;
+  text?: string;
+  score?: number;
+  createdAt?: string;
 }
 
 export interface AnalysisArtifact {
@@ -404,6 +431,7 @@ export interface AnalysisRun {
   contextMessages?: AnalysisContextMessage[];
   steps: AgentStep[];
   evidenceSources: EvidenceSource[];
+  evidenceChunks?: EvidenceChunk[];
   artifacts: AnalysisArtifact[];
   reviewFindings: ReviewFinding[];
   recommendedActions: string[];

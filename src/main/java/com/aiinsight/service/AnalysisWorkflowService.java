@@ -34,6 +34,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.core.task.AsyncTaskExecutor;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
+import org.springframework.web.multipart.MultipartFile;
 
 import java.time.Instant;
 import java.util.ArrayList;
@@ -62,6 +63,7 @@ public class AnalysisWorkflowService {
     private final SourceCollectionService sourceCollectionService;
     private final EvidenceChunkService evidenceChunkService;
     private final EvidenceEmbeddingService evidenceEmbeddingService;
+    private final DocumentIngestionService documentIngestionService;
     private final ConcurrentMap<UUID, AgentName> activeReruns = new ConcurrentHashMap<>();
 
     @Autowired
@@ -76,7 +78,8 @@ public class AnalysisWorkflowService {
             EvidenceRetrievalService evidenceRetrievalService,
             SourceCollectionService sourceCollectionService,
             EvidenceChunkService evidenceChunkService,
-            EvidenceEmbeddingService evidenceEmbeddingService) {
+            EvidenceEmbeddingService evidenceEmbeddingService,
+            DocumentIngestionService documentIngestionService) {
         this.repository = repository;
         this.normalizer = normalizer;
         this.eventBroker = eventBroker;
@@ -89,6 +92,36 @@ public class AnalysisWorkflowService {
         this.sourceCollectionService = sourceCollectionService;
         this.evidenceChunkService = evidenceChunkService;
         this.evidenceEmbeddingService = evidenceEmbeddingService;
+        this.documentIngestionService = documentIngestionService == null
+                ? new DocumentIngestionService(new DocumentTextExtractor(), evidenceChunkService, evidenceEmbeddingService)
+                : documentIngestionService;
+    }
+
+    public AnalysisWorkflowService(AnalysisRunRepository repository,
+            AnalysisRequestNormalizer normalizer,
+            AnalysisEventBroker eventBroker,
+            AsyncTaskExecutor analysisTaskExecutor,
+            AnalysisLangGraphWorkflow graphWorkflow,
+            WorkflowNodeExecutor nodeExecutor,
+            ClarifierNode clarifierNode,
+            FallbackClarificationDraftFactory fallbackClarificationDraftFactory,
+            EvidenceRetrievalService evidenceRetrievalService,
+            SourceCollectionService sourceCollectionService,
+            EvidenceChunkService evidenceChunkService,
+            EvidenceEmbeddingService evidenceEmbeddingService) {
+        this(repository,
+                normalizer,
+                eventBroker,
+                analysisTaskExecutor,
+                graphWorkflow,
+                nodeExecutor,
+                clarifierNode,
+                fallbackClarificationDraftFactory,
+                evidenceRetrievalService,
+                sourceCollectionService,
+                evidenceChunkService,
+                evidenceEmbeddingService,
+                null);
     }
 
     public AnalysisWorkflowService(AnalysisRunRepository repository,
@@ -113,7 +146,8 @@ public class AnalysisWorkflowService {
                 evidenceRetrievalService,
                 sourceCollectionService,
                 evidenceChunkService,
-                EvidenceEmbeddingService.disabled());
+                EvidenceEmbeddingService.disabled(),
+                null);
     }
 
     public AnalysisRun createDraft(CreateAnalysisRunRequest request) {
@@ -332,6 +366,41 @@ public class AnalysisWorkflowService {
         String citationKey = attachUserEvidence(run, evidence);
         repository.save(run);
         eventBroker.publish(run, "evidence_added", "用户补充资料已加入证据链：" + citationKey);
+        return run;
+    }
+
+    public AnalysisRun addDocument(UUID runId,
+                                   MultipartFile file,
+                                   String title,
+                                   String sourceType,
+                                   boolean sensitive,
+                                   String notes) {
+        AnalysisRun run = get(runId);
+        ensureEvidenceAcceptable(run);
+        String citationKey = nextCitationKey(run);
+        documentIngestionService.ingest(run, file, citationKey, title, sourceType, sensitive, notes);
+        repository.save(run);
+        eventBroker.publish(run, "document_added", "文件已加入用户资源包：" + citationKey);
+        return run;
+    }
+
+    public AnalysisRun deleteUserResource(UUID runId, String citationKey) {
+        AnalysisRun run = get(runId);
+        ensureEvidenceAcceptable(run);
+        EvidenceSource source = run.getEvidenceSources().stream()
+                .filter(item -> citationKey.equals(item.getCitationKey()))
+                .findFirst()
+                .orElseThrow(() -> new IllegalArgumentException("User resource not found: " + citationKey));
+        if (!isUserDocumentResource(source)) {
+            throw new InvalidRunStateException(runId, "only uploaded documents can be deleted: " + citationKey);
+        }
+        run.getEvidenceSources().removeIf(item -> citationKey.equals(item.getCitationKey()));
+        run.getEvidenceChunks().removeIf(chunk -> citationKey.equals(chunk.getSourceCitationKey()));
+        run.getResearchPackage().getSources().removeIf(item -> citationKey.equals(item.getCitationKey()));
+        run.getResearchPackage().setCollectedAt(Instant.now());
+        run.getRecommendedActions().add("用户资源 " + citationKey + " 已移除。建议重跑 EXTRACTOR、ANALYST 或 WRITER 刷新后续产物。");
+        repository.save(run);
+        eventBroker.publish(run, "document_deleted", "用户资源已从证据链移除：" + citationKey);
         return run;
     }
 
@@ -621,6 +690,11 @@ public class AnalysisWorkflowService {
         run.getResearchPackage().setCollectedAt(Instant.now());
         run.getRecommendedActions().add("用户证据 " + citationKey + " 已加入。可重跑 RESEARCHER 或下游 Agent 刷新输出。");
         return citationKey;
+    }
+
+    private boolean isUserDocumentResource(EvidenceSource source) {
+        String url = source.getUrl() == null ? "" : source.getUrl();
+        return url.startsWith("user-document://");
     }
 
     private void applyScopeHints(AnalysisRequirement requirement, String content) {

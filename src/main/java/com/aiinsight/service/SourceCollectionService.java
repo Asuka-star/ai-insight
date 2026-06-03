@@ -131,8 +131,8 @@ public class SourceCollectionService {
                 : "user-evidence://" + evidence.getId();
         String researchNote = firstPartyResearchNote(normalizedSourceType);
         String complianceNote = evidence.isSensitive()
-                ? "User-provided sensitive source. Treat as internal-only evidence and avoid public redistribution."
-                : "User-provided source. Use only for this analysis run.";
+                ? "用户提供敏感资料（internal-only），仅作为内部证据使用，避免对外传播。"
+                : "用户提供资料，仅用于当前分析会话。";
         if (StringUtils.hasText(researchNote)) {
             complianceNote = complianceNote + " " + researchNote;
         }
@@ -156,10 +156,10 @@ public class SourceCollectionService {
 
     private String firstPartyResearchNote(String sourceType) {
         if (containsIgnoreCase(sourceType, "interview")) {
-            return "First-party interview evidence; extract roles, pain points, quotes, and decision signals before final reporting.";
+            return "一手访谈证据；生成报告前应抽取角色、痛点、原话和决策信号。";
         }
         if (containsIgnoreCase(sourceType, "survey")) {
-            return "First-party survey evidence; preserve sample size, question wording, and response distribution when summarizing.";
+            return "一手问卷证据；总结时应保留样本量、问题措辞和回答分布。";
         }
         return "";
     }

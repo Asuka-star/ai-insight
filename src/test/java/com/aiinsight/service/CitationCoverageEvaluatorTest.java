@@ -346,6 +346,134 @@ class CitationCoverageEvaluatorTest {
     }
 
     @Test
+    void flagsPublicMarketClaimBackedOnlyByInternalDocument() {
+        AnalysisRun run = new AnalysisRun();
+        EvidenceSource internal = source(
+                "S16",
+                "Uploaded interview notes",
+                "user-document://s16",
+                "user_document",
+                "INTERNAL_ONLY",
+                "Public market evidence shows Cursor has competitive advantage in enterprise permission governance."
+        );
+        internal.setSourceQuality("INTERNAL_ONLY");
+        run.getEvidenceSources().add(internal);
+        run.getEvidenceChunks().add(chunk("S16-C1", "S16", "permission", "INTERNAL_ONLY",
+                "Public market evidence shows Cursor has competitive advantage in enterprise permission governance."));
+        AnalysisClaim claim = claim(
+                "Public market evidence shows Cursor has competitive advantage in enterprise permission governance.",
+                ConfidenceLevel.HIGH,
+                List.of("S16")
+        );
+        run.getClaims().add(claim);
+
+        var findings = evaluator.evaluate("## Report\n\nSummary only.", run);
+
+        assertThat(findings)
+                .anySatisfy(finding -> {
+                    assertThat(finding.getSeverity()).isEqualTo(ReviewSeverity.HIGH);
+                    assertThat(finding.getCategory()).isEqualTo("claim_internal_evidence_presented_as_public");
+                    assertThat(finding.getClaimId()).isEqualTo(claim.getId());
+                    assertThat(finding.getCitationKey()).isEqualTo("S16");
+                });
+    }
+
+    @Test
+    void allowsUserProvidedClaimWhenWordingIsInternal() {
+        AnalysisRun run = new AnalysisRun();
+        EvidenceSource internal = source(
+                "S17",
+                "Uploaded interview notes",
+                "user-document://s17",
+                "user_document",
+                "USER_PROVIDED",
+                "Based on user-provided interview notes, enterprise buyers care about permission governance."
+        );
+        internal.setSourceQuality("INTERNAL_ONLY");
+        run.getEvidenceSources().add(internal);
+        run.getEvidenceChunks().add(chunk("S17-C1", "S17", "permission", "USER_PROVIDED",
+                "Based on user-provided interview notes, enterprise buyers care about permission governance."));
+        AnalysisClaim claim = claim(
+                "Based on user-provided interview notes, enterprise buyers care about permission governance.",
+                ConfidenceLevel.MEDIUM,
+                List.of("S17")
+        );
+        run.getClaims().add(claim);
+
+        var findings = evaluator.evaluate("## Report\n\nSummary only.", run);
+
+        assertThat(findings)
+                .noneMatch(finding -> "claim_internal_evidence_presented_as_public".equals(finding.getCategory()));
+    }
+
+    @Test
+    void allowsPublicMarketClaimWithMixedInternalAndPublicEvidence() {
+        AnalysisRun run = new AnalysisRun();
+        EvidenceSource internal = source(
+                "S18",
+                "Uploaded interview notes",
+                "user-document://s18",
+                "user_document",
+                "INTERNAL_ONLY",
+                "Public market evidence shows Cursor has competitive advantage in enterprise permission governance."
+        );
+        internal.setSourceQuality("INTERNAL_ONLY");
+        EvidenceSource official = source(
+                "S19",
+                "Cursor enterprise docs",
+                "https://docs.cursor.com/enterprise",
+                "product_docs",
+                "FIRST_PARTY_OFFICIAL",
+                "Public market evidence shows Cursor has competitive advantage in enterprise permission governance."
+        );
+        run.getEvidenceSources().addAll(List.of(internal, official));
+        run.getEvidenceChunks().add(chunk("S18-C1", "S18", "permission", "INTERNAL_ONLY",
+                "Public market evidence shows Cursor has competitive advantage in enterprise permission governance."));
+        run.getEvidenceChunks().add(chunk("S19-C1", "S19", "permission", "FIRST_PARTY_OFFICIAL",
+                "Public market evidence shows Cursor has competitive advantage in enterprise permission governance."));
+        AnalysisClaim claim = claim(
+                "Public market evidence shows Cursor has competitive advantage in enterprise permission governance.",
+                ConfidenceLevel.HIGH,
+                List.of("S18", "S19")
+        );
+        run.getClaims().add(claim);
+
+        var findings = evaluator.evaluate("## Report\n\nSummary only.", run);
+
+        assertThat(findings)
+                .noneMatch(finding -> "claim_internal_evidence_presented_as_public".equals(finding.getCategory()));
+    }
+
+    @Test
+    void flagsReportParagraphPresentingInternalDocumentAsPublicEvidence() {
+        AnalysisRun run = new AnalysisRun();
+        EvidenceSource internal = source(
+                "S23",
+                "Uploaded interview notes",
+                "user-document://s23",
+                "user_document",
+                "INTERNAL_ONLY",
+                "Public market evidence shows enterprise buyers care about permission governance."
+        );
+        internal.setSourceQuality("INTERNAL_ONLY");
+        run.getEvidenceSources().add(internal);
+        run.getEvidenceChunks().add(chunk("S23-C1", "S23", "permission", "INTERNAL_ONLY",
+                "Public market evidence shows enterprise buyers care about permission governance."));
+
+        var findings = evaluator.evaluate(
+                "Public market evidence shows enterprise buyers care about permission governance [S23].",
+                run
+        );
+
+        assertThat(findings)
+                .anySatisfy(finding -> {
+                    assertThat(finding.getSeverity()).isEqualTo(ReviewSeverity.MEDIUM);
+                    assertThat(finding.getCategory()).isEqualTo("citation_internal_evidence_presented_as_public");
+                    assertThat(finding.getCitationKey()).isEqualTo("S23");
+                });
+    }
+
+    @Test
     void flagsExtractedFactUnsupportedByBoundEvidence() {
         AnalysisRun run = new AnalysisRun();
         run.getEvidenceSources().add(source(

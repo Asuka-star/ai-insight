@@ -114,6 +114,11 @@ public class CitationCoverageEvaluator {
                 .map(EvidenceSource::getCitationKey)
                 .collect(Collectors.toCollection(LinkedHashSet::new));
         Set<String> checkedCitationKeys = new LinkedHashSet<>();
+        Set<String> paragraphCitationKeys = citationKeys(paragraph);
+        boolean publicMarketClaim = publicMarketClaim(paragraph);
+        boolean hasPublicEvidence = paragraphCitationKeys.stream()
+                .map(citationKey -> sourceByCitationKey(run, citationKey))
+                .anyMatch(this::publicEvidence);
         Matcher matcher = CITATION_KEY_PATTERN.matcher(paragraph);
         while (matcher.find()) {
             String citationKey = matcher.group(1);
@@ -145,13 +150,26 @@ public class CitationCoverageEvaluator {
                 finding.setExcerpt(paragraph);
                 findings.add(finding);
             }
-            SourceQualityRisk sourceRisk = sourceQualityRisk(sourceByCitationKey(run, citationKey));
+            EvidenceSource source = sourceByCitationKey(run, citationKey);
+            SourceQualityRisk sourceRisk = sourceQualityRisk(source);
             if (sourceRisk != null) {
                 ReviewFinding finding = new ReviewFinding(
                         sourceRisk.severity(),
                         sourceRisk.category(),
                         "引用 [" + citationKey + "] 的来源质量偏弱: " + sourceRisk.reason(),
                         sourceRisk.recommendation()
+                );
+                finding.setCitationKey(citationKey);
+                finding.setParagraphIndex(paragraphIndex);
+                finding.setExcerpt(paragraph);
+                findings.add(finding);
+            }
+            if (publicMarketClaim && !hasPublicEvidence && internalOrUserEvidence(source)) {
+                ReviewFinding finding = new ReviewFinding(
+                        ReviewSeverity.MEDIUM,
+                        "citation_internal_evidence_presented_as_public",
+                        "Report paragraph presents internal or user-provided evidence [" + citationKey + "] as public or market evidence.",
+                        "Add public/official evidence for this paragraph, or rewrite it as a conclusion based on user-provided/internal material."
                 );
                 finding.setCitationKey(citationKey);
                 finding.setParagraphIndex(paragraphIndex);
@@ -618,6 +636,14 @@ public class CitationCoverageEvaluator {
         if (claim == null || source == null || !StringUtils.hasText(claim.getContent())) {
             return null;
         }
+        if (publicMarketClaim(claim.getContent()) && internalOrUserEvidence(source) && !claimHasPublicEvidence(claim, run)) {
+            return new ClaimEvidencePolicyRisk(
+                    claim.getConfidence() == ConfidenceLevel.HIGH ? ReviewSeverity.HIGH : ReviewSeverity.MEDIUM,
+                    "claim_internal_evidence_presented_as_public",
+                    "Public or market-facing claim cites only user-provided/internal evidence [" + evidenceId + "].",
+                    "Add public/official evidence, or rewrite the claim as based on user-provided/internal material."
+            );
+        }
         String need = claimEvidenceNeed(claim);
         if ("pricing".equals(need)) {
             if (strongPricingEvidence(source, evidenceId, run)) {
@@ -747,6 +773,82 @@ public class CitationCoverageEvaluator {
         return expectedType.equals(normalizeLower(source.getSourceType()));
     }
 
+    private Set<String> citationKeys(String text) {
+        Set<String> keys = new LinkedHashSet<>();
+        if (!StringUtils.hasText(text)) {
+            return keys;
+        }
+        Matcher matcher = CITATION_KEY_PATTERN.matcher(text);
+        while (matcher.find()) {
+            keys.add(matcher.group(1));
+        }
+        return keys;
+    }
+
+    private boolean publicMarketClaim(String text) {
+        String normalized = normalizeLower(text);
+        return containsAny(normalized,
+                "public source",
+                "public sources",
+                "public data",
+                "public evidence",
+                "market",
+                "competitor",
+                "competitive",
+                "industry",
+                "external",
+                "benchmark",
+                "\u516c\u5f00\u8d44\u6599",
+                "\u516c\u5f00\u4fe1\u606f",
+                "\u516c\u5f00\u6570\u636e",
+                "\u5e02\u573a",
+                "\u7ade\u54c1",
+                "\u884c\u4e1a",
+                "\u5916\u90e8",
+                "\u57fa\u51c6");
+    }
+
+    private boolean claimHasPublicEvidence(AnalysisClaim claim, AnalysisRun run) {
+        if (claim.getEvidenceIds() == null || claim.getEvidenceIds().isEmpty()) {
+            return false;
+        }
+        return claim.getEvidenceIds().stream()
+                .map(evidenceId -> sourceByCitationKey(run, evidenceId))
+                .anyMatch(this::publicEvidence);
+    }
+
+    private boolean publicEvidence(EvidenceSource source) {
+        if (source == null || internalOrUserEvidence(source)) {
+            return false;
+        }
+        String sourceType = normalizeLower(source.getSourceType());
+        String authority = normalizeUpper(source.getSourceAuthority());
+        String collectionStatus = normalizeUpper(source.getCollectionStatus());
+        String freshness = normalizeUpper(source.getFreshness());
+        String sourceQuality = normalizeUpper(source.getSourceQuality());
+        return !"SEARCH_RESULT_SNIPPET".equals(freshness)
+                && !"FETCH_FAILED".equals(collectionStatus)
+                && !"BLOCKED_BY_ROBOTS".equals(collectionStatus)
+                && !"search_result_snippet".equals(sourceType)
+                && !"SEARCH_SNIPPET".equals(authority)
+                && !"UNUSABLE".equals(sourceQuality);
+    }
+
+    private boolean internalOrUserEvidence(EvidenceSource source) {
+        if (source == null) {
+            return false;
+        }
+        String authority = normalizeUpper(source.getSourceAuthority());
+        String quality = normalizeUpper(source.getSourceQuality());
+        String sourceType = normalizeLower(source.getSourceType());
+        String url = normalizeLower(source.getUrl());
+        return "USER_PROVIDED".equals(authority)
+                || "INTERNAL_ONLY".equals(authority)
+                || "INTERNAL_ONLY".equals(quality)
+                || sourceType.startsWith("user_")
+                || url.startsWith("user-document://");
+    }
+
     private boolean firstPartyAuthority(String authority) {
         return "FIRST_PARTY_OFFICIAL".equals(authority)
                 || "FIRST_PARTY_DOCS".equals(authority)
@@ -809,12 +911,25 @@ public class CitationCoverageEvaluator {
     }
 
     private boolean looksLikeClaim(String paragraph) {
+        String normalized = normalizeLower(paragraph);
         return paragraph.contains("机会")
                 || paragraph.contains("风险")
                 || paragraph.contains("优势")
                 || paragraph.contains("弱势")
                 || paragraph.contains("建议")
-                || paragraph.contains("更适合");
+                || paragraph.contains("更适合")
+                || containsAny(normalized,
+                "opportunity",
+                "risk",
+                "advantage",
+                "weakness",
+                "recommendation",
+                "public evidence",
+                "public market",
+                "market evidence",
+                "competitive",
+                "competitor",
+                "industry");
     }
 
     private boolean containsUncertaintyMarker(String text) {

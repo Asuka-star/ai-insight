@@ -24,9 +24,11 @@ import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
+import org.springframework.web.bind.annotation.RequestPart;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
+import org.springframework.web.multipart.MultipartFile;
 
 import java.util.Collection;
 import java.util.UUID;
@@ -97,6 +99,22 @@ public class AnalysisRunController {
     public AnalysisRun addEvidence(@PathVariable UUID runId,
                                    @Valid @RequestBody AddUserEvidenceRequest request) {
         return workflowService.addEvidence(runId, request);
+    }
+
+    @PostMapping(path = "/{runId}/documents", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    public AnalysisRun addDocument(@PathVariable UUID runId,
+                                   @RequestPart("file") MultipartFile file,
+                                   @RequestParam(required = false) String title,
+                                   @RequestParam(required = false) String sourceType,
+                                   @RequestParam(defaultValue = "false") boolean sensitive,
+                                   @RequestParam(required = false) String notes) {
+        return workflowService.addDocument(runId, file, title, sourceType, sensitive, notes);
+    }
+
+    @DeleteMapping("/{runId}/documents/{citationKey}")
+    public AnalysisRun deleteDocument(@PathVariable UUID runId,
+                                      @PathVariable String citationKey) {
+        return workflowService.deleteUserResource(runId, citationKey);
     }
 
     @GetMapping("/{runId}/traces")

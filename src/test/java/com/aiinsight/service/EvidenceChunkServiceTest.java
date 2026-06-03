@@ -58,6 +58,9 @@ class EvidenceChunkServiceTest {
         assertThat(chunks).hasSizeGreaterThanOrEqualTo(2);
         assertThat(chunks.get(0).getHeadingPath()).contains("Notion Pricing", "Pricing");
         assertThat(chunks.get(0).getContentKind()).isEqualTo("pricing");
+        assertThat(chunks.get(0).getTitle()).isEqualTo("Notion Pricing");
+        assertThat(chunks.get(0).getUrl()).isEqualTo("https://www.notion.com/pricing");
+        assertThat(chunks.get(0).getSourceType()).isEqualTo("pricing_page");
         assertThat(chunks.get(0).getSourceAuthority()).isEqualTo("FIRST_PARTY_OFFICIAL");
         assertThat(chunks.get(0).getSourceQuality()).isEqualTo("HIGH");
         assertThat(chunks.get(0).getTextHash()).hasSize(64);

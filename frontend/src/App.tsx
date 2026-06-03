@@ -4,6 +4,7 @@ import {
   AlertTriangle,
   BookOpenCheck,
   Clock3,
+  FolderOpen,
   Gauge,
   GripVertical,
   History,
@@ -15,7 +16,7 @@ import {
   UploadCloud
 } from "lucide-react";
 import type { AnalysisContextMessage, AgentName, AnalysisArtifact, AnalysisRun, AnalysisRunMetrics, AnalysisRunSummary, ContextIntent, ReviewFinding, RunEvent } from "./types";
-import { addContext, addEvidence, clarifyRequirement, createRun, deleteRun, getRun, getRunMetrics, listRunSummaries, rerunAgent, startAnalysis, updateRequirement } from "./api";
+import { addContext, addEvidence, clarifyRequirement, createRun, deleteDocument, deleteRun, getRun, getRunMetrics, listRunSummaries, rerunAgent, startAnalysis, updateRequirement, uploadDocument } from "./api";
 import { AGENT_LABELS, ARTIFACT_LABELS, SOURCE_OPTIONS } from "./constants";
 import {
   calculateRunMetrics,
@@ -39,6 +40,7 @@ import { ContextPanel } from "./components/ContextPanel";
 import { ArtifactVersionsPanel } from "./components/ArtifactVersionsPanel";
 import { HistoryDrawer } from "./components/HistoryDrawer";
 import { DeleteHistoryDialog } from "./components/DeleteHistoryDialog";
+import { ResourcePackDrawer } from "./components/ResourcePackDrawer";
 
 type MainView = "dag" | "report" | "schema" | "matrix" | "versions";
 type RightPanelId = "timeline" | "evidence" | "review" | "metrics";
@@ -93,6 +95,13 @@ export function App() {
   const [evidenceUrl, setEvidenceUrl] = useState("");
   const [evidenceContent, setEvidenceContent] = useState("");
   const [evidenceSensitive, setEvidenceSensitive] = useState(false);
+  const [documentFile, setDocumentFile] = useState<File | null>(null);
+  const [documentTitle, setDocumentTitle] = useState("");
+  const [documentSourceType, setDocumentSourceType] = useState("document");
+  const [documentSensitive, setDocumentSensitive] = useState(false);
+  const [documentNotes, setDocumentNotes] = useState("");
+  const [isUploadingDocument, setIsUploadingDocument] = useState(false);
+  const [documentInputKey, setDocumentInputKey] = useState(0);
   const [localContextMessages, setLocalContextMessages] = useState<AnalysisContextMessage[]>([]);
   const [mainView, setMainView] = useState<MainView>("dag");
   const [collapsedRightPanels, setCollapsedRightPanels] = useState<Record<RightPanelId, boolean>>({
@@ -110,6 +119,8 @@ export function App() {
   const [deletingRunId, setDeletingRunId] = useState<string>();
   const [deleteCandidate, setDeleteCandidate] = useState<AnalysisRunSummary>();
   const [historyOpen, setHistoryOpen] = useState(false);
+  const [resourcePackOpen, setResourcePackOpen] = useState(false);
+  const [deletingResourceKey, setDeletingResourceKey] = useState<string>();
   const [leftRailWidth, setLeftRailWidth] = useState(286);
   const [rightRailWidth, setRightRailWidth] = useState(342);
   const refreshTimerRef = useRef<number>();
@@ -293,6 +304,8 @@ export function App() {
       "run_started",
       "context_added",
       "evidence_added",
+      "document_added",
+      "document_deleted",
       "agent_started",
       "agent_succeeded",
       "agent_failed",
@@ -773,6 +786,60 @@ export function App() {
     }
   }
 
+  async function handleUploadDocument() {
+    if (!run || !documentFile || runMutationDisabled || isUploadingDocument) return;
+    const runId = run.id;
+    setIsUploadingDocument(true);
+    setEventMessage("正在把文件加入用户资源包");
+    try {
+      const nextRun = await uploadDocument(runId, {
+        file: documentFile,
+        title: documentTitle.trim() || undefined,
+        sourceType: documentSourceType,
+        sensitive: documentSensitive,
+        notes: documentNotes.trim() || undefined
+      });
+      if (!isCurrentWorkspaceRun(runId)) return;
+      setRun(nextRun);
+      setDocumentFile(null);
+      setDocumentTitle("");
+      setDocumentSourceType("document");
+      setDocumentSensitive(false);
+      setDocumentNotes("");
+      setDocumentInputKey((value) => value + 1);
+      setHistoryRuns((runs) => upsertHistorySummary(runs, summaryFromRun(nextRun)));
+      setEventMessage("文件已加入用户资源包");
+    } catch (error) {
+      if (!isCurrentWorkspaceRun(runId)) return;
+      setEventMessage(error instanceof Error ? `文件上传失败：${error.message}` : "文件上传失败");
+    } finally {
+      if (isCurrentWorkspaceRun(runId)) {
+        setIsUploadingDocument(false);
+      }
+    }
+  }
+
+  async function handleDeleteUserResource(citationKey: string) {
+    if (!run || runMutationDisabled || deletingResourceKey) return;
+    const runId = run.id;
+    setDeletingResourceKey(citationKey);
+    setEventMessage(`正在移除用户资源 ${citationKey}`);
+    try {
+      const nextRun = await deleteDocument(runId, citationKey);
+      if (!isCurrentWorkspaceRun(runId)) return;
+      setRun(nextRun);
+      setHistoryRuns((runs) => upsertHistorySummary(runs, summaryFromRun(nextRun)));
+      setEventMessage(`用户资源 ${citationKey} 已移除`);
+    } catch (error) {
+      if (!isCurrentWorkspaceRun(runId)) return;
+      setEventMessage(error instanceof Error ? `用户资源删除失败：${error.message}` : "用户资源删除失败");
+    } finally {
+      if (isCurrentWorkspaceRun(runId)) {
+        setDeletingResourceKey(undefined);
+      }
+    }
+  }
+
   async function handleRerun(agentName: AgentName) {
     if (!run || runMutationDisabled || rerunningAgent) return;
     const runId = run.id;
@@ -834,6 +901,10 @@ export function App() {
   };
   const phase = String(resolveRunPhase(run));
   const runMutationDisabled = !run || Boolean(rerunningAgent) || ["RUNNING", "REVIEWING", "REVISING", "CANCELLED"].includes(phase);
+  const userResourceSources = useMemo(
+    () => (run?.evidenceSources ?? []).filter(isUserResourceSource),
+    [run?.evidenceSources]
+  );
   const metricCards = [
     { label: "Agent 步骤", value: runMetrics.agentStepCount, icon: Activity },
     { label: "证据来源", value: runMetrics.evidenceCount, icon: Search },
@@ -866,6 +937,9 @@ export function App() {
           </div>
         </div>
         <div className="header-actions">
+          <button className="toolbar-button" type="button" onClick={() => setResourcePackOpen(true)}>
+            <FolderOpen size={16} /> 用户资源包 · {userResourceSources.length}
+          </button>
           <button className="toolbar-button" type="button" onClick={() => setHistoryOpen(true)}>
             <History size={16} /> 历史会话
           </button>
@@ -1101,6 +1175,7 @@ export function App() {
 
           <EvidencePanel
             sources={run?.evidenceSources ?? []}
+            chunks={run?.evidenceChunks ?? []}
             selectedCitationKey={selectedCitationKey}
             selectedCitationRequestId={selectedCitationRequestId}
             onSelectCitation={handleSelectCitation}
@@ -1168,6 +1243,28 @@ export function App() {
         onSelectRun={selectRun}
         onDeleteRun={handleDeleteHistoryRun}
         deletingRunId={deletingRunId}
+      />
+      <ResourcePackDrawer
+        open={resourcePackOpen}
+        sources={userResourceSources}
+        disabled={runMutationDisabled}
+        uploading={isUploadingDocument}
+        deletingCitationKey={deletingResourceKey}
+        file={documentFile}
+        inputKey={documentInputKey}
+        title={documentTitle}
+        sourceType={documentSourceType}
+        sensitive={documentSensitive}
+        notes={documentNotes}
+        onClose={() => setResourcePackOpen(false)}
+        onFileChange={setDocumentFile}
+        onTitleChange={setDocumentTitle}
+        onSourceTypeChange={setDocumentSourceType}
+        onSensitiveChange={setDocumentSensitive}
+        onNotesChange={setDocumentNotes}
+        onUpload={handleUploadDocument}
+        onDelete={handleDeleteUserResource}
+        onSelectCitation={handleSelectCitation}
       />
       <DeleteHistoryDialog
         summary={deleteCandidate}
@@ -1283,6 +1380,11 @@ function summaryFromRun(run: AnalysisRun): AnalysisRunSummary {
     createdAt: run.createdAt,
     updatedAt: run.updatedAt
   };
+}
+
+function isUserResourceSource(source: { url?: string }) {
+  const url = source.url ?? "";
+  return url.startsWith("user-document://");
 }
 
 function timestampValue(value?: string) {

@@ -6,7 +6,8 @@ import type {
   AnalysisRunMetrics,
   AnalysisRunSummary,
   CreateAnalysisRunRequest,
-  UpdateAnalysisRequirementRequest
+  UpdateAnalysisRequirementRequest,
+  UploadDocumentRequest
 } from "./types";
 
 export async function listRunSummaries(): Promise<AnalysisRunSummary[]> {
@@ -70,6 +71,25 @@ export async function addEvidence(runId: string, payload: AddUserEvidenceRequest
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload)
+  });
+}
+
+export async function uploadDocument(runId: string, payload: UploadDocumentRequest): Promise<AnalysisRun> {
+  const body = new FormData();
+  body.append("file", payload.file);
+  if (payload.title) body.append("title", payload.title);
+  if (payload.sourceType) body.append("sourceType", payload.sourceType);
+  body.append("sensitive", String(Boolean(payload.sensitive)));
+  if (payload.notes) body.append("notes", payload.notes);
+  return requestJson(`/api/analysis-runs/${runId}/documents`, {
+    method: "POST",
+    body
+  });
+}
+
+export async function deleteDocument(runId: string, citationKey: string): Promise<AnalysisRun> {
+  return requestJson(`/api/analysis-runs/${runId}/documents/${encodeURIComponent(citationKey)}`, {
+    method: "DELETE"
   });
 }
 

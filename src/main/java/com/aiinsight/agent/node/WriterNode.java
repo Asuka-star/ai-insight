@@ -119,6 +119,7 @@ public class WriterNode implements AgentNode {
                 15. 不要出现 Analyst、Reviewer、Researcher、Writer、打回采集、重跑 Agent 等内部流程措辞。
                 16. 如果 Reviewer 修复计划包含结构化修复任务，优先只修订 task 定位的 paragraph/excerpt/currentText；不要为了一个 citation 问题重写整份报告。
                 17. 每个 task 必须满足 expectedFix 和 criteria；无法满足时，把对应表述降级为“待验证/证据不足”，并放入风险与证据缺口。
+                18. 如果证据 authority/quality 为 USER_PROVIDED 或 INTERNAL_ONLY，只能写成“用户提供资料/内部资料显示”；不要写成“公开资料显示”“市场证据显示”或“外部验证显示”，除非同一结论还绑定了公开/官方来源。
 
                 用户需求:
                 %s
@@ -285,10 +286,11 @@ public class WriterNode implements AgentNode {
             return "暂无可引用证据。";
         }
         return indexedSources.stream()
-                .map(source -> "[%s] %s | type=%s | quality=%s | status=%s\nURL: %s\n摘要: %s".formatted(
+                .map(source -> "[%s] %s | type=%s | authority=%s | quality=%s | status=%s\nURL: %s\n摘要: %s".formatted(
                         source.getCitationKey(),
                         textOrDefault(source.getTitle(), "未命名来源"),
                         textOrDefault(source.getSourceType(), "unknown"),
+                        textOrDefault(source.getSourceAuthority(), "UNKNOWN"),
                         textOrDefault(source.getSourceQuality(), "UNKNOWN"),
                         textOrDefault(source.getCollectionStatus(), "UNKNOWN"),
                         source.getUrl(),

@@ -51,6 +51,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import org.bsc.langgraph4j.GraphDefinition;
 import org.junit.jupiter.api.Test;
 import org.springframework.core.task.support.TaskExecutorAdapter;
+import org.springframework.mock.web.MockMultipartFile;
 
 import java.util.Collection;
 import java.util.List;
@@ -322,6 +323,96 @@ class AnalysisWorkflowServiceTest {
         assertThat(updated.getEvidenceChunks()).hasSize(1);
         assertThat(updated.getResearchPackage().getSources()).hasSize(1);
         assertThat(updated.getRecommendedActions()).anyMatch(action -> action.contains("用户证据 S1 已加入"));
+    }
+
+    @Test
+    void addsUploadedDocumentAsCitableSourceChunkAndRetrievalCandidate() {
+        AnalysisWorkflowService service = newService();
+        CreateAnalysisRunRequest request = new CreateAnalysisRunRequest();
+        request.setPrompt("Analyze Notion and Confluence for AI document collaboration.");
+        var run = service.createDraft(request);
+        MockMultipartFile file = new MockMultipartFile(
+                "file",
+                "internal-research.md",
+                "text/markdown",
+                """
+                        # Internal research
+
+                        Interview notes from product operations show that enterprise buyers care about SAML SSO,
+                        SCIM provisioning, audit logs, permission governance, and predictable pricing controls.
+                        The same notes say AI search is valuable only when answers can point back to trusted workspace documents.
+                        """.getBytes(java.nio.charset.StandardCharsets.UTF_8)
+        );
+
+        var updated = service.addDocument(run.getId(), file, "Internal research note", "interview", true, "demo upload");
+
+        assertThat(updated.getEvidenceSources()).hasSize(1);
+        EvidenceSource source = updated.getEvidenceSources().get(0);
+        assertThat(source.getCitationKey()).isEqualTo("S1");
+        assertThat(source.getTitle()).isEqualTo("Internal research note");
+        assertThat(source.getUrl()).startsWith("user-document://");
+        assertThat(source.getSourceType()).isEqualTo("user_interview");
+        assertThat(source.getSourceAuthority()).isEqualTo("INTERNAL_ONLY");
+        assertThat(source.getSourceQuality()).isEqualTo("INTERNAL_ONLY");
+        assertThat(source.getComplianceNote()).contains("internal-only", "internal-research.md");
+        assertThat(updated.getEvidenceChunks()).isNotEmpty();
+        assertThat(updated.getResearchPackage().getSources()).hasSize(1);
+        assertThat(updated.getRecommendedActions()).anyMatch(action -> action.contains("S1"));
+
+        var retrieval = service.retrieveEvidence(updated.getId(), "permission governance SAML", 1);
+        assertThat(retrieval).hasSize(1);
+        assertThat(retrieval.iterator().next().getSourceCitationKey()).isEqualTo("S1");
+    }
+
+    @Test
+    void deleteUserResourceRemovesDocumentSourceAndChunks() {
+        AnalysisWorkflowService service = newService();
+        CreateAnalysisRunRequest request = new CreateAnalysisRunRequest();
+        request.setPrompt("Analyze Notion and Confluence for AI document collaboration.");
+        var run = service.createDraft(request);
+        MockMultipartFile file = new MockMultipartFile(
+                "file",
+                "resource-pack.md",
+                "text/markdown",
+                """
+                        Enterprise buyers care about permission governance, audit trails, SSO administration,
+                        and reliable citations back to trusted workspace documents. The same uploaded resource
+                        says buyers want AI search results to clearly explain which internal source supports
+                        each answer before teams use it in procurement or compliance review.
+                        """.getBytes(java.nio.charset.StandardCharsets.UTF_8)
+        );
+        var updated = service.addDocument(run.getId(), file, "Resource pack note", "document", false, "");
+
+        var deleted = service.deleteUserResource(updated.getId(), "S1");
+
+        assertThat(deleted.getEvidenceSources()).isEmpty();
+        assertThat(deleted.getEvidenceChunks()).isEmpty();
+        assertThat(deleted.getResearchPackage().getSources()).isEmpty();
+        assertThat(deleted.getRecommendedActions()).anyMatch(action -> action.contains("用户资源 S1 已移除"));
+    }
+
+    @Test
+    void deleteUserResourceRejectsManualEvidence() {
+        AnalysisWorkflowService service = newService();
+        CreateAnalysisRunRequest request = new CreateAnalysisRunRequest();
+        request.setPrompt("Analyze Notion and Confluence for AI document collaboration.");
+        var run = service.createDraft(request);
+
+        AddUserEvidenceRequest evidence = new AddUserEvidenceRequest();
+        evidence.setTitle("Manual interview note");
+        evidence.setSourceType("interview");
+        evidence.setContent("""
+                Interview notes show enterprise buyers care about audit logs, SSO controls,
+                permission governance, and reliable citations for AI-generated workspace answers.
+                """);
+        var updated = service.addEvidence(run.getId(), evidence);
+
+        assertThat(updated.getEvidenceSources()).hasSize(1);
+        assertThat(updated.getEvidenceSources().get(0).getUrl()).startsWith("user-evidence://");
+        assertThatThrownBy(() -> service.deleteUserResource(updated.getId(), "S1"))
+                .isInstanceOf(InvalidRunStateException.class)
+                .hasMessageContaining("only uploaded documents");
+        assertThat(service.get(updated.getId()).getEvidenceSources()).hasSize(1);
     }
 
     @Test
