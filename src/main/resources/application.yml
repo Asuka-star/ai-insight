@@ -49,6 +49,13 @@ ai-insight:
       completions-path: ${XIAOMI_LLM_COMPLETIONS_PATH:/chat/completions}
       model: ${XIAOMI_LLM_MODEL:mimo-v2.5-pro}
       timeout: 60s
+    doubao:
+      api-key: ${DOUBAO_LLM_API_KEY:}
+      base-url: ${DOUBAO_LLM_BASE_URL:https://ark.cn-beijing.volces.com/api/v3}
+      completions-path: ${DOUBAO_LLM_COMPLETIONS_PATH:/chat/completions}
+      endpoint-id: ${DOUBAO_LLM_ENDPOINT_ID:}
+      display-model: ${DOUBAO_LLM_DISPLAY_MODEL:Doubao-Seed-2.0-lite}
+      timeout: ${DOUBAO_LLM_TIMEOUT:30s}
   embedding:
     api-key: ${AI_INSIGHT_EMBEDDING_API_KEY:}
     base-url: ${AI_INSIGHT_EMBEDDING_BASE_URL:https://api.openai.com/v1}
@@ -83,4 +90,4 @@ ai-insight:
     max-parallel-searches: ${AI_INSIGHT_MAX_PARALLEL_SEARCHES:4}
     max-parallel-fetches: ${AI_INSIGHT_MAX_PARALLEL_FETCHES:8}
   workflow:
-    max-review-rework-attempts: ${AI_INSIGHT_MAX_REVIEW_REWORK_ATTEMPTS:0}
+    max-review-rework-attempts: ${AI_INSIGHT_MAX_REVIEW_REWORK_ATTEMPTS:1}

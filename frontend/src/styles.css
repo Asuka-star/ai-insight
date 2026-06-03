@@ -415,38 +415,6 @@ h3 {
   font-weight: 760;
 }
 
-.source-preference-block {
-  display: grid;
-  gap: 6px;
-}
-
-.source-preference-header {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 10px;
-  color: var(--text);
-  font-size: 13px;
-  font-weight: 760;
-}
-
-.source-preference-header small {
-  color: var(--muted);
-  font-size: 11px;
-  font-weight: 650;
-  text-align: right;
-}
-
-.source-options {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 6px 8px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: var(--panel-soft);
-  padding: 10px;
-}
-
 .check-row {
   display: flex !important;
   grid-template-columns: none !important;
@@ -2360,6 +2328,7 @@ h3 {
   height: min(860px, calc(100vh - 48px));
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
+  min-height: 0;
   overflow: hidden;
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -2799,13 +2768,29 @@ h3 {
   padding-right: 3px;
 }
 
+.trace-drawer-section {
+  display: flex;
+  align-content: normal;
+  flex-direction: column;
+  height: 100%;
+  max-height: 100%;
+  margin-bottom: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding-bottom: 18px;
+  scrollbar-gutter: stable;
+}
+
 .trace-card {
-  display: grid;
-  gap: 8px;
+  display: flex;
+  flex: 0 0 auto;
+  flex-direction: column;
+  min-height: 0;
   border: 1px solid var(--line);
   border-radius: 8px;
   background: var(--panel-soft);
-  padding: 11px;
+  overflow: hidden;
 }
 
 .trace-card p {
@@ -2818,6 +2803,40 @@ h3 {
   font-size: 12px;
 }
 
+.trace-card-toggle {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  padding: 11px;
+  border-radius: 8px;
+  text-align: left;
+}
+
+.trace-card-toggle:hover {
+  background: rgba(12, 128, 126, 0.06);
+}
+
+.trace-card-toggle > svg {
+  color: var(--faint);
+  transition: transform 0.16s ease;
+}
+
+.trace-card-toggle > svg.expanded {
+  transform: rotate(180deg);
+}
+
+.trace-card-title {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
 .trace-card-header {
   display: flex;
   align-items: center;
@@ -2825,12 +2844,31 @@ h3 {
   gap: 10px;
 }
 
+.trace-card-title strong,
 .trace-card-header strong {
   min-width: 0;
   overflow: hidden;
   color: var(--text);
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.trace-card-title small {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--faint);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.trace-card-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 0;
+  border-top: 1px solid var(--line);
+  border-radius: 0 0 8px 8px;
+  padding: 11px;
 }
 
 .trace-pill {
@@ -2903,6 +2941,7 @@ h3 {
 }
 
 .trace-disclosure {
+  display: block;
   border: 1px solid var(--line);
   border-radius: 7px;
   background: #ffffff;
@@ -2917,6 +2956,7 @@ h3 {
 }
 
 .trace-disclosure pre {
+  box-sizing: border-box;
   max-height: none;
   overflow: visible;
   margin: 0;

@@ -692,9 +692,6 @@ public class AnalysisWorkflowService {
         if (request.dimensionsProvided()) {
             requirement.setDimensions(new ArrayList<>(request.getDimensions()));
         }
-        if (request.sourcePreferencesProvided()) {
-            requirement.setSourcePreferences(new ArrayList<>(request.getSourcePreferences()));
-        }
         if (request.sourceUrlsProvided()) {
             requirement.setSourceUrls(new ArrayList<>(request.getSourceUrls()));
         }

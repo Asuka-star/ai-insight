@@ -56,6 +56,37 @@ class ReviewerNodeTest {
     }
 
     @Test
+    void sendsOnlyExtractorScopedRepairTasksWhenFactAndClaimBlockersCoexist() {
+        AnalysisRun run = new AnalysisRun();
+        run.addArtifact(new AnalysisArtifact(ArtifactType.REPORT_DRAFT, "draft", "Summary only.", List.of()));
+        run.getEvidenceSources().add(source("S32", "Cursor Composer supports multi-file code editing."));
+        run.getEvidenceChunks().add(chunk("S32-C1", "S32", "feature", "Cursor Composer supports multi-file code editing."));
+        ExtractedFact fact = fact("F32", FactType.SECURITY, "compliance",
+                "Cursor includes SOC 2 enterprise compliance controls.", List.of("S32"), List.of("S32-C1"));
+        run.getCompetitorFactSets().add(factSet(fact));
+        AnalysisClaim claim = claim("Cursor includes SOC 2 enterprise compliance controls.", List.of("S32"), List.of("F32"));
+        run.getClaims().add(claim);
+
+        new ReviewerNode(new CitationCoverageEvaluator(), highClaimFindingLlmClient(claim.getId()), new FallbackReviewReportFactory()).execute(run);
+
+        assertThat(run.getReviewFindings())
+                .anySatisfy(finding -> {
+                    assertThat(finding.getSeverity()).isEqualTo(com.aiinsight.model.enums.ReviewSeverity.HIGH);
+                    assertThat(finding.getCategory()).isEqualTo("claim_weak_support");
+                    assertThat(finding.getClaimId()).isEqualTo(claim.getId());
+                });
+        assertThat(run.getReviewDecision().getTargetAgent()).isEqualTo(AgentName.EXTRACTOR);
+        assertThat(run.getReviewDecision().getRepairTasks())
+                .allSatisfy(task -> {
+                    assertThat(task.getTargetAgent()).isEqualTo(AgentName.EXTRACTOR);
+                    assertThat(task.getCategory()).startsWith("fact_");
+                    assertThat(task.getFactId()).isEqualTo("F32");
+                });
+        assertThat(run.getReviewDecision().getRepairTasks())
+                .noneMatch(task -> "claim_weak_support".equals(task.getCategory()));
+    }
+
+    @Test
     void routesClaimFactMismatchBackToAnalyst() {
         AnalysisRun run = new AnalysisRun();
         run.addArtifact(new AnalysisArtifact(ArtifactType.REPORT_DRAFT, "draft", "Summary only.", List.of()));
@@ -80,6 +111,29 @@ class ReviewerNodeTest {
                 });
     }
 
+    @Test
+    void capsLlmFindingsPerSubtask() {
+        AnalysisRun run = new AnalysisRun();
+        run.addArtifact(new AnalysisArtifact(
+                ArtifactType.REPORT_DRAFT,
+                "draft",
+                "Cursor supports multi-file code editing [S30].",
+                List.of("S30")
+        ));
+        run.getEvidenceSources().add(source("S30", "Cursor Composer supports multi-file code editing."));
+
+        new ReviewerNode(new CitationCoverageEvaluator(), noisyLlmClient(), new FallbackReviewReportFactory()).execute(run);
+
+        long llmFindingCount = run.getReviewFindings().stream()
+                .filter(finding -> "llm_overclaim".equals(finding.getCategory()))
+                .count();
+        assertThat(llmFindingCount).isLessThanOrEqualTo(4);
+        assertThat(run.getReviewFindings().stream()
+                .filter(finding -> "llm_overclaim".equals(finding.getCategory()))
+                .allMatch(finding -> finding.getMessage().length() <= 183))
+                .isTrue();
+    }
+
     private LlmClient noopLlmClient() {
         return new LlmClient() {
             @Override
@@ -90,6 +144,69 @@ class ReviewerNodeTest {
             @Override
             public String complete(ChatRequest request) {
                 throw new IllegalStateException("LLM is not configured");
+            }
+        };
+    }
+
+    private LlmClient noisyLlmClient() {
+        return new LlmClient() {
+            @Override
+            public boolean isAvailable() {
+                return true;
+            }
+
+            @Override
+            public String complete(ChatRequest request) {
+                StringBuilder findings = new StringBuilder();
+                for (int i = 0; i < 10; i++) {
+                    if (i > 0) {
+                        findings.append(',');
+                    }
+                    findings.append("""
+                            {
+                              "severity": "HIGH",
+                              "category": "llm_overclaim",
+                              "message": "Finding %d: this deliberately verbose semantic review finding should be bounded before it is merged into the run state so the frontend replay remains readable and stable.",
+                              "recommendation": "Keep only the highest signal reviewer findings.",
+                              "paragraphIndex": 1,
+                              "excerpt": "Cursor supports multi-file code editing [S30]."
+                            }
+                            """.formatted(i));
+                }
+                return """
+                        {
+                          "summary": "reviewed",
+                          "findings": [%s]
+                        }
+                        """.formatted(findings);
+            }
+        };
+    }
+
+    private LlmClient highClaimFindingLlmClient(String claimId) {
+        return new LlmClient() {
+            @Override
+            public boolean isAvailable() {
+                return true;
+            }
+
+            @Override
+            public String complete(ChatRequest request) {
+                return """
+                        {
+                          "summary": "reviewed",
+                          "findings": [
+                            {
+                              "severity": "HIGH",
+                              "category": "claim_weak_support",
+                              "claimId": "%s",
+                              "citationKey": "S32",
+                              "message": "Claim cites weak evidence and should be repaired by Analyst.",
+                              "recommendation": "Rebind the claim to stronger evidence or downgrade confidence."
+                            }
+                          ]
+                        }
+                        """.formatted(claimId);
             }
         };
     }

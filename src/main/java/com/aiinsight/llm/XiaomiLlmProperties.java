@@ -9,7 +9,7 @@ import java.time.Duration;
 @Getter
 @Setter
 @ConfigurationProperties(prefix = "ai-insight.llm.xiaomi")
-public class XiaomiLlmProperties {
+public class XiaomiLlmProperties implements OpenAiCompatibleLlmProperties {
 
     private String apiKey;
     private String baseUrl = "https://token-plan-cn.xiaomimimo.com/v1";

@@ -255,7 +255,7 @@ public class ResearcherNode implements AgentNode {
                         ChatMessage.user(prompt)
                 ),
                 ChatOptions.researcher()
-        ));
+        ).tagged(name().name(), "research-strategy"));
         return parseResearchPlanJson(response);
     }
 
@@ -298,7 +298,7 @@ public class ResearcherNode implements AgentNode {
                         ChatMessage.user(prompt)
                 ),
                 ChatOptions.researcher()
-        ));
+        ).tagged(name().name(), "questionnaire"));
         return readNestedOrRoot(response, "questionnaire", Questionnaire.class);
     }
 
@@ -338,7 +338,7 @@ public class ResearcherNode implements AgentNode {
                         ChatMessage.user(prompt)
                 ),
                 ChatOptions.researcher()
-        ));
+        ).tagged(name().name(), "interview-guide"));
         return readNestedOrRoot(response, "interviewGuide", InterviewGuide.class);
     }
 

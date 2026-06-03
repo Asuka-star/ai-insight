@@ -62,7 +62,7 @@ public class LlmSearchQueryPlanner {
                             ChatMessage.user(prompt(run, recollecting))
                     ),
                     ChatOptions.searchQueryPlanner()
-            ));
+            ).tagged("RESEARCHER", recollecting ? "search-query-planner-repair" : "search-query-planner"));
             List<SearchQueryPlanner.SearchQueryBatch> batches = parse(response, run);
             if (!batches.isEmpty()) {
                 AgentTraceContext.recordProcessSummary("LLM search query batches:\n" + batches.stream()

@@ -20,29 +20,56 @@ import org.springframework.web.client.RestClient;
 import org.springframework.web.reactive.function.client.WebClient;
 
 import java.net.http.HttpClient;
+import java.util.Map;
 
 @Configuration
-@EnableConfigurationProperties(XiaomiLlmProperties.class)
+@EnableConfigurationProperties({XiaomiLlmProperties.class, DoubaoLlmProperties.class})
 @Slf4j
 public class LlmConfig {
 
     @Bean
     @Primary
-    LlmClient xiaomiLlmClient(XiaomiLlmProperties properties, HttpProxyProperties proxyProperties) {
-        if (!StringUtils.hasText(properties.getApiKey())) {
+    LlmClient xiaomiLlmClient(XiaomiLlmProperties properties,
+                              DoubaoLlmProperties doubaoProperties,
+                              HttpProxyProperties proxyProperties) {
+        LlmClient defaultClient = openAiCompatibleClient("xiaomi-openai-compatible", properties, proxyProperties);
+        if (!defaultClient.isAvailable()) {
             log.warn("LLM client disabled because XIAOMI_LLM_API_KEY is empty; LLM-first agents will use deterministic fallback.");
-            return new NoopLlmClient();
+            return defaultClient;
         }
-        log.info("LLM client enabled: model={}, baseUrl={}, completionsPath={}",
-                properties.getModel(), properties.getBaseUrl(), properties.getCompletionsPath());
-        return new SpringAiLlmClient(xiaomiChatModel(properties, proxyProperties), properties);
+
+        LlmClient clarifierClient = openAiCompatibleClient("doubao-openai-compatible", doubaoProperties, proxyProperties);
+        if (!clarifierClient.isAvailable()) {
+            log.info("Clarifier small-model route disabled because DOUBAO_LLM_API_KEY or DOUBAO_LLM_ENDPOINT_ID is empty; Clarifier will use the default model.");
+            return defaultClient;
+        }
+        log.info("Clarifier small-model route enabled: agent=CLARIFIER, model={}, endpointId={}, baseUrl={}, completionsPath={}",
+                doubaoProperties.getDisplayModel(),
+                doubaoProperties.getEndpointId(),
+                doubaoProperties.getBaseUrl(),
+                doubaoProperties.getCompletionsPath());
+        return new AgentRoutingLlmClient(defaultClient, Map.of("CLARIFIER", clarifierClient));
     }
 
     LlmClient xiaomiLlmClient(XiaomiLlmProperties properties) {
-        return xiaomiLlmClient(properties, null);
+        return xiaomiLlmClient(properties, new DoubaoLlmProperties(), null);
     }
 
-    private ChatModel xiaomiChatModel(XiaomiLlmProperties properties, HttpProxyProperties proxyProperties) {
+    private LlmClient openAiCompatibleClient(String provider,
+                                             OpenAiCompatibleLlmProperties properties,
+                                             HttpProxyProperties proxyProperties) {
+        if (!StringUtils.hasText(properties.getApiKey())) {
+            return new NoopLlmClient();
+        }
+        if (!StringUtils.hasText(properties.getModel())) {
+            return new NoopLlmClient();
+        }
+        log.info("LLM client enabled: provider={}, model={}, baseUrl={}, completionsPath={}",
+                provider, properties.getModel(), properties.getBaseUrl(), properties.getCompletionsPath());
+        return new SpringAiLlmClient(openAiCompatibleChatModel(properties, proxyProperties), properties);
+    }
+
+    private ChatModel openAiCompatibleChatModel(OpenAiCompatibleLlmProperties properties, HttpProxyProperties proxyProperties) {
         HttpClient httpClient = HttpClientFactory.builder(properties.getTimeout(), proxyProperties)
                 .build();
         OpenAiApi openAiApi = OpenAiApi.builder()

@@ -13,14 +13,12 @@ public class UpdateAnalysisRequirementRequest {
     private String industry;
     private List<String> competitors = new ArrayList<>();
     private List<String> dimensions = new ArrayList<>();
-    private List<String> sourcePreferences = new ArrayList<>();
     private List<String> sourceUrls = new ArrayList<>();
     private String outputGoal;
     private Integer maxReviewReworkAttempts;
     private boolean industryProvided;
     private boolean competitorsProvided;
     private boolean dimensionsProvided;
-    private boolean sourcePreferencesProvided;
     private boolean sourceUrlsProvided;
     private boolean outputGoalProvided;
     private boolean maxReviewReworkAttemptsProvided;
@@ -38,11 +36,6 @@ public class UpdateAnalysisRequirementRequest {
     public void setDimensions(List<String> dimensions) {
         this.dimensions = dimensions == null ? new ArrayList<>() : new ArrayList<>(dimensions);
         this.dimensionsProvided = true;
-    }
-
-    public void setSourcePreferences(List<String> sourcePreferences) {
-        this.sourcePreferences = sourcePreferences == null ? new ArrayList<>() : new ArrayList<>(sourcePreferences);
-        this.sourcePreferencesProvided = true;
     }
 
     public void setSourceUrls(List<String> sourceUrls) {
@@ -70,10 +63,6 @@ public class UpdateAnalysisRequirementRequest {
 
     public boolean dimensionsProvided() {
         return dimensionsProvided;
-    }
-
-    public boolean sourcePreferencesProvided() {
-        return sourcePreferencesProvided;
     }
 
     public boolean sourceUrlsProvided() {

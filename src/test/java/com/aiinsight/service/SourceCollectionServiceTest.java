@@ -1159,6 +1159,86 @@ class SourceCollectionServiceTest {
         assertThat(run.getRecommendedActions()).anyMatch(action -> action.contains("没有形成可用网页证据"));
     }
 
+    @Test
+    void dropsLowQualitySearchDerivedSources() {
+        WebPageFetchService fetchService = new WebPageFetchService() {
+            @Override
+            public FetchedPage fetch(String url) {
+                return FetchedPage.success(
+                        url,
+                        "Demo video page",
+                        """
+                                This page contains a long transcript-like promotional description with enough text to pass
+                                basic extraction length checks, but it is still a low-quality video result and should not
+                                become fetched evidence for downstream analysis.
+                                """,
+                        "robots.txt checked: allowed for public fetch.",
+                        "video",
+                        "LOW",
+                        200,
+                        "text/html"
+                );
+            }
+        };
+        SourceCollectionService service = new SourceCollectionService(fetchService, searchProviderWithSnippet(
+                "Demo video",
+                "https://www.youtube.com/watch?v=abc123",
+                "Video walkthrough"
+        ));
+        AnalysisRun run = new AnalysisRun(new AnalysisRequirement(
+                "Analyze Claude Code",
+                "AI coding tools",
+                List.of("Claude Code"),
+                List.of("agent workflow"),
+                List.of("public_review"),
+                List.of()
+        ));
+
+        var sources = service.collect(run, false);
+
+        assertThat(sources).isEmpty();
+    }
+
+    @Test
+    void doesNotDeriveClaudeChineseLocaleOfficialFallbacks() {
+        List<String> fetchedUrls = new ArrayList<>();
+        WebPageFetchService fetchService = new WebPageFetchService() {
+            @Override
+            public FetchedPage fetch(String url) {
+                fetchedUrls.add(url);
+                if (url.equals("https://claude.com/product/claude-code")) {
+                    return FetchedPage.success(
+                            url,
+                            "Claude Code",
+                            """
+                                    Claude Code official product page describes agentic coding, terminal workflows,
+                                    enterprise development practices, documentation, security, and release context.
+                                    """,
+                            "robots.txt checked: allowed for public fetch.",
+                            "official_site",
+                            "HIGH",
+                            200,
+                            "text/html"
+                    );
+                }
+                return FetchedPage.failed(url, "simulated missing official section", "HTTP_4XX");
+            }
+        };
+        SourceCollectionService service = new SourceCollectionService(fetchService, new NoopSearchProvider());
+        AnalysisRun run = new AnalysisRun(new AnalysisRequirement(
+                "Analyze Claude Code",
+                "AI coding tools",
+                List.of("Claude Code"),
+                List.of("docs", "security", "pricing"),
+                List.of("official_site", "docs", "security", "pricing_page"),
+                List.of("https://claude.com/product/claude-code")
+        ));
+
+        service.collect(run, false);
+
+        assertThat(fetchedUrls).noneMatch(url -> url.contains("https://claude.com/cn/"));
+    }
+
     private WebPageFetchService fetchAlwaysFails() {
         return new WebPageFetchService() {
             @Override

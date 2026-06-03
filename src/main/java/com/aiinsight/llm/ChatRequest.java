@@ -15,4 +15,17 @@ public class ChatRequest {
 
     private List<ChatMessage> messages;
     private ChatOptions options;
+    private String agentName;
+    private String subtaskName;
+
+    public ChatRequest(List<ChatMessage> messages, ChatOptions options) {
+        this.messages = messages;
+        this.options = options;
+    }
+
+    public ChatRequest tagged(String agentName, String subtaskName) {
+        this.agentName = agentName;
+        this.subtaskName = subtaskName;
+        return this;
+    }
 }

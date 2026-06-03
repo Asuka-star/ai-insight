@@ -10,6 +10,7 @@ import com.aiinsight.model.enums.ArtifactType;
 import com.aiinsight.model.enums.ClaimType;
 import com.aiinsight.model.enums.ConfidenceLevel;
 import com.aiinsight.model.enums.ReviewAction;
+import com.aiinsight.model.review.ReviewRepairTask;
 import com.aiinsight.model.run.AnalysisArtifact;
 import com.aiinsight.model.run.AnalysisRequirement;
 import com.aiinsight.model.run.AnalysisRun;
@@ -94,12 +95,15 @@ public class AnalystNode implements AgentNode {
         }
         draft = sanitizeDraft(run, draft);
         List<String> citationKeys = artifactCitationKeys(run, draft);
+        List<AnalysisClaim> previousClaims = new ArrayList<>(run.getClaims());
 
         run.getClaims().clear();
         // prompt 约束最多 8 条，代码层兜底截断，防止 LLM 超量输出
         List<AnalysisClaim> boundedClaims = draft.claims().size() <= MAX_CLAIMS
                 ? draft.claims()
                 : draft.claims().subList(0, MAX_CLAIMS);
+        boundedClaims = stabilizeClaimIds(previousClaims, boundedClaims);
+        boundedClaims = applyAnalystRepairGuard(run, boundedClaims);
         run.getClaims().addAll(boundedClaims);
         run.addArtifact(new AnalysisArtifact(
                 ArtifactType.COMPETITIVE_MATRIX,
@@ -164,6 +168,10 @@ public class AnalystNode implements AgentNode {
                 8. 不要编造价格、营收、客户案例、市场份额或证据中没有的信息。
                 9. 不要把“证据不足”本身当成主要洞察；RISK 类型最多 1 条，其余优先产出有证据支撑的差异、取舍和建议。
                 10. 对已有 strong/medium 证据覆盖的维度，不要写“待验证”；应给出保守但可行动的判断。
+                11. 如果 Reviewer 修复计划包含结构化修复任务，必须逐条处理 task；不要原样保留 task.currentText 中被点名的问题结论。
+                12. 无法找到更强证据时，不要继续维护原 claim 的强判断；必须降为 LOW，并在 content 写明“证据不足/待验证”。
+                13. 如果 task 指出 citation mismatch，不要继续把同一个 citationKey 绑定到相同判断；改用更相关证据，或清空 evidenceIds 并降级。
+                14. 返工输出必须相对原 affected claim 有可见变化：改证据、改置信度、改措辞或删除/替换该 claim。
 
                 JSON 结构：
                 {
@@ -211,7 +219,7 @@ public class AnalystNode implements AgentNode {
                         ChatMessage.user(prompt)
                 ),
                 ChatOptions.analyst()
-        ));
+        ).tagged(name().name(), "claims"));
         AnalysisDraft parsed = parseAnalysisDraft(raw, context.run());
         if (parsed == null || parsed.claims().isEmpty()) {
             throw new IllegalStateException("无法解析 claims JSON");
@@ -287,6 +295,134 @@ public class AnalystNode implements AgentNode {
         }
         adjustClaimConfidence(run, claim);
         return claim;
+    }
+
+    private List<AnalysisClaim> stabilizeClaimIds(List<AnalysisClaim> previousClaims, List<AnalysisClaim> newClaims) {
+        List<AnalysisClaim> stabilized = new ArrayList<>();
+        LinkedHashSet<String> usedPreviousIds = new LinkedHashSet<>();
+        for (AnalysisClaim claim : newClaims) {
+            matchPreviousClaim(previousClaims, claim, usedPreviousIds).ifPresent(previous -> {
+                claim.setId(previous.getId());
+                usedPreviousIds.add(previous.getId());
+            });
+            stabilized.add(claim);
+        }
+        return stabilized;
+    }
+
+    private java.util.Optional<AnalysisClaim> matchPreviousClaim(List<AnalysisClaim> previousClaims,
+                                                                 AnalysisClaim claim,
+                                                                 Set<String> usedPreviousIds) {
+        String currentKey = claimContentKey(claim.getContent());
+        return previousClaims.stream()
+                .filter(previous -> !usedPreviousIds.contains(previous.getId()))
+                .filter(previous -> currentKey.equals(claimContentKey(previous.getContent()))
+                        || likelySameClaim(previous, claim))
+                .findFirst();
+    }
+
+    private boolean likelySameClaim(AnalysisClaim previous, AnalysisClaim claim) {
+        if (previous.getType() != claim.getType()) {
+            return false;
+        }
+        boolean sameCompetitor = previous.getCompetitorNames().isEmpty()
+                || claim.getCompetitorNames().isEmpty()
+                || previous.getCompetitorNames().stream().anyMatch(claim.getCompetitorNames()::contains);
+        boolean sharesEvidence = !previous.getEvidenceIds().isEmpty()
+                && previous.getEvidenceIds().stream().anyMatch(claim.getEvidenceIds()::contains);
+        return sameCompetitor && sharesEvidence && claimContentOverlap(previous.getContent(), claim.getContent()) >= 0.65;
+    }
+
+    private List<AnalysisClaim> applyAnalystRepairGuard(AnalysisRun run, List<AnalysisClaim> claims) {
+        if (run.getReviewDecision() == null
+                || run.getReviewDecision().getAction() != ReviewAction.REWORK_ANALYSIS
+                || run.getReviewDecision().getTargetAgent() != AgentName.ANALYST
+                || run.getReviewDecision().getRepairTasks().isEmpty()) {
+            return claims;
+        }
+        List<ReviewRepairTask> tasks = run.getReviewDecision().getRepairTasks().stream()
+                .filter(task -> task.getTargetAgent() == AgentName.ANALYST)
+                .toList();
+        if (tasks.isEmpty()) {
+            return claims;
+        }
+        List<AnalysisClaim> guarded = new ArrayList<>();
+        for (AnalysisClaim claim : claims) {
+            tasks.stream()
+                    .filter(task -> matchesRepairTask(claim, task))
+                    .filter(task -> repairStillUnresolved(claim, task))
+                    .findFirst()
+                    .ifPresent(task -> downgradeUnresolvedRepairClaim(claim, task));
+            guarded.add(claim);
+        }
+        return guarded;
+    }
+
+    private boolean matchesRepairTask(AnalysisClaim claim, ReviewRepairTask task) {
+        if (hasText(task.getClaimId()) && task.getClaimId().equals(claim.getId())) {
+            return true;
+        }
+        if (hasText(task.getCitationKey()) && claim.getEvidenceIds().contains(task.getCitationKey())) {
+            return true;
+        }
+        if (hasText(task.getCurrentText()) && claimContentOverlap(claim.getContent(), task.getCurrentText()) >= 0.55) {
+            return true;
+        }
+        return hasText(task.getExcerpt()) && claimContentOverlap(claim.getContent(), task.getExcerpt()) >= 0.55;
+    }
+
+    private boolean repairStillUnresolved(AnalysisClaim claim, ReviewRepairTask task) {
+        String category = normalizeLower(task.getCategory());
+        if (!isRiskyRepairCategory(category)) {
+            return false;
+        }
+        boolean stillUsesProblemCitation = hasText(task.getCitationKey())
+                && claim.getEvidenceIds().contains(task.getCitationKey());
+        boolean lacksEvidence = claim.getEvidenceIds().isEmpty();
+        boolean stillSameText = hasText(task.getCurrentText())
+                && claimContentOverlap(claim.getContent(), task.getCurrentText()) >= 0.88;
+        boolean stillSameExcerpt = hasText(task.getExcerpt())
+                && claimContentOverlap(claim.getContent(), task.getExcerpt()) >= 0.88;
+        boolean alreadyDowngraded = claim.getConfidence() == ConfidenceLevel.LOW
+                || containsUncertaintyMarker(claim.getContent());
+        if (alreadyDowngraded && !stillUsesProblemCitation) {
+            return false;
+        }
+        if (category.contains("missing") || category.contains("unsupported") || category.contains("internal_evidence")) {
+            return lacksEvidence || stillUsesProblemCitation;
+        }
+        if (category.contains("mismatch") || category.contains("citation")) {
+            return stillUsesProblemCitation || (lacksEvidence && (stillSameText || stillSameExcerpt));
+        }
+        if (category.contains("overclaim")) {
+            return !alreadyDowngraded && (stillSameText || stillSameExcerpt);
+        }
+        return lacksEvidence || stillUsesProblemCitation;
+    }
+
+    private void downgradeUnresolvedRepairClaim(AnalysisClaim claim, ReviewRepairTask task) {
+        String category = normalizeLower(task.getCategory());
+        if (!isRiskyRepairCategory(category)) {
+            return;
+        }
+        claim.setConfidence(ConfidenceLevel.LOW);
+        if (hasText(task.getCitationKey()) && claim.getEvidenceIds().contains(task.getCitationKey())) {
+            claim.setEvidenceIds(claim.getEvidenceIds().stream()
+                    .filter(evidenceId -> !task.getCitationKey().equals(evidenceId))
+                    .toList());
+        }
+        if (!containsUncertaintyMarker(claim.getContent())) {
+            claim.setContent(claim.getContent() + "（证据不足，待验证）");
+        }
+    }
+
+    private boolean isRiskyRepairCategory(String category) {
+        return category.contains("missing")
+                || category.contains("mismatch")
+                || category.contains("unsupported")
+                || category.contains("overclaim")
+                || category.contains("citation")
+                || category.contains("internal_evidence");
     }
 
     private void adjustClaimConfidence(AnalysisRun run, AnalysisClaim claim) {
@@ -472,6 +608,26 @@ public class AnalystNode implements AgentNode {
             terms.add(chineseOnly.substring(i, i + 2));
         }
         return terms;
+    }
+
+    private String claimContentKey(String text) {
+        if (!hasText(text)) {
+            return "";
+        }
+        return text.toLowerCase(Locale.ROOT)
+                .replaceAll("（证据不足，待验证）", "")
+                .replaceAll("\\(insufficient evidence; needs verification\\)", "")
+                .replaceAll("[^\\p{IsHan}a-z0-9]+", "");
+    }
+
+    private double claimContentOverlap(String left, String right) {
+        Set<String> leftTerms = termsForBinding(left);
+        Set<String> rightTerms = termsForBinding(right);
+        if (leftTerms.isEmpty() || rightTerms.isEmpty()) {
+            return 0.0;
+        }
+        long overlap = leftTerms.stream().filter(rightTerms::contains).count();
+        return overlap / (double) Math.min(leftTerms.size(), rightTerms.size());
     }
 
     private ClaimType parseClaimType(String value) {

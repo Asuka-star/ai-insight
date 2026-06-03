@@ -36,6 +36,7 @@ public class SourceCollectionService {
     private static final int SNIPPET_LENGTH = 220;
     private static final int MIN_SEARCH_FETCH_TEXT_LENGTH = 180;
     private static final int MAX_OFFICIAL_REFERENCE_SOURCES_PER_URL = 4;
+    private static final Set<String> SEARCH_DERIVED_REJECTED_TYPES = Set.of("video", "forum");
 
     private final WebPageFetchService webPageFetchService;
     private final SearchProvider searchProvider;
@@ -323,6 +324,12 @@ public class SourceCollectionService {
                         officialSeed.internalLinks(),
                         candidateGroup.paths()
                 )) {
+                    if (shouldSkipOfficialCandidateUrl(candidateUrl)) {
+                        log.debug("Official reference candidate skipped: url={}, section={}, reason=known_bad_locale_or_region_path",
+                                candidateUrl,
+                                candidateGroup.name());
+                        continue;
+                    }
                     if (!seenUrls.add(normalizeUrl(candidateUrl))) {
                         continue;
                     }
@@ -437,9 +444,28 @@ public class SourceCollectionService {
             if (StringUtils.hasText(locale)) {
                 candidates.add(origin + "/" + locale + normalizedPath);
             }
-            candidates.add(origin + "/cn" + normalizedPath);
+            if (shouldTryChineseLocaleFallback(parts.host())) {
+                candidates.add(origin + "/cn" + normalizedPath);
+            }
         }
         return new ArrayList<>(candidates);
+    }
+
+    private boolean shouldTryChineseLocaleFallback(String host) {
+        return !normalizeText(host).endsWith("claude.com");
+    }
+
+    private boolean shouldSkipOfficialCandidateUrl(String url) {
+        UrlParts parts = parseUrl(url);
+        if (parts == null) {
+            return false;
+        }
+        String host = normalizeText(parts.host());
+        String path = normalizeText(parts.path());
+        if (host.endsWith("claude.com") && path.matches("/cn/(docs|documentation|help|guide|guides|security|pricing|plans|changelog|release-notes|releases|updates)(/.*)?")) {
+            return true;
+        }
+        return path.contains("app-unavailable-in-region");
     }
 
     private boolean matchesOfficialGroupPath(String url, List<String> paths) {
@@ -1169,6 +1195,13 @@ public class SourceCollectionService {
                 if (competitorAdded >= Math.max(1, acceptedSourceBudget(run, candidate))) {
                     continue;
                 }
+                if (shouldSkipSearchCandidate(candidate)) {
+                    log.debug("Search candidate skipped before fetch: candidateId={}, url={}, sourceType={}, reason=low_value_or_unfetchable_candidate",
+                            candidate.id(),
+                            candidate.url(),
+                            candidate.sourceType());
+                    continue;
+                }
                 if (!seenUrls.add(normalizeUrl(candidate.url()))) {
                     continue;
                 }
@@ -1319,6 +1352,17 @@ public class SourceCollectionService {
             }
         }
         return false;
+    }
+
+    private boolean shouldSkipSearchCandidate(SearchCandidate candidate) {
+        if (candidate == null) {
+            return true;
+        }
+        String sourceType = normalizeText(candidate.sourceType());
+        String searchable = normalizeText(candidate.title() + " " + candidate.url() + " " + candidate.snippet());
+        return SEARCH_DERIVED_REJECTED_TYPES.contains(sourceType)
+                || isUnavailableRegionText(searchable)
+                || shouldSkipOfficialCandidateUrl(candidate.url());
     }
 
     private EvidenceSource fromSearchResult(String citationKey, SearchResult result) {
@@ -1492,7 +1536,7 @@ public class SourceCollectionService {
         if (!page.isUsable() || !StringUtils.hasText(page.getRawText())) {
             return null;
         }
-        String unusableReason = searchFetchedContentIssue(page);
+        String unusableReason = searchDerivedFetchedContentIssue(page);
         if (requireUsefulFetchedContent && unusableReason != null) {
             log.debug("Fetched search result dropped: citationKey={}, url={}, reason={}, title={}, rawTextChars={}",
                     citationKey,
@@ -1569,6 +1613,25 @@ public class SourceCollectionService {
         }
         if (text.length() < MIN_SEARCH_FETCH_TEXT_LENGTH) {
             return "thin_page_text";
+        }
+        return null;
+    }
+
+    private String searchDerivedFetchedContentIssue(WebPageFetchService.FetchedPage page) {
+        String issue = searchFetchedContentIssue(page);
+        if (issue != null) {
+            return issue;
+        }
+        String quality = normalizeText(page.getSourceQuality()).toUpperCase(Locale.ROOT);
+        if ("LOW".equals(quality) || "UNUSABLE".equals(quality)) {
+            return "low_quality_search_page";
+        }
+        String sourceType = normalizeText(page.getSourceType());
+        if (SEARCH_DERIVED_REJECTED_TYPES.contains(sourceType)) {
+            return "low_value_source_type_" + sourceType;
+        }
+        if (shouldSkipOfficialCandidateUrl(page.getUrl())) {
+            return "known_bad_locale_or_region_path";
         }
         return null;
     }

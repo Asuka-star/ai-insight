@@ -30,9 +30,9 @@ class SpringAiLlmClient implements LlmClient {
             """;
 
     private final ChatModel chatModel;
-    private final XiaomiLlmProperties properties;
+    private final OpenAiCompatibleLlmProperties properties;
 
-    SpringAiLlmClient(ChatModel chatModel, XiaomiLlmProperties properties) {
+    SpringAiLlmClient(ChatModel chatModel, OpenAiCompatibleLlmProperties properties) {
         this.chatModel = chatModel;
         this.properties = properties;
     }
@@ -55,8 +55,10 @@ class SpringAiLlmClient implements LlmClient {
         if (!hasText(content) && shouldRetryBlankLength(response, options)) {
             ChatOptions retryOptions = retryOptions(options);
             ChatRequest retryRequest = compactRetryRequest(request);
-            log.warn("LLM response blank because output reached length limit; retrying compactly: model={}, originalMaxTokens={}, retryMaxTokens={}, sendMaxTokens={}, generationMetadata={}",
+            log.warn("LLM response blank because output reached length limit; retrying compactly: model={}, agent={}, subtask={}, originalOutputBudget={}, retryOutputBudget={}, sentMaxTokens={}, generationMetadata={}",
                     properties.getModel(),
+                    agentLogValue(request),
+                    subtaskLogValue(request),
                     options.getMaxTokens(),
                     retryOptions.getMaxTokens(),
                     SEND_MAX_TOKENS,
@@ -67,16 +69,20 @@ class SpringAiLlmClient implements LlmClient {
         }
 
         if (response == null || response.getResult() == null || response.getResult().getOutput() == null) {
-            log.warn("LLM response empty: model={}, latencyMs={}, reason=response/result/output null, generationMetadata={}",
+            log.warn("LLM response empty: model={}, agent={}, subtask={}, latencyMs={}, reason=response/result/output null, generationMetadata={}",
                     properties.getModel(),
+                    agentLogValue(request),
+                    subtaskLogValue(request),
                     System.currentTimeMillis() - startedAt,
                     generationMetadata(response));
             throw new IllegalStateException("Spring AI returned an empty chat response");
         }
         if (!hasText(content)) {
             Usage usage = usage(response);
-            log.warn("LLM response blank: model={}, latencyMs={}, promptTokens={}, completionTokens={}, generationMetadata={}",
+            log.warn("LLM response blank: model={}, agent={}, subtask={}, latencyMs={}, promptTokens={}, completionTokens={}, generationMetadata={}",
                     properties.getModel(),
+                    agentLogValue(request),
+                    subtaskLogValue(request),
                     System.currentTimeMillis() - startedAt,
                     usage == null ? null : usage.getPromptTokens(),
                     usage == null ? null : usage.getCompletionTokens(),
@@ -90,15 +96,19 @@ class SpringAiLlmClient implements LlmClient {
                 usage == null ? null : usage.getPromptTokens(),
                 usage == null ? null : usage.getCompletionTokens()
         );
-        log.info("LLM response completed: model={}, latencyMs={}, promptTokens={}, completionTokens={}, generationMetadata={}",
+        log.info("LLM response completed: model={}, agent={}, subtask={}, latencyMs={}, promptTokens={}, completionTokens={}, generationMetadata={}",
                 properties.getModel(),
+                agentLogValue(request),
+                subtaskLogValue(request),
                 System.currentTimeMillis() - startedAt,
                 usage == null ? null : usage.getPromptTokens(),
                 usage == null ? null : usage.getCompletionTokens(),
                 generationMetadata(response));
         if (SEND_MAX_TOKENS && usage != null && usage.getCompletionTokens() != null && usage.getCompletionTokens() >= effectiveOptions.getMaxTokens()) {
-            log.warn("LLM response reached maxTokens: model={}, maxTokens={}, promptTokens={}, completionTokens={}, generationMetadata={}",
+            log.warn("LLM response reached maxTokens: model={}, agent={}, subtask={}, maxTokens={}, promptTokens={}, completionTokens={}, generationMetadata={}",
                     properties.getModel(),
+                    agentLogValue(request),
+                    subtaskLogValue(request),
                     effectiveOptions.getMaxTokens(),
                     usage.getPromptTokens(),
                     usage.getCompletionTokens(),
@@ -108,8 +118,15 @@ class SpringAiLlmClient implements LlmClient {
     }
 
     private ChatResponse callModel(ChatRequest request, ChatOptions options, long startedAt, int attempt) {
-        log.info("LLM request started: model={}, attempt={}, messages={}, temperature={}, maxTokens={}",
-                properties.getModel(), attempt, request.getMessages().size(), options.getTemperature(), maxTokensLogValue(options));
+        log.info("LLM request started: model={}, agent={}, subtask={}, attempt={}, messages={}, temperature={}, outputBudget={}, sentMaxTokens={}",
+                properties.getModel(),
+                agentLogValue(request),
+                subtaskLogValue(request),
+                attempt,
+                request.getMessages().size(),
+                options.getTemperature(),
+                outputBudgetLogValue(options),
+                SEND_MAX_TOKENS);
         OpenAiChatOptions.Builder optionsBuilder = OpenAiChatOptions.builder()
                 .model(properties.getModel())
                 .temperature(options.getTemperature());
@@ -120,8 +137,10 @@ class SpringAiLlmClient implements LlmClient {
         try {
             return chatModel.call(new Prompt(toSpringMessages(request.getMessages()), springAiOptions));
         } catch (RuntimeException ex) {
-            log.error("LLM request failed: model={}, attempt={}, latencyMs={}, exceptionType={}, message={}",
+            log.error("LLM request failed: model={}, agent={}, subtask={}, attempt={}, latencyMs={}, exceptionType={}, message={}",
                     properties.getModel(),
+                    agentLogValue(request),
+                    subtaskLogValue(request),
                     attempt,
                     System.currentTimeMillis() - startedAt,
                     ex.getClass().getName(),
@@ -159,14 +178,28 @@ class SpringAiLlmClient implements LlmClient {
         List<ChatMessage> messages = new ArrayList<>();
         messages.add(ChatMessage.system(COMPACT_RETRY_INSTRUCTION));
         messages.addAll(request.getMessages());
-        return new ChatRequest(messages, request.getOptions());
+        return new ChatRequest(messages, request.getOptions(), request.getAgentName(), request.getSubtaskName());
     }
 
-    private String maxTokensLogValue(ChatOptions options) {
-        if (SEND_MAX_TOKENS) {
-            return String.valueOf(options.getMaxTokens());
+    private String agentLogValue(ChatRequest request) {
+        if (request != null && hasText(request.getAgentName())) {
+            return request.getAgentName();
         }
-        return "server-default(localBudget=" + options.getMaxTokens() + ")";
+        return AgentTraceContext.current()
+                .map(trace -> trace.getAgentName() == null ? null : trace.getAgentName().name())
+                .filter(this::hasText)
+                .orElse("unknown");
+    }
+
+    private String subtaskLogValue(ChatRequest request) {
+        return request != null && hasText(request.getSubtaskName()) ? request.getSubtaskName() : "default";
+    }
+
+    private String outputBudgetLogValue(ChatOptions options) {
+        if (SEND_MAX_TOKENS) {
+            return "provider-max-tokens:" + options.getMaxTokens();
+        }
+        return "local-only:" + options.getMaxTokens();
     }
 
     private String responseText(ChatResponse response) {

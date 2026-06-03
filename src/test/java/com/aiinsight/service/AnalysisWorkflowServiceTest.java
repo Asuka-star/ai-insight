@@ -20,16 +20,19 @@ import com.aiinsight.model.enums.AgentName;
 import com.aiinsight.model.enums.AnalysisStatus;
 import com.aiinsight.model.enums.ArtifactType;
 import com.aiinsight.model.enums.ClaimType;
+import com.aiinsight.model.enums.ConfidenceLevel;
 import com.aiinsight.model.enums.ContextIntent;
 import com.aiinsight.model.enums.ReviewAction;
 import com.aiinsight.model.enums.ReviewSeverity;
 import com.aiinsight.model.enums.StepStatus;
 import com.aiinsight.model.run.AnalysisArtifact;
+import com.aiinsight.model.run.AgentStep;
 import com.aiinsight.model.run.EvidenceChunk;
 import com.aiinsight.model.run.AnalysisRequirement;
 import com.aiinsight.model.run.AnalysisRun;
 import com.aiinsight.model.run.EvidenceSource;
 import com.aiinsight.model.run.WorkflowTransition;
+import com.aiinsight.model.review.ReviewDecision;
 import com.aiinsight.model.review.ReviewFinding;
 import com.aiinsight.model.review.ReviewRepairTask;
 import com.aiinsight.model.schema.AnalysisClaim;
@@ -46,6 +49,7 @@ import com.aiinsight.service.fallback.FallbackExtractionFactory;
 import com.aiinsight.service.fallback.FallbackReportDraftFactory;
 import com.aiinsight.service.fallback.FallbackReviewReportFactory;
 import com.aiinsight.service.fallback.FallbackResearchPlanFactory;
+import com.aiinsight.workflow.AnalysisGraphState;
 import com.aiinsight.workflow.AnalysisLangGraphWorkflow;
 import com.aiinsight.workflow.WorkflowNodeExecutor;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -56,6 +60,7 @@ import org.springframework.mock.web.MockMultipartFile;
 
 import java.util.Collection;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.CancellationException;
@@ -120,7 +125,6 @@ class AnalysisWorkflowServiceTest {
         UpdateAnalysisRequirementRequest reconfirm = new UpdateAnalysisRequirementRequest();
         reconfirm.setCompetitors(withContext.getRequirement().getCompetitors());
         reconfirm.setDimensions(withContext.getRequirement().getDimensions());
-        reconfirm.setSourcePreferences(withContext.getRequirement().getSourcePreferences());
         reconfirm.setOutputGoal(withContext.getRequirement().getOutputGoal());
         service.updateRequirement(draft.getId(), reconfirm);
         var finished = service.startExecution(draft.getId());
@@ -196,14 +200,12 @@ class AnalysisWorkflowServiceTest {
         request.setIndustry("AI 文档协作");
         request.setCompetitors(List.of("Notion", "Confluence"));
         request.setDimensions(List.of("AI 搜索", "权限协作"));
-        request.setSourcePreferences(List.of("official_site", "pricing_page"));
         request.setSourceUrls(List.of("https://example.test/notion", "https://example.test/confluence"));
         request.setOutputGoal("产品规划");
         var draft = service.createDraft(request);
 
         UpdateAnalysisRequirementRequest update = new UpdateAnalysisRequirementRequest();
         update.setDimensions(List.of());
-        update.setSourcePreferences(List.of());
         update.setSourceUrls(List.of());
         update.setOutputGoal("");
         var updated = service.updateRequirement(draft.getId(), update);
@@ -211,7 +213,8 @@ class AnalysisWorkflowServiceTest {
         assertThat(updated.getRequirement().getIndustry()).isEqualTo("AI 文档协作");
         assertThat(updated.getRequirement().getCompetitors()).containsExactly("Notion", "Confluence");
         assertThat(updated.getRequirement().getDimensions()).isEmpty();
-        assertThat(updated.getRequirement().getSourcePreferences()).isEmpty();
+        assertThat(updated.getRequirement().getSourcePreferences())
+                .containsExactlyElementsOf(AnalysisRequestNormalizer.DEFAULT_SOURCES);
         assertThat(updated.getRequirement().getSourceUrls()).isEmpty();
         assertThat(updated.getRequirement().getOutputGoal()).isEmpty();
     }
@@ -2436,6 +2439,78 @@ class AnalysisWorkflowServiceTest {
     }
 
     @Test
+    void manualRerunCarriesPreviousReviewerFindingsToTargetAgent() {
+        AnalysisRunRepository repository = new TestAnalysisRunRepository();
+        AnalysisEventBroker eventBroker = new AnalysisEventBroker();
+        WorkflowNodeExecutor nodeExecutor = new WorkflowNodeExecutor(repository, eventBroker);
+        AtomicReference<ReviewDecision> analystDecision = new AtomicReference<>();
+        AgentNode analyst = new AgentNode() {
+            @Override
+            public AgentName name() {
+                return AgentName.ANALYST;
+            }
+
+            @Override
+            public String title() {
+                return "Analyst";
+            }
+
+            @Override
+            public AnalysisRun execute(AnalysisRun run) {
+                analystDecision.set(run.getReviewDecision());
+                return run;
+            }
+        };
+        AnalysisLangGraphWorkflow workflow = new AnalysisLangGraphWorkflow(
+                List.of(
+                        noopAgentNode(AgentName.RESEARCHER),
+                        noopAgentNode(AgentName.EXTRACTOR),
+                        analyst,
+                        noopAgentNode(AgentName.WRITER),
+                        noopAgentNode(AgentName.REVIEWER)
+                ),
+                nodeExecutor,
+                repository,
+                eventBroker
+        );
+        AnalysisRun run = new AnalysisRun(new AnalysisRequirement(
+                "Analyze Cursor",
+                "AI coding tools",
+                List.of("Cursor"),
+                List.of("features"),
+                List.of(),
+                List.of()
+        ));
+        ReviewFinding finding = new ReviewFinding(
+                ReviewSeverity.HIGH,
+                "claim_fact_mismatch",
+                "Claim C1 overstates the evidence from S1.",
+                "Regenerate the claim and bind only supporting evidence."
+        );
+        finding.setClaimId("C1");
+        finding.setCitationKey("S1");
+        finding.setExcerpt("Cursor has enterprise governance.");
+        run.getReviewFindings().add(finding);
+        repository.save(run);
+
+        workflow.rerunAgent(run.getId(), AgentName.ANALYST);
+
+        assertThat(analystDecision.get()).isNotNull();
+        assertThat(analystDecision.get().getAction()).isEqualTo(ReviewAction.REWORK_ANALYSIS);
+        assertThat(analystDecision.get().getTargetAgent()).isEqualTo(AgentName.ANALYST);
+        assertThat(analystDecision.get().getBlockingFindingIds()).containsExactly(finding.getId().toString());
+        assertThat(analystDecision.get().getRepairTasks())
+                .singleElement()
+                .satisfies(task -> {
+                    assertThat(task.getTargetAgent()).isEqualTo(AgentName.ANALYST);
+                    assertThat(task.getFindingId()).isEqualTo(finding.getId().toString());
+                    assertThat(task.getClaimId()).isEqualTo("C1");
+                    assertThat(task.getCitationKey()).isEqualTo("S1");
+                    assertThat(task.getInstruction()).contains("Claim C1 overstates");
+                });
+    }
+
+    @Test
     void rerunAgentIsBlockedWhileWorkflowIsRunning() {
         AnalysisWorkflowService service = newService(new TaskExecutorAdapter(command -> {
         }));
@@ -2537,6 +2612,65 @@ class AnalysisWorkflowServiceTest {
         assertThat(completed.getTraces())
                 .singleElement()
                 .satisfies(trace -> assertThat(trace.getStatus()).isEqualTo(StepStatus.SUCCEEDED));
+    }
+
+    @Test
+    void lateClarifierResultDoesNotOverwriteUserProgress() {
+        AnalysisRunRepository repository = new CopyingTestAnalysisRunRepository();
+        WorkflowNodeExecutor executor = new WorkflowNodeExecutor(repository, new AnalysisEventBroker());
+        AnalysisRequirement requirement = new AnalysisRequirement();
+        requirement.setOriginalPrompt("Analyze Notion and Confluence.");
+        requirement.setIndustry("AI document collaboration");
+        AnalysisRun run = new AnalysisRun(requirement);
+        run.setStatus(AnalysisStatus.AWAITING_CONFIRMATION);
+        repository.save(run);
+
+        AgentNode lateClarifier = new AgentNode() {
+            @Override
+            public AgentName name() {
+                return AgentName.CLARIFIER;
+            }
+
+            @Override
+            public String title() {
+                return "Late Clarifier";
+            }
+
+            @Override
+            public AnalysisRun execute(AnalysisRun staleRun) {
+                AnalysisRun latest = repository.findById(staleRun.getId()).orElseThrow();
+                latest.setStatus(AnalysisStatus.RUNNING);
+                latest.getClarificationDraft().setConfirmed(true);
+                latest.getEvidenceSources().add(new EvidenceSource("S1", "User note", "", "User-added evidence"));
+                AgentStep researcherStep = new AgentStep(AgentName.RESEARCHER, "Researcher already started");
+                researcherStep.start("user started the main workflow");
+                latest.getSteps().add(researcherStep);
+                repository.save(latest);
+
+                staleRun.getRequirement().setIndustry("Late LLM scope");
+                staleRun.addArtifact(new AnalysisArtifact(
+                        ArtifactType.CLARIFICATION_BRIEF,
+                        "Late clarification",
+                        "Late clarification content",
+                        List.of()
+                ));
+                return staleRun;
+            }
+        };
+
+        AnalysisRun completed = executor.executeNode(run.getId(), lateClarifier, "slow clarification");
+
+        assertThat(completed.getStatus()).isEqualTo(AnalysisStatus.RUNNING);
+        assertThat(completed.getRequirement().getIndustry()).isEqualTo("AI document collaboration");
+        assertThat(completed.getEvidenceSources())
+                .singleElement()
+                .satisfies(source -> assertThat(source.getCitationKey()).isEqualTo("S1"));
+        assertThat(completed.getSteps())
+                .extracting(AgentStep::getAgentName)
+                .contains(AgentName.CLARIFIER, AgentName.RESEARCHER);
+        assertThat(completed.getArtifacts())
+                .anySatisfy(artifact -> assertThat(artifact.getType()).isEqualTo(ArtifactType.CLARIFICATION_BRIEF));
+        assertThat(repository.findById(run.getId()).orElseThrow().getStatus()).isEqualTo(AnalysisStatus.RUNNING);
     }
 
     @Test
@@ -2916,6 +3050,60 @@ class AnalysisWorkflowServiceTest {
                 });
         assertThat(run.getRecommendedActions())
                 .anyMatch(action -> action.contains("返工验证模式") && action.contains("降为质量提醒"));
+    }
+
+    @Test
+    void reviewerKeepsDeterministicNewHighFindingsBlockingDuringRepairVerification() {
+        LlmClient reviewerLlm = new LlmClient() {
+            @Override
+            public boolean isAvailable() {
+                return true;
+            }
+
+            @Override
+            public String complete(com.aiinsight.llm.ChatRequest request) {
+                return """
+                        {
+                          "summary": "No semantic findings.",
+                          "findings": []
+                        }
+                        """;
+            }
+        };
+        AnalysisRun run = new AnalysisRun();
+        AnalysisClaim claim = new AnalysisClaim();
+        claim.setId("C-RULE-1");
+        claim.setType(ClaimType.OPPORTUNITY);
+        claim.setContent("Cursor is clearly the strongest workflow benchmark.");
+        claim.setConfidence(ConfidenceLevel.HIGH);
+        claim.setEvidenceIds(List.of());
+        run.getClaims().add(claim);
+        run.addArtifact(new AnalysisArtifact(
+                ArtifactType.REPORT_DRAFT,
+                "draft",
+                "Cursor is clearly the strongest workflow benchmark [S1].",
+                List.of()
+        ));
+        run.getReviewDecision().setAction(ReviewAction.REVISE_REPORT);
+        run.getReviewDecision().setTargetAgent(AgentName.WRITER);
+        ReviewRepairTask previousTask = new ReviewRepairTask();
+        previousTask.setTargetAgent(AgentName.WRITER);
+        previousTask.setCategory("llm_overclaim");
+        previousTask.setParagraphIndex(1);
+        previousTask.setExcerpt("old paragraph text");
+        run.getReviewDecision().getRepairTasks().add(previousTask);
+
+        new ReviewerNode(new CitationCoverageEvaluator(), reviewerLlm, new FallbackReviewReportFactory()).execute(run);
+
+        assertThat(run.getReviewDecision().getAction()).isEqualTo(ReviewAction.REWORK_ANALYSIS);
+        assertThat(run.getReviewFindings())
+                .anySatisfy(finding -> {
+                    assertThat(finding.getCategory()).isEqualTo("claim_missing_evidence");
+                    assertThat(finding.getSeverity()).isEqualTo(ReviewSeverity.HIGH);
+                    assertThat(finding.getMessage()).doesNotContain("返工验证模式");
+                });
+        assertThat(run.getRecommendedActions())
+                .noneMatch(action -> action.contains("降为质量提醒"));
     }
 
     @Test
@@ -3358,6 +3546,157 @@ class AnalysisWorkflowServiceTest {
         java.lang.reflect.Method method = node.getClass().getDeclaredMethod("repairPlanBlock", AnalysisRun.class);
         method.setAccessible(true);
         return (String) method.invoke(node, run);
+    }
+
+    @Test
+    void reviewGateStopsAutomaticReworkWhenBlockersRemainUnchanged() throws Exception {
+        AnalysisRunRepository repository = new TestAnalysisRunRepository();
+        AnalysisEventBroker eventBroker = new AnalysisEventBroker();
+        WorkflowNodeExecutor nodeExecutor = new WorkflowNodeExecutor(repository, eventBroker);
+        AnalysisLangGraphWorkflow workflow = new AnalysisLangGraphWorkflow(
+                List.of(
+                        noopAgentNode(AgentName.RESEARCHER),
+                        noopAgentNode(AgentName.EXTRACTOR),
+                        noopAgentNode(AgentName.ANALYST),
+                        noopAgentNode(AgentName.WRITER),
+                        noopAgentNode(AgentName.REVIEWER)
+                ),
+                nodeExecutor,
+                repository,
+                eventBroker
+        );
+        AnalysisRun run = new AnalysisRun(new AnalysisRequirement(
+                "Analyze AI coding tools",
+                "AI coding",
+                List.of("Cursor"),
+                List.of("evidence coverage"),
+                List.of("official_site"),
+                List.of()
+        ));
+        ReviewFinding finding = new ReviewFinding(
+                ReviewSeverity.HIGH,
+                "claim_evidence_mismatch",
+                "Claim is not supported by the cited source.",
+                "Rebind the claim to valid evidence or downgrade it."
+        );
+        finding.setClaimId("C-1");
+        finding.setCitationKey("S1");
+        run.getReviewFindings().add(finding);
+        run.getReviewDecision().setAction(ReviewAction.REWORK_ANALYSIS);
+        run.getReviewDecision().setTargetAgent(AgentName.ANALYST);
+        run.getReviewDecision().setReason("repair claim evidence");
+        run.getReviewDecision().setBlockingFindingIds(List.of(finding.getId().toString()));
+        WorkflowTransition previous = new WorkflowTransition(
+                "REVIEW_GATE",
+                AgentName.ANALYST.name(),
+                "reanalyze",
+                ReviewAction.REWORK_ANALYSIS,
+                "previous repair",
+                0
+        );
+        String signature = "claim_evidence_mismatch|claim=C-1|fact=-|chunk=-|citation=S1|paragraph=-|excerpt=-";
+        previous.setBlockingFindingSignatures(List.of(signature));
+        run.getWorkflowTransitions().add(previous);
+        repository.save(run);
+
+        java.lang.reflect.Method method = AnalysisLangGraphWorkflow.class.getDeclaredMethod("routeFromReview", AnalysisGraphState.class);
+        method.setAccessible(true);
+        @SuppressWarnings("unchecked")
+        Map<String, Object> result = (Map<String, Object>) method.invoke(workflow, new AnalysisGraphState(Map.of(
+                AnalysisGraphState.RUN_ID, run.getId(),
+                AnalysisGraphState.REWORK_ATTEMPTS, 1,
+                AnalysisGraphState.FEEDBACK_ROUTE, "reanalyze"
+        )));
+
+        assertThat(result.get(AnalysisGraphState.FEEDBACK_ROUTE)).isEqualTo("finish");
+        assertThat(result.get(AnalysisGraphState.REWORK_ATTEMPTS)).isEqualTo(1);
+        AnalysisRun saved = repository.findById(run.getId()).orElseThrow();
+        assertThat(saved.getWorkflowTransitions()).last().satisfies(transition -> {
+            assertThat(transition.getRoute()).isEqualTo("finish");
+            assertThat(transition.getResolutionStatus()).isEqualTo("PARTIALLY_UNRESOLVED");
+            assertThat(transition.getUnresolvedFindingSignatures()).contains(signature);
+        });
+        assertThat(saved.getRecommendedActions()).anyMatch(action -> action.contains("blocking findings remained unchanged"));
+    }
+
+    @Test
+    void nodeExecutorRecordsRepairDeltaWhenTargetAgentDoesNotChangeOutput() {
+        AnalysisRunRepository repository = new TestAnalysisRunRepository();
+        WorkflowNodeExecutor nodeExecutor = new WorkflowNodeExecutor(repository, new AnalysisEventBroker());
+        AnalysisRun run = new AnalysisRun(new AnalysisRequirement(
+                "Analyze Cursor",
+                "AI coding tools",
+                List.of("Cursor"),
+                List.of("features"),
+                List.of("official_site"),
+                List.of()
+        ));
+        AnalysisClaim claim = new AnalysisClaim();
+        claim.setId("C-1");
+        claim.setType(ClaimType.OPPORTUNITY);
+        claim.setContent("Cursor has a strong workflow claim.");
+        claim.setEvidenceIds(List.of("S1"));
+        run.getClaims().add(claim);
+        run.getReviewDecision().setAction(ReviewAction.REWORK_ANALYSIS);
+        run.getReviewDecision().setTargetAgent(AgentName.ANALYST);
+        repository.save(run);
+
+        AnalysisRun saved = nodeExecutor.executeNode(run.getId(), noopAgentNode(AgentName.ANALYST), "review repair");
+
+        assertThat(saved.getRecommendedActions())
+                .anyMatch(action -> action.contains("返工没有产生实质变化"));
+        assertThat(saved.getTraces())
+                .anyMatch(trace -> trace.getProcessSnapshot() != null
+                        && trace.getProcessSnapshot().contains("Review repair delta")
+                        && trace.getProcessSnapshot().contains("changed=false"));
+    }
+
+    @Test
+    void nodeExecutorDoesNotFailCompletedNodeWhenReadablePauseIsInterrupted() {
+        AnalysisRunRepository repository = new TestAnalysisRunRepository();
+        WorkflowNodeExecutor nodeExecutor = new WorkflowNodeExecutor(repository, new AnalysisEventBroker());
+        AnalysisRun run = new AnalysisRun(new AnalysisRequirement(
+                "Analyze Cursor",
+                "AI coding tools",
+                List.of("Cursor"),
+                List.of("features"),
+                List.of("official_site"),
+                List.of()
+        ));
+        repository.save(run);
+
+        try {
+            Thread.currentThread().interrupt();
+            AnalysisRun saved = nodeExecutor.executeNode(run.getId(), noopAgentNode(AgentName.EXTRACTOR), "manual rerun");
+
+            assertThat(saved.getSteps())
+                    .last()
+                    .satisfies(step -> {
+                        assertThat(step.getAgentName()).isEqualTo(AgentName.EXTRACTOR);
+                        assertThat(step.getStatus()).isEqualTo(StepStatus.SUCCEEDED);
+                    });
+        } finally {
+            Thread.interrupted();
+        }
+    }
+
+    private AgentNode noopAgentNode(AgentName agentName) {
+        return new AgentNode() {
+            @Override
+            public AgentName name() {
+                return agentName;
+            }
+
+            @Override
+            public String title() {
+                return agentName.name();
+            }
+
+            @Override
+            public AnalysisRun execute(AnalysisRun run) {
+                return run;
+            }
+        };
     }
 
     private LlmClient noopLlmClient() {

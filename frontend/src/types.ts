@@ -37,7 +37,6 @@ export interface CreateAnalysisRunRequest {
   industry?: string;
   competitors: string[];
   dimensions: string[];
-  sourcePreferences: string[];
   sourceUrls?: string[];
   outputGoal?: string;
   maxReviewReworkAttempts?: number;
@@ -89,7 +88,6 @@ export interface UpdateAnalysisRequirementRequest {
   industry?: string;
   competitors: string[];
   dimensions: string[];
-  sourcePreferences: string[];
   sourceUrls?: string[];
   outputGoal?: string;
   maxReviewReworkAttempts?: number;

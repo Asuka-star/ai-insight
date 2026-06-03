@@ -1,5 +1,5 @@
-import { useRef, useState } from "react";
-import { Clock, FileOutput, Gauge, MessageSquareText, X } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { ChevronDown, Clock, FileOutput, Gauge, MessageSquareText, X } from "lucide-react";
 import type { ReactNode } from "react";
 import type { AgentName, AgentTrace } from "../types";
 import { AGENT_LABELS } from "../constants";
@@ -29,6 +29,8 @@ const TEXT = {
   fullPrompt: "Prompt",
   rawOutput: "\u6a21\u578b\u8f93\u51fa",
   error: "\u5f02\u5e38",
+  expandTrace: "\u5c55\u5f00 Trace",
+  collapseTrace: "\u6536\u8d77 Trace",
   expand: "\u5c55\u5f00\u5b8c\u6574\u5185\u5bb9",
   collapse: "\u6536\u8d77"
 };
@@ -37,6 +39,26 @@ const DISCLOSURE_PREVIEW_CHARS = 180;
 
 export function TraceDrawer({ agent, traces, onClose }: TraceDrawerProps) {
   const closeStartedOnOverlayRef = useRef(false);
+  const latestTraceId = useMemo(() => latestTraceIdFrom(traces), [traces]);
+  const [expandedTraceIds, setExpandedTraceIds] = useState<Set<string>>(() => (
+    latestTraceId ? new Set([latestTraceId]) : new Set()
+  ));
+
+  useEffect(() => {
+    setExpandedTraceIds(latestTraceId ? new Set([latestTraceId]) : new Set());
+  }, [agent, latestTraceId]);
+
+  const toggleTrace = useCallback((traceId: string) => {
+    setExpandedTraceIds((current) => {
+      const next = new Set(current);
+      if (next.has(traceId)) {
+        next.delete(traceId);
+      } else {
+        next.add(traceId);
+      }
+      return next;
+    });
+  }, []);
 
   if (!agent) return null;
 
@@ -64,11 +86,16 @@ export function TraceDrawer({ agent, traces, onClose }: TraceDrawerProps) {
             <X size={17} />
           </button>
         </div>
-        <div className="drawer-section">
+        <div className="drawer-section trace-drawer-section">
           <h3>{TEXT.traceTitle}</h3>
           {traces.length ? (
             traces.map((trace) => (
-              <TraceCard trace={trace} key={trace.id} />
+              <TraceCard
+                trace={trace}
+                expanded={expandedTraceIds.has(trace.id)}
+                onToggle={() => toggleTrace(trace.id)}
+                key={trace.id}
+              />
             ))
           ) : (
             <p className="muted-text">{TEXT.noTrace}</p>
@@ -79,35 +106,49 @@ export function TraceDrawer({ agent, traces, onClose }: TraceDrawerProps) {
   );
 }
 
-function TraceCard({ trace }: { trace: AgentTrace }) {
+function TraceCard({ trace, expanded, onToggle }: { trace: AgentTrace; expanded: boolean; onToggle: () => void }) {
   const status = trace.status ?? "trace";
   const startedAt = trace.startedAt ?? trace.createdAt;
   const completedAt = trace.completedAt;
+  const totalTokens = trace.totalTokens ?? ((trace.promptTokens ?? 0) + (trace.completionTokens ?? 0));
 
   return (
     <div className="trace-card">
-      <div className="trace-card-header">
-        <strong>{trace.modelName || TEXT.unknownModel}</strong>
+      <button
+        className="trace-card-toggle"
+        type="button"
+        onClick={onToggle}
+        aria-expanded={expanded}
+        aria-label={expanded ? TEXT.collapseTrace : TEXT.expandTrace}
+      >
+        <ChevronDown className={expanded ? "expanded" : ""} size={16} />
+        <span className="trace-card-title">
+          <strong>{trace.modelName || TEXT.unknownModel}</strong>
+          <small>
+            {formatTime(startedAt)} - {formatTime(completedAt)} · {totalTokens} tokens · {formatLatencySeconds(trace.latencyMs)}
+          </small>
+        </span>
         <span className={trace.fallbackUsed ? "trace-pill fallback" : "trace-pill"}>
           {trace.fallbackUsed ? "fallback" : status}
         </span>
-      </div>
-      <div className="trace-metrics">
-        <TraceMetric icon={<MessageSquareText size={13} />} label="Prompt" value={trace.promptTokens ?? 0} />
-        <TraceMetric icon={<FileOutput size={13} />} label={TEXT.output} value={trace.completionTokens ?? 0} />
-        <TraceMetric icon={<Gauge size={13} />} label={TEXT.total} value={trace.totalTokens ?? ((trace.promptTokens ?? 0) + (trace.completionTokens ?? 0))} />
-        <TraceMetric icon={<Clock size={13} />} label={TEXT.latency} value={formatLatencySeconds(trace.latencyMs)} />
-      </div>
-      <TraceField icon={<Gauge size={14} />} label={TEXT.decision} value={trace.decisionSummary} />
-      {trace.processSnapshot ? <TraceDisclosure title={TEXT.processSnapshot} value={trace.processSnapshot} /> : null}
-      <TraceDisclosure title={TEXT.inputSnapshot} value={trace.inputSnapshot} />
-      <TraceDisclosure title={TEXT.outputSnapshot} value={trace.outputSnapshot} />
-      <TraceDisclosure title={TEXT.fullPrompt} value={trace.prompt} />
-      <TraceDisclosure title={TEXT.rawOutput} value={trace.rawModelOutput} />
-      {trace.errorMessage ? <TraceField label={TEXT.error} value={trace.errorMessage} danger /> : null}
-      <small>
-        {formatTime(startedAt)} - {formatTime(completedAt)}
-      </small>
+      </button>
+      {expanded ? (
+        <div className="trace-card-body">
+          <div className="trace-metrics">
+            <TraceMetric icon={<MessageSquareText size={13} />} label="Prompt" value={trace.promptTokens ?? 0} />
+            <TraceMetric icon={<FileOutput size={13} />} label={TEXT.output} value={trace.completionTokens ?? 0} />
+            <TraceMetric icon={<Gauge size={13} />} label={TEXT.total} value={totalTokens} />
+            <TraceMetric icon={<Clock size={13} />} label={TEXT.latency} value={formatLatencySeconds(trace.latencyMs)} />
+          </div>
+          <TraceField icon={<Gauge size={14} />} label={TEXT.decision} value={trace.decisionSummary} />
+          {trace.processSnapshot ? <TraceDisclosure title={TEXT.processSnapshot} value={trace.processSnapshot} /> : null}
+          <TraceDisclosure title={TEXT.inputSnapshot} value={trace.inputSnapshot} />
+          <TraceDisclosure title={TEXT.outputSnapshot} value={trace.outputSnapshot} />
+          <TraceDisclosure title={TEXT.fullPrompt} value={trace.prompt} />
+          <TraceDisclosure title={TEXT.rawOutput} value={trace.rawModelOutput} />
+          {trace.errorMessage ? <TraceField label={TEXT.error} value={trace.errorMessage} danger /> : null}
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -171,4 +212,14 @@ function truncatePreview(value: string, maxChars: number) {
     return value;
   }
   return `${value.slice(0, Math.max(0, maxChars - 1))}\u2026`;
+}
+
+function latestTraceIdFrom(traces: AgentTrace[]) {
+  return traces.reduce<{ id: string; time: number } | null>((latest, trace) => {
+    const time = Date.parse(trace.completedAt ?? trace.startedAt ?? trace.createdAt ?? "") || 0;
+    if (!latest || time >= latest.time) {
+      return { id: trace.id, time };
+    }
+    return latest;
+  }, null)?.id;
 }

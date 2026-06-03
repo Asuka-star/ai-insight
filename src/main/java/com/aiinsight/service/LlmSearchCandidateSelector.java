@@ -51,7 +51,7 @@ public class LlmSearchCandidateSelector {
                             ChatMessage.user(prompt(run, candidateCollection))
                     ),
                     ChatOptions.researcher()
-            ));
+            ).tagged("RESEARCHER", "search-candidate-selector"));
             Selection selection = parse(response, candidateCollection);
             if (selection.selectedCandidateIds().isEmpty()) {
                 return Selection.ruleFallback("llm_selected_no_valid_candidates");

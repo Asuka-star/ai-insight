@@ -8,6 +8,8 @@ import com.aiinsight.llm.LlmClient;
 import com.aiinsight.model.enums.AgentName;
 import com.aiinsight.model.enums.ArtifactType;
 import com.aiinsight.model.enums.FactType;
+import com.aiinsight.model.enums.ReviewAction;
+import com.aiinsight.model.review.ReviewRepairTask;
 import com.aiinsight.model.run.AnalysisArtifact;
 import com.aiinsight.model.run.AnalysisRun;
 import com.aiinsight.model.run.EvidenceChunk;
@@ -33,6 +35,7 @@ import static com.aiinsight.util.AgentUtils.safeList;
 import static com.aiinsight.util.AgentUtils.textOrDash;
 import static com.aiinsight.util.AgentUtils.textOrDefault;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+import com.fasterxml.jackson.annotation.JsonSetter;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -54,6 +57,13 @@ import java.util.stream.Collectors;
 @Component
 @Slf4j
 public class ExtractorNode implements AgentNode {
+
+    private static final int MAX_FALLBACK_EVIDENCE_SOURCES_FOR_PROMPT = 16;
+    private static final int MAX_RAG_COMPETITOR_DIMENSION_PAIRS = 18;
+    private static final int MAX_RAG_EVIDENCE_PACK_CHARS = 16_000;
+    private static final int RAG_CHUNKS_PER_DIMENSION = 2;
+    private static final int MAX_FALLBACK_RAW_TEXT_CHARS = 300;
+    private static final int MAX_RAG_CHUNK_TEXT_CHARS = 420;
 
     private final LlmClient llmClient;
     private final FallbackExtractionFactory fallbackExtractionFactory;
@@ -595,6 +605,8 @@ public class ExtractorNode implements AgentNode {
                 6. features、pricing、personas、strengths、weaknesses 都必须绑定 evidenceIds；只能使用证据片段里出现过的 S 编号。
                 7. Extractor 只抽事实，不要写“建议”“机会”“风险”“应该”等分析性结论。
                 8. 证据包可能包含 S1-C2 这样的 chunkKey，但 JSON evidenceIds 只能使用 S1 这样的来源编号。
+                9. 如果处于复核修复模式，必须优先处理 repairTasks 指向的 fact/chunk/citation；不能原样保留 currentText 中被 Reviewer 指出的问题。
+                10. 无法用证据支撑的字段写“待验证”，不要把错误 fact 继续放入明确事实字段。
 
                 profile 字段：
                 {
@@ -620,9 +632,13 @@ public class ExtractorNode implements AgentNode {
 
                 证据片段索引：
                 %s
+
+                复核修复任务：
+                %s
                 """.formatted(
                 run.getRequirement().getCompetitors(),
-                evidenceBlock(run)
+                evidenceBlock(run),
+                repairPlanBlock(run)
         );
         String raw = llmClient.complete(new ChatRequest(
                 List.of(
@@ -630,13 +646,55 @@ public class ExtractorNode implements AgentNode {
                         ChatMessage.user(prompt)
                 ),
                 ChatOptions.extractor()
-        ));
+        ).tagged(name().name(), "profile-extraction"));
         List<CompetitorProfile> fallbackProfiles = fallbackExtractionFactory.buildProfiles(run);
         List<CompetitorProfile> llmProfiles = parseProfiles(raw, run, fallbackProfiles);
         if (llmProfiles.isEmpty()) {
             throw new IllegalStateException("模型未返回可用 profiles");
         }
         return llmProfiles;
+    }
+
+    private String repairPlanBlock(AnalysisRun run) {
+        if (run.getReviewDecision() == null
+                || run.getReviewDecision().getAction() != ReviewAction.REWORK_ANALYSIS
+                || run.getReviewDecision().getTargetAgent() != AgentName.EXTRACTOR) {
+            return "当前不是 Extractor 复核修复模式。";
+        }
+        String instructions = run.getReviewDecision().getRepairInstructions().isEmpty()
+                ? "暂无具体修复指令。"
+                : run.getReviewDecision().getRepairInstructions().stream()
+                .map(instruction -> "- " + instruction)
+                .collect(Collectors.joining("\n"));
+        String tasks = run.getReviewDecision().getRepairTasks().stream()
+                .filter(task -> task.getTargetAgent() == AgentName.EXTRACTOR)
+                .map(this::repairTaskLine)
+                .collect(Collectors.joining("\n"));
+        return """
+                修复范围：%s
+                修复指令：
+                %s
+                结构化修复任务：
+                %s
+                """.formatted(
+                nullToEmpty(run.getReviewDecision().getRepairScopeSummary()),
+                instructions,
+                tasks.isBlank() ? "暂无结构化修复任务。" : tasks
+        );
+    }
+
+    private String repairTaskLine(ReviewRepairTask task) {
+        return "- action=%s fact=%s chunk=%s claim=%s citation=%s currentText=%s instruction=%s expectedFix=%s criteria=%s".formatted(
+                nullToEmpty(task.getAction()),
+                nullToEmpty(task.getFactId()),
+                nullToEmpty(task.getChunkKey()),
+                nullToEmpty(task.getClaimId()),
+                nullToEmpty(task.getCitationKey()),
+                nullToEmpty(task.getCurrentText()),
+                nullToEmpty(task.getInstruction()),
+                nullToEmpty(task.getExpectedFix()),
+                nullToEmpty(task.getAcceptanceCriteria())
+        );
     }
 
     private List<CompetitorProfile> parseProfiles(String raw, AnalysisRun run, List<CompetitorProfile> fallbackProfiles) {
@@ -977,7 +1035,7 @@ public class ExtractorNode implements AgentNode {
             return pack;
         }
         return run.getEvidenceSources().stream()
-                .limit(24)
+                .limit(MAX_FALLBACK_EVIDENCE_SOURCES_FOR_PROMPT)
                 .map(source -> """
                         [%s] title=%s | type=%s | quality=%s
                         snippet=%s
@@ -988,7 +1046,7 @@ public class ExtractorNode implements AgentNode {
                         source.getSourceType(),
                         source.getSourceQuality(),
                         abbreviate(source.getSnippet(), 320),
-                        abbreviate(source.getRawText(), 500)
+                        abbreviate(source.getRawText(), MAX_FALLBACK_RAW_TEXT_CHARS)
                 ))
                 .collect(Collectors.joining("\n"));
     }
@@ -1004,7 +1062,7 @@ public class ExtractorNode implements AgentNode {
                         competitor + " " + dimension,
                         competitor,
                         dimension,
-                        3
+                        RAG_CHUNKS_PER_DIMENSION
                 );
                 if (chunks.isEmpty()) {
                     continue;
@@ -1018,7 +1076,7 @@ public class ExtractorNode implements AgentNode {
                     pack.append(formatChunk(chunk)).append("\n");
                 }
                 pairCount++;
-                if (pairCount >= 30 || pack.length() > 24_000) {
+                if (pairCount >= MAX_RAG_COMPETITOR_DIMENSION_PAIRS || pack.length() > MAX_RAG_EVIDENCE_PACK_CHARS) {
                     return pack.toString();
                 }
             }
@@ -1027,7 +1085,7 @@ public class ExtractorNode implements AgentNode {
             return pack.toString();
         }
         return run.getEvidenceChunks().stream()
-                .limit(24)
+                .limit(MAX_FALLBACK_EVIDENCE_SOURCES_FOR_PROMPT)
                 .map(this::formatChunk)
                 .collect(Collectors.joining("\n"));
     }
@@ -1066,7 +1124,7 @@ public class ExtractorNode implements AgentNode {
                 textOrDash(chunk.getSourceAuthority()),
                 textOrDash(chunk.getSourceQuality()),
                 chunk.getScore(),
-                abbreviate(chunk.getText(), 620)
+                abbreviate(chunk.getText(), MAX_RAG_CHUNK_TEXT_CHARS)
         );
     }
 
@@ -1237,9 +1295,14 @@ public class ExtractorNode implements AgentNode {
     @JsonIgnoreProperties(ignoreUnknown = true)
     private static class PricingDraft {
         public String strategySummary;
-        public Boolean hasFreePlan;
+        private Boolean hasFreePlan;
         public List<PricingPlanDraft> plans = List.of();
         public List<String> evidenceIds = List.of();
+
+        @JsonSetter("hasFreePlan")
+        public void setHasFreePlan(JsonNode value) {
+            this.hasFreePlan = flexibleBoolean(value);
+        }
     }
 
     @JsonIgnoreProperties(ignoreUnknown = true)
@@ -1261,5 +1324,32 @@ public class ExtractorNode implements AgentNode {
         public List<String> painPoints = List.of();
         public List<String> buyingConcerns = List.of();
         public List<String> evidenceIds = List.of();
+    }
+
+    private static Boolean flexibleBoolean(JsonNode value) {
+        if (value == null || value.isNull() || value.isMissingNode()) {
+            return null;
+        }
+        if (value.isBoolean()) {
+            return value.asBoolean();
+        }
+        if (value.isNumber()) {
+            return value.asInt() != 0;
+        }
+        if (!value.isTextual()) {
+            return null;
+        }
+        String normalized = value.asText("").trim().toLowerCase(Locale.ROOT);
+        if (normalized.isBlank()
+                || List.of("unknown", "n/a", "na", "null", "待验证", "待驗證", "未验证", "未驗證", "不确定", "不確定").contains(normalized)) {
+            return null;
+        }
+        if (List.of("true", "yes", "y", "1", "有", "是", "支持", "包含").contains(normalized)) {
+            return true;
+        }
+        if (List.of("false", "no", "n", "0", "无", "無", "否", "不支持", "没有", "沒有").contains(normalized)) {
+            return false;
+        }
+        return null;
     }
 }
