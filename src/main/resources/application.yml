@@ -80,5 +80,7 @@ ai-insight:
     large-batch-competitor-threshold: ${AI_INSIGHT_LARGE_BATCH_COMPETITOR_THRESHOLD:12}
     hard-max-search-sources: ${AI_INSIGHT_HARD_MAX_SEARCH_SOURCES:24}
     max-parallel-batches: ${AI_INSIGHT_MAX_PARALLEL_SEARCH_BATCHES:8}
+    max-parallel-searches: ${AI_INSIGHT_MAX_PARALLEL_SEARCHES:4}
+    max-parallel-fetches: ${AI_INSIGHT_MAX_PARALLEL_FETCHES:8}
   workflow:
     max-review-rework-attempts: ${AI_INSIGHT_MAX_REVIEW_REWORK_ATTEMPTS:0}

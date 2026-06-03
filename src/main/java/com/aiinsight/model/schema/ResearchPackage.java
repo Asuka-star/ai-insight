@@ -19,6 +19,7 @@ public class ResearchPackage {
     private List<String> missingEvidenceTypes = new ArrayList<>();
     private List<String> actualSearchQueries = new ArrayList<>();
     private ResearchPlan researchPlan = new ResearchPlan();
+    private ResearchCollectionPlan researchCollectionPlan = new ResearchCollectionPlan();
     private List<InterviewInsight> interviewInsights = new ArrayList<>();
     private Instant collectedAt = Instant.now();
 }

@@ -26,6 +26,10 @@ import com.aiinsight.model.run.EvidenceChunk;
 import com.aiinsight.model.run.EvidenceSource;
 import com.aiinsight.model.run.UserProvidedEvidence;
 import com.aiinsight.model.schema.CompetitorProfile;
+import com.aiinsight.model.schema.ResearchCollectionPlan;
+import com.aiinsight.model.schema.ResearchCoverageGap;
+import com.aiinsight.model.schema.ResearchRepairTarget;
+import com.aiinsight.model.schema.ResearchSubtask;
 import com.aiinsight.repository.AnalysisRunRepository;
 import com.aiinsight.service.fallback.FallbackClarificationDraftFactory;
 import com.aiinsight.workflow.AnalysisLangGraphWorkflow;
@@ -275,6 +279,62 @@ public class AnalysisWorkflowService {
 
     public Collection<EvidenceChunk> retrieveEvidence(UUID runId, String query, Integer topK) {
         return evidenceRetrievalService.retrieve(get(runId), query, topK);
+    }
+
+    public ResearchCollectionPlan researchCollectionPlan(UUID runId) {
+        AnalysisRun run = get(runId);
+        return run.getResearchPackage().getResearchCollectionPlan();
+    }
+
+    public Collection<ResearchSubtask> researchSubtasks(UUID runId,
+                                                        String status,
+                                                        String competitorName,
+                                                        String dimension) {
+        ResearchCollectionPlan plan = researchCollectionPlan(runId);
+        if (plan == null || plan.getSubtasks() == null) {
+            return List.of();
+        }
+        return plan.getSubtasks().stream()
+                .filter(subtask -> !StringUtils.hasText(status)
+                        || subtask.getStatus() != null && status.equalsIgnoreCase(subtask.getStatus().name()))
+                .filter(subtask -> !StringUtils.hasText(competitorName)
+                        || containsIgnoreCase(subtask.getCompetitorName(), competitorName))
+                .filter(subtask -> !StringUtils.hasText(dimension)
+                        || containsIgnoreCase(subtask.getDimension(), dimension))
+                .toList();
+    }
+
+    public Collection<ResearchCoverageGap> researchCoverageGaps(UUID runId,
+                                                                String competitorName,
+                                                                String dimension) {
+        ResearchCollectionPlan plan = researchCollectionPlan(runId);
+        if (plan == null || plan.getCoverageGaps() == null) {
+            return List.of();
+        }
+        return plan.getCoverageGaps().stream()
+                .filter(gap -> !StringUtils.hasText(competitorName)
+                        || containsIgnoreCase(gap.getCompetitorName(), competitorName))
+                .filter(gap -> !StringUtils.hasText(dimension)
+                        || containsIgnoreCase(gap.getDimension(), dimension))
+                .toList();
+    }
+
+    public Collection<ResearchRepairTarget> researchRepairTargets(UUID runId,
+                                                                  String competitorName,
+                                                                  String dimension,
+                                                                  String status) {
+        ResearchCollectionPlan plan = researchCollectionPlan(runId);
+        if (plan == null || plan.getRepairTargets() == null) {
+            return List.of();
+        }
+        return plan.getRepairTargets().stream()
+                .filter(target -> !StringUtils.hasText(competitorName)
+                        || containsIgnoreCase(target.getCompetitorName(), competitorName))
+                .filter(target -> !StringUtils.hasText(dimension)
+                        || containsIgnoreCase(target.getDimension(), dimension))
+                .filter(target -> !StringUtils.hasText(status)
+                        || status.equalsIgnoreCase(target.getStatus()))
+                .toList();
     }
 
     public AnalysisRun updateRequirement(UUID runId, UpdateAnalysisRequirementRequest request) {
@@ -767,5 +827,11 @@ public class AnalysisWorkflowService {
         } catch (NumberFormatException ex) {
             return 0;
         }
+    }
+
+    private boolean containsIgnoreCase(String text, String pattern) {
+        return text != null
+                && pattern != null
+                && text.toLowerCase(java.util.Locale.ROOT).contains(pattern.toLowerCase(java.util.Locale.ROOT));
     }
 }

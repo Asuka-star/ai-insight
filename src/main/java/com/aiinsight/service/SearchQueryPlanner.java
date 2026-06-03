@@ -2,11 +2,14 @@ package com.aiinsight.service;
 
 import com.aiinsight.model.run.AnalysisRequirement;
 import com.aiinsight.model.run.AnalysisRun;
+import com.aiinsight.model.enums.ReviewAction;
+import com.aiinsight.model.review.ReviewRepairTask;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 import org.springframework.util.StringUtils;
 
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
@@ -46,7 +49,14 @@ public class SearchQueryPlanner {
 
     public List<SearchQueryBatch> planByCompetitor(AnalysisRun run, boolean recollecting) {
         AnalysisRequirement requirement = run.getRequirement();
+        if (requirement == null || requirement.getCompetitors() == null || requirement.getCompetitors().isEmpty()) {
+            return List.of();
+        }
         String domain = domainTerm(requirement);
+        List<SearchQueryBatch> repairBatches = targetedRepairBatches(run, recollecting, domain);
+        if (!repairBatches.isEmpty()) {
+            return repairBatches;
+        }
         List<String> targetedEvidenceTypes = targetedEvidenceTypes(run, recollecting);
         List<SearchQueryBatch> batches = new ArrayList<>();
         for (String competitor : requirement.getCompetitors()) {
@@ -77,7 +87,7 @@ public class SearchQueryPlanner {
             if (shouldCollectFeedback(requirement, recollecting)) {
                 addQuery(queries, competitor, "independent user reviews customer feedback", domain);
             }
-            for (String sourcePreference : requirement.getSourcePreferences()) {
+            for (String sourcePreference : nullToEmpty(requirement.getSourcePreferences())) {
                 addSourcePreferenceQuery(queries, competitor, sourcePreference, domain);
                 if (queries.size() >= properties.maxSearchQueriesPerCompetitor()) {
                     break;
@@ -85,7 +95,7 @@ public class SearchQueryPlanner {
             }
             // 官方和权威主题先占住基础名额，防止用户维度过多时把官网、价格页、发布记录挤掉。
             addDefaultAuthorityQueries(queries, competitor, domain);
-            for (String dimension : requirement.getDimensions()) {
+            for (String dimension : nullToEmpty(requirement.getDimensions())) {
                 if (StringUtils.hasText(dimension)) {
                     addQuery(queries, competitor, dimension, domain);
                 }
@@ -101,6 +111,71 @@ public class SearchQueryPlanner {
             }
         }
         return batches;
+    }
+
+    private List<SearchQueryBatch> targetedRepairBatches(AnalysisRun run, boolean recollecting, String domain) {
+        if (!recollecting || run.getReviewDecision() == null
+                || run.getReviewDecision().getAction() != ReviewAction.RECOLLECT_EVIDENCE
+                || run.getReviewDecision().getRepairTasks() == null
+                || run.getReviewDecision().getRepairTasks().isEmpty()) {
+            return List.of();
+        }
+        LinkedHashMap<String, Set<String>> queriesByCompetitor = new LinkedHashMap<>();
+        for (ReviewRepairTask task : run.getReviewDecision().getRepairTasks()) {
+            String competitor = StringUtils.hasText(task.getCompetitorName())
+                    ? task.getCompetitorName().trim()
+                    : firstMentionedCompetitor(run.getRequirement(), repairTaskText(task));
+            if (!StringUtils.hasText(competitor)) {
+                continue;
+            }
+            Set<String> queries = queriesByCompetitor.computeIfAbsent(competitor, ignored -> new LinkedHashSet<>());
+            if (task.getQueries() != null && !task.getQueries().isEmpty()) {
+                task.getQueries().stream()
+                        .filter(StringUtils::hasText)
+                        .map(String::trim)
+                        .forEach(queries::add);
+            }
+            List<String> sourcePreferences = task.getSourcePreferences() == null || task.getSourcePreferences().isEmpty()
+                    ? task.getRequiredEvidenceTypes()
+                    : task.getSourcePreferences();
+            for (String sourcePreference : nullToEmpty(sourcePreferences)) {
+                addSourcePreferenceQuery(queries, competitor, sourcePreference, domain);
+                if (queries.size() >= properties.maxSearchQueriesPerCompetitor()) {
+                    break;
+                }
+            }
+            if (StringUtils.hasText(task.getDimension()) && queries.size() < properties.maxSearchQueriesPerCompetitor()) {
+                addQuery(queries, competitor, task.getDimension(), domain);
+            }
+        }
+        return queriesByCompetitor.entrySet().stream()
+                .filter(entry -> !entry.getValue().isEmpty())
+                .map(entry -> new SearchQueryBatch(
+                        entry.getKey(),
+                        entry.getValue().stream().limit(properties.maxSearchQueriesPerCompetitor()).toList()
+                ))
+                .toList();
+    }
+
+    private String firstMentionedCompetitor(AnalysisRequirement requirement, String text) {
+        if (requirement == null || requirement.getCompetitors() == null) {
+            return "";
+        }
+        return requirement.getCompetitors().stream()
+                .filter(StringUtils::hasText)
+                .filter(competitor -> containsIgnoreCase(text, competitor))
+                .findFirst()
+                .orElse("");
+    }
+
+    private String repairTaskText(ReviewRepairTask task) {
+        return "%s %s %s %s %s".formatted(
+                task.getInstruction(),
+                task.getExpectedFix(),
+                task.getAcceptanceCriteria(),
+                task.getExcerpt(),
+                task.getCurrentText()
+        );
     }
 
     private List<String> targetedEvidenceTypes(AnalysisRun run, boolean recollecting) {
@@ -197,7 +272,7 @@ public class SearchQueryPlanner {
     }
 
     private boolean mentionsAny(List<String> values, String... patterns) {
-        return values.stream().anyMatch(value -> containsAny(value, patterns));
+        return nullToEmpty(values).stream().anyMatch(value -> containsAny(value, patterns));
     }
 
     private boolean containsAny(String text, String... patterns) {
@@ -211,5 +286,9 @@ public class SearchQueryPlanner {
 
     private boolean containsIgnoreCase(String text, String pattern) {
         return text != null && pattern != null && text.toLowerCase(Locale.ROOT).contains(pattern.toLowerCase(Locale.ROOT));
+    }
+
+    private List<String> nullToEmpty(List<String> values) {
+        return values == null ? List.of() : values;
     }
 }

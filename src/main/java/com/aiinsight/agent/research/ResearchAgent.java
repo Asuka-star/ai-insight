@@ -86,7 +86,8 @@ public class ResearchAgent {
     private ResearchAgentPlan plan(AnalysisRun run, boolean recollecting) {
         List<SearchQueryPlanner.SearchQueryBatch> searchQueryBatches = llmSearchQueryPlanner.plan(run, recollecting);
         List<ResearchAction> actions = new ArrayList<>();
-        if (run.getRequirement() != null && !run.getRequirement().getSourceUrls().isEmpty()) {
+        if (run.getRequirement() != null && run.getRequirement().getSourceUrls() != null
+                && !run.getRequirement().getSourceUrls().isEmpty()) {
             actions.add(new ResearchAction(
                     "WebFetchTool",
                     "Fetch user-provided public URLs and promote usable pages to citation sources.",
@@ -264,19 +265,19 @@ public class ResearchAgent {
                                          boolean recollecting,
                                          List<String> missingEvidenceTypes,
                                          List<EvidenceSource> collectedSources) {
+        if (collectedSources.isEmpty()) {
+            return new ResearchAgentDecision(
+                    "ASK_USER",
+                    "No usable source was collected; downstream agents need user-provided URLs, documents, interviews, or surveys.",
+                    List.of("public_web")
+            );
+        }
         if (!missingEvidenceTypes.isEmpty()) {
             String action = recollecting ? "ASK_USER_OR_CONTINUE_WITH_LIMITATIONS" : "CONTINUE_WITH_GAPS";
             return new ResearchAgentDecision(
                     action,
                     "Evidence collection finished but some evidence types still require public sources or user-provided material.",
                     missingEvidenceTypes
-            );
-        }
-        if (collectedSources.isEmpty()) {
-            return new ResearchAgentDecision(
-                    "ASK_USER",
-                    "No usable source was collected; downstream agents need user-provided URLs, documents, interviews, or surveys.",
-                    List.of("public_web")
             );
         }
         return new ResearchAgentDecision(
@@ -344,11 +345,13 @@ public class ResearchAgent {
     }
 
     private List<String> missingEvidenceTypes(AnalysisRun run, List<EvidenceSource> collectedSources) {
-        List<String> missing = new ArrayList<>();
-        if (!hasEvidenceType(collectedSources, "pricing")) {
+        Set<String> missing = new LinkedHashSet<>();
+        List<String> competitors = competitors(run);
+        if (!hasEvidenceTypeForAllRequiredCompetitors(collectedSources, competitors, "pricing")) {
             missing.add("pricing_page");
         }
-        if (!hasEvidenceType(collectedSources, "feedback") && !hasEvidenceType(collectedSources, "review")) {
+        if (!hasEvidenceTypeForAllRequiredCompetitors(collectedSources, competitors, "feedback")
+                && !hasEvidenceTypeForAllRequiredCompetitors(collectedSources, competitors, "review")) {
             missing.add("user_review");
         }
         if (needsSurveyResearch(run) && !hasEvidenceType(collectedSources, "survey")) {
@@ -357,27 +360,79 @@ public class ResearchAgent {
         if (needsInterviewResearch(run) && !hasEvidenceType(collectedSources, "interview")) {
             missing.add("interview_note");
         }
-        return missing;
+        return new ArrayList<>(missing);
     }
 
     private boolean needsSurveyResearch(AnalysisRun run) {
+        if (run.getRequirement() == null) {
+            return false;
+        }
         return mentionsAny(run.getRequirement().getDimensions(), "调研", "问卷", "survey")
                 || mentionsAny(run.getRequirement().getSourcePreferences(), "survey", "问卷", "调研");
     }
 
     private boolean needsInterviewResearch(AnalysisRun run) {
+        if (run.getRequirement() == null) {
+            return false;
+        }
         return mentionsAny(run.getRequirement().getDimensions(), "访谈", "interview")
                 || mentionsAny(run.getRequirement().getSourcePreferences(), "interview", "访谈");
     }
 
-    private boolean hasEvidenceType(List<EvidenceSource> sources, String keyword) {
+    private List<String> competitors(AnalysisRun run) {
+        if (run.getRequirement() == null || run.getRequirement().getCompetitors() == null) {
+            return List.of();
+        }
+        return run.getRequirement().getCompetitors().stream()
+                .filter(StringUtils::hasText)
+                .map(String::trim)
+                .toList();
+    }
+
+    private boolean hasEvidenceTypeForAllRequiredCompetitors(List<EvidenceSource> sources,
+                                                             List<String> competitors,
+                                                             String keyword) {
+        if (competitors == null || competitors.isEmpty()) {
+            return hasEvidenceType(sources, keyword);
+        }
+        if (competitors.size() == 1) {
+            return hasEvidenceType(sources, keyword);
+        }
+        return competitors.stream()
+                .allMatch(competitor -> hasEvidenceTypeForCompetitor(sources, keyword, competitor));
+    }
+
+    private boolean hasEvidenceTypeForCompetitor(List<EvidenceSource> sources, String keyword, String competitor) {
         return sources.stream().anyMatch(source ->
-                containsIgnoreCase(source.getSourceType(), keyword)
-                        || containsIgnoreCase(source.getTitle(), keyword)
-                        || containsIgnoreCase(source.getComplianceNote(), keyword));
+                hasEvidenceType(source, keyword) && evidenceMentionsCompetitor(source, competitor));
+    }
+
+    private boolean hasEvidenceType(List<EvidenceSource> sources, String keyword) {
+        return sources.stream().anyMatch(source -> hasEvidenceType(source, keyword));
+    }
+
+    private boolean hasEvidenceType(EvidenceSource source, String keyword) {
+        return containsIgnoreCase(source.getSourceType(), keyword)
+                || containsIgnoreCase(source.getTitle(), keyword)
+                || containsIgnoreCase(source.getUrl(), keyword)
+                || containsIgnoreCase(source.getSnippet(), keyword)
+                || containsIgnoreCase(source.getComplianceNote(), keyword);
+    }
+
+    private boolean evidenceMentionsCompetitor(EvidenceSource source, String competitor) {
+        if (!StringUtils.hasText(competitor)) {
+            return true;
+        }
+        return containsIgnoreCase(source.getTitle(), competitor)
+                || containsIgnoreCase(source.getUrl(), competitor)
+                || containsIgnoreCase(source.getSnippet(), competitor)
+                || containsIgnoreCase(source.getRawText(), competitor);
     }
 
     private boolean mentionsAny(List<String> values, String... patterns) {
+        if (values == null || values.isEmpty()) {
+            return false;
+        }
         return values.stream().anyMatch(value -> {
             for (String pattern : patterns) {
                 if (containsIgnoreCase(value, pattern)) {

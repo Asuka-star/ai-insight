@@ -1,6 +1,7 @@
 package com.aiinsight.workflow;
 
 import com.aiinsight.agent.AgentNode;
+import com.aiinsight.dto.ResearchCollectionEvent;
 import com.aiinsight.exception.RunNotFoundException;
 import com.aiinsight.model.enums.AgentName;
 import com.aiinsight.model.enums.AnalysisStatus;
@@ -70,6 +71,7 @@ public class WorkflowNodeExecutor {
             addTraceIfAbsent(run, trace);
             repository.save(run);
             eventBroker.publish(run, "agent_succeeded", node.name() + " succeeded");
+            publishResearchCollectionEvent(run, node);
             log.info("Agent node completed: runId={}, agent={}, stepId={}, status={}, fallbackUsed={}, modelName={}, latencyMs={}, evidenceSources={}, claims={}, artifacts={}, findings={}",
                     run.getId(),
                     node.name(),
@@ -324,6 +326,25 @@ public class WorkflowNodeExecutor {
         } catch (InterruptedException ex) {
             Thread.currentThread().interrupt();
             throw new IllegalStateException("Analysis workflow interrupted", ex);
+        }
+    }
+
+    private void publishResearchCollectionEvent(AnalysisRun run, AgentNode node) {
+        if (run.getResearchPackage() == null || run.getResearchPackage().getResearchCollectionPlan() == null) {
+            return;
+        }
+        if (node.name() == AgentName.RESEARCHER) {
+            eventBroker.publishPayload(
+                    run,
+                    "research.collection.plan.updated",
+                    ResearchCollectionEvent.of(run.getId(), "research.collection.plan.updated", "Research collection plan updated", run.getResearchPackage().getResearchCollectionPlan())
+            );
+        } else if (node.name() == AgentName.REVIEWER) {
+            eventBroker.publishPayload(
+                    run,
+                    "research.repair.targets.updated",
+                    ResearchCollectionEvent.of(run.getId(), "research.repair.targets.updated", "Research repair targets updated", run.getResearchPackage().getResearchCollectionPlan())
+            );
         }
     }
 }

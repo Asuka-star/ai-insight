@@ -281,15 +281,122 @@ export interface ReviewRepairTask {
   expectedFix?: string;
   acceptanceCriteria?: string;
   requiredEvidenceTypes?: string[];
+  competitorName?: string;
+  dimension?: string;
+  sourcePreferences?: string[];
+  queries?: string[];
 }
 
 export interface ResearchPackage {
   sources: EvidenceSource[];
   missingEvidenceTypes: string[];
   actualSearchQueries?: string[];
+  researchCollectionPlan?: ResearchCollectionPlan;
   researchPlan?: ResearchPlan;
   interviewInsights?: InterviewInsight[];
   collectedAt?: string;
+}
+
+export interface ResearchCollectionPlan {
+  id?: string;
+  runId?: string;
+  goal?: string;
+  competitors?: string[];
+  dimensions?: string[];
+  subtasks?: ResearchSubtask[];
+  candidateUrls?: CandidateUrl[];
+  evidenceBudgets?: EvidenceBudget[];
+  coverageGaps?: ResearchCoverageGap[];
+  repairTargets?: ResearchRepairTarget[];
+  leadResearchPlan?: LeadResearchPlan;
+  planSource?: string;
+  createdAt?: string;
+}
+
+export interface LeadResearchPlan {
+  id?: string;
+  runId?: string;
+  planner?: string;
+  objective?: string;
+  focusAreas?: string[];
+  rationale?: string[];
+  recommendedSourceTypes?: string[];
+  repairPriorities?: string[];
+  createdAt?: string;
+}
+
+export interface ResearchSubtask {
+  id?: string;
+  runId?: string;
+  competitorName?: string;
+  dimension?: string;
+  queries?: string[];
+  sourcePreferences?: string[];
+  status?: string;
+  priority?: string;
+  attempt?: number;
+  candidateUrlCount?: number;
+  fetchedPageCount?: number;
+  acceptedEvidenceCount?: number;
+  failureReason?: string;
+  searchLatencyMs?: number;
+  fetchLatencyMs?: number;
+  ragLatencyMs?: number;
+  startedAt?: string;
+  finishedAt?: string;
+}
+
+export interface CandidateUrl {
+  id?: string;
+  runId?: string;
+  subtaskId?: string;
+  candidateId?: string;
+  url?: string;
+  normalizedUrl?: string;
+  title?: string;
+  snippet?: string;
+  sourceProvider?: string;
+  sourceTypeHint?: string;
+  searchScore?: number;
+  duplicate?: boolean;
+  duplicateOf?: string;
+  rejectionReason?: string;
+}
+
+export interface EvidenceBudget {
+  competitorName?: string;
+  dimension?: string;
+  minOfficialSources?: number;
+  minThirdPartySources?: number;
+  minRagChunks?: number;
+  maxAcceptedSources?: number;
+}
+
+export interface ResearchCoverageGap {
+  id?: string;
+  runId?: string;
+  competitorName?: string;
+  dimension?: string;
+  missingSourceTypes?: string[];
+  existingEvidenceCount?: number;
+  requiredEvidenceCount?: number;
+  reason?: string;
+  repairRecommended?: boolean;
+}
+
+export interface ResearchRepairTarget {
+  id?: string;
+  runId?: string;
+  coverageGapId?: string;
+  findingId?: string;
+  repairTaskId?: string;
+  competitorName?: string;
+  dimension?: string;
+  sourcePreferences?: string[];
+  queries?: string[];
+  reason?: string;
+  priority?: string;
+  status?: string;
 }
 
 export interface ResearchPlan {

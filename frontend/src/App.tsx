@@ -33,6 +33,7 @@ import { StatusBadge } from "./components/StatusBadge";
 import { AgentTimeline } from "./components/AgentTimeline";
 import { EvidencePanel } from "./components/EvidencePanel";
 import { ReviewPanel } from "./components/ReviewPanel";
+import { ResearchCollectionPanel } from "./components/ResearchCollectionPanel";
 import { CollapsiblePanel } from "./components/CollapsiblePanel";
 import { TraceDrawer } from "./components/TraceDrawer";
 import { ScopeConfirmationPanel } from "./components/ScopeConfirmationPanel";
@@ -43,7 +44,7 @@ import { DeleteHistoryDialog } from "./components/DeleteHistoryDialog";
 import { ResourcePackDrawer } from "./components/ResourcePackDrawer";
 
 type MainView = "dag" | "report" | "schema" | "matrix" | "versions";
-type RightPanelId = "timeline" | "evidence" | "review" | "metrics";
+type RightPanelId = "timeline" | "collection" | "evidence" | "review" | "metrics";
 
 const MIN_LEFT_RAIL_WIDTH = 240;
 const MAX_LEFT_RAIL_WIDTH = 420;
@@ -106,6 +107,7 @@ export function App() {
   const [mainView, setMainView] = useState<MainView>("dag");
   const [collapsedRightPanels, setCollapsedRightPanels] = useState<Record<RightPanelId, boolean>>({
     timeline: false,
+    collection: false,
     evidence: false,
     review: false,
     metrics: true
@@ -313,6 +315,8 @@ export function App() {
       "agent_rerun_started",
       "agent_rerun_completed",
       "agent_rerun_failed",
+      "research.collection.plan.updated",
+      "research.repair.targets.updated",
       "review_rework_started",
       "review_rework_completed",
       "run_cancelled",
@@ -1172,6 +1176,12 @@ export function App() {
               pendingClarification={isCreating}
             />
           </CollapsiblePanel>
+
+          <ResearchCollectionPanel
+            plan={run?.researchPackage?.researchCollectionPlan}
+            collapsed={collapsedRightPanels.collection}
+            onToggle={() => toggleRightPanel("collection")}
+          />
 
           <EvidencePanel
             sources={run?.evidenceSources ?? []}

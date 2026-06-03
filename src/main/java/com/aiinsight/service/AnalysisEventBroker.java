@@ -57,9 +57,16 @@ public class AnalysisEventBroker {
 
     public void publish(AnalysisRun run, String type, String message) {
         RunEvent event = RunEvent.of(run.getId(), type, message);
-        UUID runId = run.getId();
+        publish(run.getId(), event.getType(), event);
+    }
+
+    public void publishPayload(AnalysisRun run, String type, Object payload) {
+        publish(run.getId(), type, payload);
+    }
+
+    private void publish(UUID runId, String type, Object payload) {
         emitters.getOrDefault(runId, List.of()).forEach(emitter -> {
-            if (!send(emitter, event)) {
+            if (!send(emitter, type, payload)) {
                 remove(runId, emitter);
             }
         });

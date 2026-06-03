@@ -15,6 +15,7 @@ import com.aiinsight.llm.ChatOptions;
 import com.aiinsight.llm.ChatRequest;
 import com.aiinsight.llm.LlmClient;
 import com.aiinsight.service.CitationCoverageEvaluator;
+import com.aiinsight.service.ResearchCoverageService;
 import com.aiinsight.service.fallback.FallbackReviewReportFactory;
 import com.aiinsight.agent.AgentNode;
 import com.aiinsight.observability.AgentTraceContext;
@@ -37,6 +38,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 import org.springframework.util.StringUtils;
 
@@ -72,6 +74,14 @@ public class ReviewerNode implements AgentNode {
     private final LlmClient llmClient;
     private final FallbackReviewReportFactory fallbackReviewReportFactory;
     private final ObjectMapper objectMapper = new ObjectMapper();
+    private ResearchCoverageService researchCoverageService = new ResearchCoverageService();
+
+    @Autowired(required = false)
+    public void setResearchCoverageService(ResearchCoverageService researchCoverageService) {
+        if (researchCoverageService != null) {
+            this.researchCoverageService = researchCoverageService;
+        }
+    }
 
     @Override
     public AgentName name() {
@@ -123,6 +133,8 @@ public class ReviewerNode implements AgentNode {
         }
         applyRepairVerificationScope(run, previousDecision);
         run.setReviewDecision(buildDecision(run));
+        researchCoverageService.enrichRepairTasks(run);
+        researchCoverageService.refreshRepairTargets(run);
         String content = StringUtils.hasText(semanticReviewContent)
                 ? semanticReviewContent + "\n\n" + fallbackReviewReportFactory.build(run)
                 : fallbackReviewReportFactory.build(run);

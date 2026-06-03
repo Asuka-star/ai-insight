@@ -1566,7 +1566,7 @@ class AnalysisWorkflowServiceTest {
     }
 
     @Test
-    void researcherFallsBackToOriginalSearchWhenSelectedCandidatesUnderfillEvidence() {
+    void researcherBackfillsFromCandidatePoolBeforeRerunningSearch() {
         AtomicInteger searchCalls = new AtomicInteger();
         LlmClient autonomousResearchLlm = new LlmClient() {
             @Override
@@ -1678,16 +1678,210 @@ class AnalysisWorkflowServiceTest {
 
         var result = researchAgent.run(run);
 
-        assertThat(searchCalls).hasValue(2);
+        assertThat(searchCalls).hasValue(1);
         assertThat(result.evidenceSources())
                 .extracting(EvidenceSource::getUrl)
                 .contains(
                         "https://candidate.example.test/page-a",
                         "https://candidate.example.test/page-c",
-                        "https://candidate.example.test/page-d",
-                        "https://candidate.example.test/page-e"
+                        "https://candidate.example.test/page-d"
                 )
-                .doesNotContain("https://candidate.example.test/page-b");
+                .doesNotContain("https://candidate.example.test/page-b", "https://candidate.example.test/page-e");
+    }
+
+    @Test
+    void researcherOnlyFetchesSelectedCandidateWhenSelectionSatisfiesBudget() {
+        LlmClient autonomousResearchLlm = new LlmClient() {
+            @Override
+            public boolean isAvailable() {
+                return true;
+            }
+
+            @Override
+            public String complete(com.aiinsight.llm.ChatRequest request) {
+                String prompt = request.getMessages().get(1).getContent();
+                if (prompt.contains("Select which search-result pages")) {
+                    return """
+                            {
+                              "strategy": "Only the specific implementation page is worth fetching.",
+                              "selected": [
+                                {"id": "C2", "reason": "Specific implementation details."}
+                              ]
+                            }
+                            """;
+                }
+                return """
+                        {
+                          "batches": [
+                            {
+                              "competitor": "Cursor",
+                              "queries": [
+                                {
+                                  "query": "Cursor implementation evidence",
+                                  "evidenceType": "article",
+                                  "purpose": "Find implementation evidence",
+                                  "priority": "HIGH"
+                                }
+                              ]
+                            }
+                          ]
+                        }
+                        """;
+            }
+        };
+        SearchProvider searchProvider = new SearchProvider() {
+            @Override
+            public boolean isAvailable() {
+                return true;
+            }
+
+            @Override
+            public List<SearchResult> search(String query, int count) {
+                return List.of(
+                        new SearchResult("Cursor generic SEO overview", "https://candidate.example.test/page-a", "Generic overview.", query, 1),
+                        new SearchResult("Cursor implementation details", "https://candidate.example.test/page-b", "Specific implementation details.", query, 2)
+                );
+            }
+        };
+        SourceCollectionProperties properties = new SourceCollectionProperties();
+        properties.setMinSearchSources(1);
+        properties.setSmallBatchSearchSourcesPerCompetitor(1);
+        SourceCollectionService sourceCollectionService = new SourceCollectionService(
+                fetchUsefulPages(),
+                searchProvider,
+                new SearchQueryPlanner(),
+                properties
+        );
+        ResearchAgent researchAgent = new ResearchAgent(
+                sourceCollectionService,
+                new EvidenceChunkService(),
+                EvidenceEmbeddingService.disabled(),
+                new LlmSearchQueryPlanner(autonomousResearchLlm, new ObjectMapper()),
+                new LlmSearchCandidateSelector(autonomousResearchLlm, new ObjectMapper())
+        );
+        AnalysisRun run = new AnalysisRun(new AnalysisRequirement(
+                "Analyze Cursor implementation.",
+                "AI coding tools",
+                List.of("Cursor"),
+                List.of("implementation"),
+                List.of("article"),
+                List.of()
+        ));
+
+        var result = researchAgent.run(run);
+
+        assertThat(result.evidenceSources())
+                .extracting(EvidenceSource::getUrl)
+                .contains("https://candidate.example.test/page-b")
+                .doesNotContain("https://candidate.example.test/page-a");
+    }
+
+    @Test
+    void researcherAsksUserWhenNoUsableSourcesAreCollected() {
+        SourceCollectionService sourceCollectionService = new SourceCollectionService(fetchAlwaysFails(), new NoopSearchProvider());
+        ResearchAgent researchAgent = new ResearchAgent(
+                sourceCollectionService,
+                new EvidenceChunkService(),
+                EvidenceEmbeddingService.disabled(),
+                new LlmSearchQueryPlanner(noopLlmClient(), new ObjectMapper()),
+                new LlmSearchCandidateSelector(noopLlmClient(), new ObjectMapper())
+        );
+        AnalysisRun run = new AnalysisRun(new AnalysisRequirement(
+                "Analyze UnknownDoc.",
+                "AI documents",
+                List.of("UnknownDoc"),
+                List.of("pricing"),
+                List.of("pricing_page"),
+                List.of()
+        ));
+
+        var result = researchAgent.run(run);
+
+        assertThat(result.evidenceSources()).isEmpty();
+        assertThat(result.decision().action()).isEqualTo("ASK_USER");
+        assertThat(result.decision().reason()).contains("No usable source");
+    }
+
+    @Test
+    void researcherKeepsCompetitorSpecificEvidenceGaps() {
+        SourceCollectionService sourceCollectionService = new SourceCollectionService(fetchAlwaysFails(), new NoopSearchProvider());
+        ResearchAgent researchAgent = new ResearchAgent(
+                sourceCollectionService,
+                new EvidenceChunkService(),
+                EvidenceEmbeddingService.disabled(),
+                new LlmSearchQueryPlanner(noopLlmClient(), new ObjectMapper()),
+                new LlmSearchCandidateSelector(noopLlmClient(), new ObjectMapper())
+        );
+        AnalysisRun run = new AnalysisRun(new AnalysisRequirement(
+                "Compare Notion and Confluence pricing.",
+                "AI documents",
+                List.of("Notion", "Confluence"),
+                List.of("pricing"),
+                List.of("pricing_page"),
+                List.of()
+        ));
+        run.getEvidenceSources().add(new EvidenceSource(
+                "S1",
+                "Notion pricing",
+                "https://notion.example.test/pricing",
+                "pricing_page",
+                "FETCHED",
+                "LIVE_FETCHED",
+                "Notion pricing page.",
+                "Notion pricing page.",
+                "test evidence"
+        ));
+
+        var result = researchAgent.run(run);
+
+        assertThat(result.missingEvidenceTypes()).contains("pricing_page");
+    }
+
+    @Test
+    void searchCandidateSelectorHandlesMissingRequirement() {
+        AtomicReference<String> capturedPrompt = new AtomicReference<>();
+        LlmClient selectionLlm = new LlmClient() {
+            @Override
+            public boolean isAvailable() {
+                return true;
+            }
+
+            @Override
+            public String complete(com.aiinsight.llm.ChatRequest request) {
+                capturedPrompt.set(request.getMessages().get(1).getContent());
+                return """
+                        {
+                          "strategy": "select one",
+                          "selected": [{"id": "C1", "reason": "usable"}]
+                        }
+                        """;
+            }
+        };
+        AnalysisRun run = new AnalysisRun();
+        run.setRequirement(null);
+        SourceCollectionService.SearchCandidateCollection candidates = new SourceCollectionService.SearchCandidateCollection(
+                List.of(),
+                List.of(new SourceCollectionService.SearchCandidate(
+                        "C1",
+                        "Cursor",
+                        "Cursor docs",
+                        1,
+                        "Cursor docs",
+                        "https://cursor.example.test/docs",
+                        "Official docs.",
+                        "docs",
+                        10,
+                        1
+                )),
+                List.of(),
+                true,
+                1
+        );
+
+        var selection = new LlmSearchCandidateSelector(selectionLlm, new ObjectMapper()).select(run, candidates);
+
+        assertThat(selection.selectedCandidateIds()).containsExactly("C1");
+        assertThat(capturedPrompt.get()).contains("Topic: unspecified", "Industry: unspecified");
     }
 
     @Test

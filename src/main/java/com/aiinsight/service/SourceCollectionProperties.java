@@ -19,6 +19,8 @@ public class SourceCollectionProperties {
     private int largeBatchCompetitorThreshold = 12;
     private int hardMaxSearchSources = 24;
     private int maxParallelBatches = 8;
+    private int maxParallelSearches = 4;
+    private int maxParallelFetches = 8;
 
     int maxResultsPerQuery() {
         return clamp(maxResultsPerQuery, 1, 5);
@@ -46,6 +48,14 @@ public class SourceCollectionProperties {
 
     int maxParallelBatches() {
         return clamp(maxParallelBatches, 1, 12);
+    }
+
+    int maxParallelSearches() {
+        return clamp(maxParallelSearches, 1, 12);
+    }
+
+    int maxParallelFetches() {
+        return clamp(maxParallelFetches, 1, 16);
     }
 
     private int clamp(int value, int min, int max) {

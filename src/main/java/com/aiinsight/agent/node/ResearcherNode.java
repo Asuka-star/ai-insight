@@ -18,6 +18,7 @@ import com.aiinsight.model.schema.Questionnaire;
 import com.aiinsight.model.schema.ResearchPlan;
 import com.aiinsight.model.schema.SurveyQuestion;
 import com.aiinsight.service.InterviewInsightExtractor;
+import com.aiinsight.service.ResearchCoverageService;
 import com.aiinsight.service.fallback.FallbackResearchPlanFactory;
 import com.aiinsight.observability.AgentTraceContext;
 import com.aiinsight.util.JsonResponseExtractor;
@@ -29,6 +30,7 @@ import static com.aiinsight.util.AgentUtils.abbreviate;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 import java.time.Instant;
@@ -49,6 +51,14 @@ public class ResearcherNode implements AgentNode {
     private final ObjectMapper objectMapper;
     private final FallbackResearchPlanFactory fallbackResearchPlanFactory;
     private final InterviewInsightExtractor interviewInsightExtractor;
+    private ResearchCoverageService researchCoverageService = new ResearchCoverageService();
+
+    @Autowired(required = false)
+    public void setResearchCoverageService(ResearchCoverageService researchCoverageService) {
+        if (researchCoverageService != null) {
+            this.researchCoverageService = researchCoverageService;
+        }
+    }
 
     @Override
     public AgentName name() {
@@ -75,6 +85,7 @@ public class ResearcherNode implements AgentNode {
         run.getResearchPackage().setResearchPlan(buildResearchPlan(run, recollecting));
         run.getResearchPackage().setInterviewInsights(interviewInsightExtractor.extract(run));
         run.getResearchPackage().setCollectedAt(Instant.now());
+        researchCoverageService.refreshCoverage(run);
         AgentTraceContext.recordProcessSummary(researchResult.traceMarkdown());
 
         run.addArtifact(new AnalysisArtifact(

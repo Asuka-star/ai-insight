@@ -102,11 +102,11 @@ public class LlmSearchCandidateSelector {
                 %s
                 """.formatted(
                 maxSelectable,
-                text(requirement.getOriginalPrompt()),
-                text(requirement.getIndustry()),
-                String.join(", ", requirement.getCompetitors()),
-                String.join(", ", requirement.getDimensions()),
-                String.join(", ", requirement.getSourcePreferences()),
+                text(requirement == null ? null : requirement.getOriginalPrompt()),
+                text(requirement == null ? null : requirement.getIndustry()),
+                join(requirement == null ? null : requirement.getCompetitors()),
+                join(requirement == null ? null : requirement.getDimensions()),
+                join(requirement == null ? null : requirement.getSourcePreferences()),
                 repairContext(run),
                 evidenceContext(run),
                 candidateContext(candidateCollection)
@@ -234,6 +234,15 @@ public class LlmSearchCandidateSelector {
 
     private String text(String value) {
         return StringUtils.hasText(value) ? value : "unspecified";
+    }
+
+    private String join(List<String> values) {
+        if (values == null || values.isEmpty()) {
+            return "unspecified";
+        }
+        return values.stream()
+                .filter(StringUtils::hasText)
+                .collect(Collectors.joining(", "));
     }
 
     public record Selection(List<String> selectedCandidateIds,
