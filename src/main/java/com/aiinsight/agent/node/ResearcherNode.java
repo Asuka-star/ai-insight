@@ -1,13 +1,14 @@
 package com.aiinsight.agent.node;
 
 import com.aiinsight.agent.AgentNode;
+import com.aiinsight.agent.research.ResearchAgent;
+import com.aiinsight.agent.research.ResearchAgentResult;
 import com.aiinsight.llm.ChatMessage;
 import com.aiinsight.llm.ChatOptions;
 import com.aiinsight.llm.ChatRequest;
 import com.aiinsight.llm.LlmClient;
 import com.aiinsight.model.enums.AgentName;
 import com.aiinsight.model.enums.ArtifactType;
-import com.aiinsight.model.enums.ReviewAction;
 import com.aiinsight.model.run.AnalysisArtifact;
 import com.aiinsight.model.run.AnalysisRun;
 import com.aiinsight.model.run.EvidenceSource;
@@ -16,12 +17,7 @@ import com.aiinsight.model.schema.InterviewInsight;
 import com.aiinsight.model.schema.Questionnaire;
 import com.aiinsight.model.schema.ResearchPlan;
 import com.aiinsight.model.schema.SurveyQuestion;
-import com.aiinsight.service.EvidenceChunkService;
-import com.aiinsight.service.EvidenceEmbeddingService;
 import com.aiinsight.service.InterviewInsightExtractor;
-import com.aiinsight.service.LlmSearchQueryPlanner;
-import com.aiinsight.service.SearchQueryPlanner;
-import com.aiinsight.service.SourceCollectionService;
 import com.aiinsight.service.fallback.FallbackResearchPlanFactory;
 import com.aiinsight.observability.AgentTraceContext;
 import com.aiinsight.util.JsonResponseExtractor;
@@ -38,7 +34,6 @@ import org.springframework.stereotype.Component;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Locale;
 import java.util.concurrent.CompletableFuture;
 import java.util.stream.Collectors;
 
@@ -49,11 +44,8 @@ import java.util.stream.Collectors;
 // 优先采集用户提供的公开 URL 和一手调研材料；搜索服务可用时再主动补充公开网页。
 public class ResearcherNode implements AgentNode {
 
-    private final SourceCollectionService sourceCollectionService;
-    private final EvidenceChunkService evidenceChunkService;
-    private final EvidenceEmbeddingService evidenceEmbeddingService;
+    private final ResearchAgent researchAgent;
     private final LlmClient llmClient;
-    private final LlmSearchQueryPlanner llmSearchQueryPlanner;
     private final ObjectMapper objectMapper;
     private final FallbackResearchPlanFactory fallbackResearchPlanFactory;
     private final InterviewInsightExtractor interviewInsightExtractor;
@@ -70,28 +62,25 @@ public class ResearcherNode implements AgentNode {
 
     @Override
     public AnalysisRun execute(AnalysisRun run) {
-        boolean recollecting = run.getReviewDecision().getAction() == ReviewAction.RECOLLECT_EVIDENCE
-                && run.getReviewDecision().getTargetAgent() == name();
-        // SourceCollectionService 会保留既有 citation 并追加新来源；这里再整体替换列表，
+        ResearchAgentResult researchResult = researchAgent.run(run);
+        boolean recollecting = researchResult.plan().recollectionMode();
+        // ResearchAgent 使用工具完成 plan -> act -> observe -> decide；这里仍保持旧输出契约，
         // 避免旧 artifact 中的 [S1] 在重跑后指向不同来源。
-        List<SearchQueryPlanner.SearchQueryBatch> searchQueryBatches = llmSearchQueryPlanner.plan(run, recollecting);
-        List<EvidenceSource> collectedSources = sourceCollectionService.collect(run, recollecting, searchQueryBatches);
         run.getEvidenceSources().clear();
         run.getEvidenceChunks().clear();
-        run.getEvidenceSources().addAll(collectedSources);
-        run.getEvidenceChunks().addAll(evidenceEmbeddingService.embedChunks(evidenceChunkService.chunk(run.getEvidenceSources())));
+        run.getEvidenceSources().addAll(researchResult.evidenceSources());
+        run.getEvidenceChunks().addAll(researchResult.evidenceChunks());
         run.getResearchPackage().setSources(new ArrayList<>(run.getEvidenceSources()));
-        // missingEvidenceTypes 是 Reviewer 是否打回采集的主要依据。
-        // 每次采集后都重新计算，避免补采成功后仍保留旧缺口。
-        run.getResearchPackage().setMissingEvidenceTypes(missingEvidenceTypes(run));
+        run.getResearchPackage().setMissingEvidenceTypes(new ArrayList<>(researchResult.missingEvidenceTypes()));
         run.getResearchPackage().setResearchPlan(buildResearchPlan(run, recollecting));
         run.getResearchPackage().setInterviewInsights(interviewInsightExtractor.extract(run));
         run.getResearchPackage().setCollectedAt(Instant.now());
+        AgentTraceContext.recordProcessSummary(researchResult.traceMarkdown());
 
         run.addArtifact(new AnalysisArtifact(
                 ArtifactType.SOURCE_LIST,
                 "资料采集清单",
-                sourceListMarkdown(run),
+                sourceListMarkdown(run, researchResult),
                 run.getEvidenceSources().stream().map(EvidenceSource::getCitationKey).toList()
         ));
         run.addArtifact(new AnalysisArtifact(
@@ -107,59 +96,22 @@ public class ResearcherNode implements AgentNode {
         return run;
     }
 
-    private String sourceListMarkdown(AnalysisRun run) {
-        return run.getEvidenceSources().stream()
+    private String sourceListMarkdown(AnalysisRun run, ResearchAgentResult researchResult) {
+        String sources = run.getEvidenceSources().stream()
                 .map(source -> "- [%s] %s: %s".formatted(source.getCitationKey(), source.getTitle(), source.getSnippet()))
                 .collect(Collectors.joining("\n"));
-    }
+        return """
+                ## Research Agent 执行过程
 
-    private List<String> missingEvidenceTypes(AnalysisRun run) {
-        List<String> missing = new ArrayList<>();
-        if (!hasEvidenceType(run, "pricing")) {
-            missing.add("pricing_page");
-        }
-        if (!hasEvidenceType(run, "feedback") && !hasEvidenceType(run, "review")) {
-            missing.add("user_review");
-        }
-        if (needsSurveyResearch(run) && !hasEvidenceType(run, "survey")) {
-            missing.add("survey_result");
-        }
-        if (needsInterviewResearch(run) && !hasEvidenceType(run, "interview")) {
-            missing.add("interview_note");
-        }
-        return missing;
-    }
+                %s
 
-    private boolean needsSurveyResearch(AnalysisRun run) {
-        return mentionsAny(run.getRequirement().getDimensions(), "调研", "问卷", "survey")
-                || mentionsAny(run.getRequirement().getSourcePreferences(), "survey", "问卷", "调研");
-    }
+                ## 资料采集清单
 
-    private boolean needsInterviewResearch(AnalysisRun run) {
-        return mentionsAny(run.getRequirement().getDimensions(), "访谈", "interview")
-                || mentionsAny(run.getRequirement().getSourcePreferences(), "interview", "访谈");
-    }
-
-    private boolean hasEvidenceType(AnalysisRun run, String keyword) {
-        return run.getEvidenceSources().stream().anyMatch(source ->
-                containsIgnoreCase(source.getSourceType(), keyword)
-                        || containsIgnoreCase(source.getTitle(), keyword)
-                        || containsIgnoreCase(source.getComplianceNote(), keyword));
-    }
-
-    private boolean mentionsAny(List<String> values, String... patterns) {
-        return values.stream().anyMatch(value -> {
-            for (String pattern : patterns) {
-                if (containsIgnoreCase(value, pattern)) {
-                    return true;
-                }
-            }
-            return false;
-        });
-    }
-
-    private boolean containsIgnoreCase(String text, String pattern) {
-        return text != null && pattern != null && text.toLowerCase(Locale.ROOT).contains(pattern.toLowerCase(Locale.ROOT));
+                %s
+                """.formatted(
+                researchResult.traceMarkdown(),
+                sources.isBlank() ? "暂无可引用来源。" : sources
+        );
     }
 
     private ResearchPlan buildResearchPlan(AnalysisRun run, boolean recollecting) {

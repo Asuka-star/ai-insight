@@ -7,6 +7,7 @@ import com.aiinsight.agent.node.ExtractorNode;
 import com.aiinsight.agent.node.ResearcherNode;
 import com.aiinsight.agent.node.ReviewerNode;
 import com.aiinsight.agent.node.WriterNode;
+import com.aiinsight.agent.research.ResearchAgent;
 import com.aiinsight.dto.AddAnalysisContextRequest;
 import com.aiinsight.dto.AddUserEvidenceRequest;
 import com.aiinsight.dto.AnalysisRunMetrics;
@@ -66,6 +67,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -274,6 +276,11 @@ class AnalysisWorkflowServiceTest {
                     assertThat(step.getInputSummary()).contains("采集公开资料");
                     assertThat(step.getOutputSummary()).contains("资料采集完成");
                 });
+        assertThat(finished.getTraces())
+                .filteredOn(trace -> trace.getAgentName() == AgentName.RESEARCHER)
+                .first()
+                .satisfies(trace -> assertThat(trace.getProcessSnapshot())
+                        .contains("Research Agent Plan", "Actions", "Observations", "Decision"));
     }
 
     @Test
@@ -1359,6 +1366,404 @@ class AnalysisWorkflowServiceTest {
                 .contains("销售运营", "销售主管", "CRM 管理员");
         assertThat(run.getResearchPackage().getResearchPlan().getSearchQueries())
                 .contains("Salesforce HubSpot sales workflow comparison");
+    }
+
+    @Test
+    void researcherPlansSearchAfterObservingUserProvidedUrls() {
+        AtomicReference<String> capturedPrompt = new AtomicReference<>();
+        AtomicInteger searchCalls = new AtomicInteger();
+        LlmClient queryPlannerLlm = new LlmClient() {
+            @Override
+            public boolean isAvailable() {
+                return true;
+            }
+
+            @Override
+            public String complete(com.aiinsight.llm.ChatRequest request) {
+                capturedPrompt.set(request.getMessages().get(1).getContent());
+                return """
+                        {
+                          "batches": [
+                            {
+                              "competitor": "Cursor",
+                              "queries": [
+                                {
+                                  "query": "Cursor security docs official",
+                                  "evidenceType": "security",
+                                  "purpose": "Fill the missing security evidence after observing the official home page",
+                                  "priority": "HIGH"
+                                }
+                              ]
+                            }
+                          ]
+                        }
+                        """;
+            }
+        };
+        SearchProvider searchProvider = new SearchProvider() {
+            @Override
+            public boolean isAvailable() {
+                return true;
+            }
+
+            @Override
+            public List<SearchResult> search(String query, int count) {
+                searchCalls.incrementAndGet();
+                return List.of(
+                        new SearchResult(
+                                "Duplicate Cursor home",
+                                "https://cursor.example.test",
+                                "Duplicate result for the already observed user URL.",
+                                query,
+                                1
+                        ),
+                        new SearchResult(
+                                "Cursor security docs",
+                                "https://cursor.example.test/security",
+                                "Security documentation with enterprise controls and privacy details.",
+                                query,
+                                2
+                        )
+                );
+            }
+        };
+        SourceCollectionService sourceCollectionService = new SourceCollectionService(fetchUsefulPages(), searchProvider);
+        ResearchAgent researchAgent = new ResearchAgent(
+                sourceCollectionService,
+                new EvidenceChunkService(),
+                EvidenceEmbeddingService.disabled(),
+                new LlmSearchQueryPlanner(queryPlannerLlm, new ObjectMapper()),
+                new LlmSearchCandidateSelector(noopLlmClient(), new ObjectMapper())
+        );
+        AnalysisRun run = new AnalysisRun(new AnalysisRequirement(
+                "Analyze Cursor for AI coding teams.",
+                "AI coding tools",
+                List.of("Cursor"),
+                List.of("developer adoption"),
+                List.of("article"),
+                List.of("https://cursor.example.test")
+        ));
+
+        var result = researchAgent.run(run);
+
+        assertThat(capturedPrompt.get())
+                .contains("已有来源摘要")
+                .contains("Useful page for https://cursor.example.test")
+                .contains("official product documentation page describes pricing");
+        assertThat(searchCalls).hasValue(1);
+        assertThat(result.plan().actions())
+                .extracting(action -> action.toolName())
+                .contains("WebFetchTool", "SearchTool", "EvidenceChunkTool");
+        assertThat(result.evidenceSources())
+                .extracting(EvidenceSource::getUrl)
+                .contains("https://cursor.example.test", "https://cursor.example.test/security");
+        assertThat(result.evidenceSources())
+                .filteredOn(source -> "https://cursor.example.test".equals(source.getUrl()))
+                .hasSize(1);
+        assertThat(result.traceMarkdown()).contains("UserInputObservation", "before planning search");
+    }
+
+    @Test
+    void researcherLetsLlmSelectWhichSearchCandidatesToFetch() {
+        AtomicReference<String> capturedSelectionPrompt = new AtomicReference<>();
+        AtomicInteger searchCalls = new AtomicInteger();
+        LlmClient autonomousResearchLlm = new LlmClient() {
+            @Override
+            public boolean isAvailable() {
+                return true;
+            }
+
+            @Override
+            public String complete(com.aiinsight.llm.ChatRequest request) {
+                String prompt = request.getMessages().get(1).getContent();
+                if (prompt.contains("Select which search-result pages")) {
+                    capturedSelectionPrompt.set(prompt);
+                    return """
+                            {
+                              "strategy": "Prefer the implementation detail page over the generic overview.",
+                              "selected": [
+                                {"id": "C2", "reason": "More specific page for developer workflow evidence."}
+                              ]
+                            }
+                            """;
+                }
+                return """
+                        {
+                          "batches": [
+                            {
+                              "competitor": "Cursor",
+                              "queries": [
+                                {
+                                  "query": "Cursor developer workflow evidence",
+                                  "evidenceType": "article",
+                                  "purpose": "Find workflow evidence",
+                                  "priority": "HIGH"
+                                }
+                              ]
+                            }
+                          ]
+                        }
+                        """;
+            }
+        };
+        SearchProvider searchProvider = new SearchProvider() {
+            @Override
+            public boolean isAvailable() {
+                return true;
+            }
+
+            @Override
+            public List<SearchResult> search(String query, int count) {
+                searchCalls.incrementAndGet();
+                return List.of(
+                        new SearchResult(
+                                "Cursor general overview",
+                                "https://candidate.example.test/page-a",
+                                "General overview of Cursor and developer teams.",
+                                query,
+                                1
+                        ),
+                        new SearchResult(
+                                "Cursor implementation details",
+                                "https://candidate.example.test/page-b",
+                                "Specific workflow implementation details for developer adoption.",
+                                query,
+                                2
+                        )
+                );
+            }
+        };
+        SourceCollectionService sourceCollectionService = new SourceCollectionService(fetchUsefulPages(), searchProvider);
+        ResearchAgent researchAgent = new ResearchAgent(
+                sourceCollectionService,
+                new EvidenceChunkService(),
+                EvidenceEmbeddingService.disabled(),
+                new LlmSearchQueryPlanner(autonomousResearchLlm, new ObjectMapper()),
+                new LlmSearchCandidateSelector(autonomousResearchLlm, new ObjectMapper())
+        );
+        AnalysisRun run = new AnalysisRun(new AnalysisRequirement(
+                "Analyze Cursor developer workflow.",
+                "AI coding tools",
+                List.of("Cursor"),
+                List.of("developer workflow"),
+                List.of("article"),
+                List.of("https://cursor.example.test")
+        ));
+
+        var result = researchAgent.run(run);
+
+        assertThat(capturedSelectionPrompt.get())
+                .contains("Search candidates", "C1", "page-a", "C2", "page-b");
+        assertThat(searchCalls).hasValue(1);
+        assertThat(result.evidenceSources())
+                .extracting(EvidenceSource::getUrl)
+                .contains("https://candidate.example.test/page-a", "https://candidate.example.test/page-b");
+        List<String> collectedUrls = result.evidenceSources().stream().map(EvidenceSource::getUrl).toList();
+        assertThat(collectedUrls.indexOf("https://candidate.example.test/page-b"))
+                .isLessThan(collectedUrls.indexOf("https://candidate.example.test/page-a"));
+        assertThat(result.traceMarkdown())
+                .contains("SearchCandidateSelector", "selectedIds=C2", "Prefer the implementation detail page");
+    }
+
+    @Test
+    void researcherFallsBackToOriginalSearchWhenSelectedCandidatesUnderfillEvidence() {
+        AtomicInteger searchCalls = new AtomicInteger();
+        LlmClient autonomousResearchLlm = new LlmClient() {
+            @Override
+            public boolean isAvailable() {
+                return true;
+            }
+
+            @Override
+            public String complete(com.aiinsight.llm.ChatRequest request) {
+                String prompt = request.getMessages().get(1).getContent();
+                if (prompt.contains("Select which search-result pages")) {
+                    return """
+                            {
+                              "strategy": "Start with the workflow-specific page.",
+                              "selected": [
+                                {"id": "C2", "reason": "Looks most specific."}
+                              ]
+                            }
+                            """;
+                }
+                return """
+                        {
+                          "batches": [
+                            {
+                              "competitor": "Cursor",
+                              "queries": [
+                                {
+                                  "query": "Cursor workflow pricing reviews",
+                                  "evidenceType": "pricing_page",
+                                  "purpose": "Find pricing and workflow evidence",
+                                  "priority": "HIGH"
+                                }
+                              ]
+                            }
+                          ]
+                        }
+                        """;
+            }
+        };
+        SearchProvider searchProvider = new SearchProvider() {
+            @Override
+            public boolean isAvailable() {
+                return true;
+            }
+
+            @Override
+            public List<SearchResult> search(String query, int count) {
+                int call = searchCalls.incrementAndGet();
+                List<SearchResult> results = new java.util.ArrayList<>(List.of(
+                        new SearchResult("Cursor page A", "https://candidate.example.test/page-a", "Pricing and workflow overview.", query, 1),
+                        new SearchResult("Cursor page B", "https://candidate.example.test/page-b", "Workflow implementation details.", query, 2),
+                        new SearchResult("Cursor page C", "https://candidate.example.test/page-c", "Reviews and collaboration details.", query, 3),
+                        new SearchResult("Cursor page D", "https://candidate.example.test/page-d", "Security and enterprise controls.", query, 4)
+                ));
+                if (call > 1) {
+                    results.add(new SearchResult(
+                            "Cursor page E",
+                            "https://candidate.example.test/page-e",
+                            "Additional evidence found by the original search fill path.",
+                            query,
+                            5
+                    ));
+                }
+                return results;
+            }
+        };
+        WebPageFetchService fetchService = new WebPageFetchService() {
+            @Override
+            public FetchedPage fetch(String url) {
+                if (url.endsWith("/page-b")) {
+                    return FetchedPage.failed(url, "simulated candidate fetch failure");
+                }
+                return FetchedPage.success(
+                        url,
+                        "Useful page for " + url,
+                        """
+                                This page contains enough product, pricing, review, workflow, enterprise, release,
+                                governance, security, and adoption context to become a fetched evidence source.
+                                It is intentionally long enough to pass search-result usefulness filtering.
+                                """,
+                        "robots.txt checked: allowed for public fetch."
+                );
+            }
+        };
+        SourceCollectionProperties properties = new SourceCollectionProperties();
+        properties.setMaxResultsPerQuery(4);
+        properties.setMinSearchSources(4);
+        SourceCollectionService sourceCollectionService = new SourceCollectionService(
+                fetchService,
+                searchProvider,
+                new SearchQueryPlanner(),
+                properties
+        );
+        ResearchAgent researchAgent = new ResearchAgent(
+                sourceCollectionService,
+                new EvidenceChunkService(),
+                EvidenceEmbeddingService.disabled(),
+                new LlmSearchQueryPlanner(autonomousResearchLlm, new ObjectMapper()),
+                new LlmSearchCandidateSelector(autonomousResearchLlm, new ObjectMapper())
+        );
+        AnalysisRun run = new AnalysisRun(new AnalysisRequirement(
+                "Analyze Cursor developer workflow.",
+                "AI coding tools",
+                List.of("Cursor"),
+                List.of("developer workflow"),
+                List.of("pricing_page", "public_reviews"),
+                List.of()
+        ));
+
+        var result = researchAgent.run(run);
+
+        assertThat(searchCalls).hasValue(2);
+        assertThat(result.evidenceSources())
+                .extracting(EvidenceSource::getUrl)
+                .contains(
+                        "https://candidate.example.test/page-a",
+                        "https://candidate.example.test/page-c",
+                        "https://candidate.example.test/page-d",
+                        "https://candidate.example.test/page-e"
+                )
+                .doesNotContain("https://candidate.example.test/page-b");
+    }
+
+    @Test
+    void searchCandidateSelectorIncludesReviewerRepairContext() {
+        AtomicReference<String> capturedSelectionPrompt = new AtomicReference<>();
+        LlmClient selectionLlm = new LlmClient() {
+            @Override
+            public boolean isAvailable() {
+                return true;
+            }
+
+            @Override
+            public String complete(com.aiinsight.llm.ChatRequest request) {
+                capturedSelectionPrompt.set(request.getMessages().get(1).getContent());
+                return """
+                        {
+                          "strategy": "Use the repair context.",
+                          "selected": [
+                            {"id": "C1", "reason": "Matches the missing pricing evidence."}
+                          ]
+                        }
+                        """;
+            }
+        };
+        AnalysisRun run = new AnalysisRun(new AnalysisRequirement(
+                "Analyze Cursor pricing.",
+                "AI coding tools",
+                List.of("Cursor"),
+                List.of("pricing"),
+                List.of("pricing_page"),
+                List.of()
+        ));
+        run.getResearchPackage().setMissingEvidenceTypes(List.of("user_review"));
+        run.getReviewDecision().setAction(ReviewAction.RECOLLECT_EVIDENCE);
+        run.getReviewDecision().setTargetAgent(AgentName.RESEARCHER);
+        run.getReviewDecision().setRequiredEvidenceTypes(List.of("pricing_page"));
+        run.getReviewDecision().setRepairInstructions(List.of("Find official pricing evidence for Cursor."));
+        ReviewRepairTask task = new ReviewRepairTask();
+        task.setTargetAgent(AgentName.RESEARCHER);
+        task.setCategory("missing_evidence");
+        task.setClaimId("claim-1");
+        task.setCitationKey("S2");
+        task.setRequiredEvidenceTypes(List.of("pricing_page"));
+        task.setInstruction("Repair the pricing claim with a current source.");
+        task.setAcceptanceCriteria("A pricing page must be selected.");
+        run.getReviewDecision().setRepairTasks(List.of(task));
+        SourceCollectionService.SearchCandidateCollection candidates = new SourceCollectionService.SearchCandidateCollection(
+                List.of(),
+                List.of(new SourceCollectionService.SearchCandidate(
+                        "C1",
+                        "Cursor",
+                        "Cursor pricing",
+                        1,
+                        "Cursor Pricing",
+                        "https://cursor.example.test/pricing",
+                        "Official pricing details.",
+                        "pricing_page",
+                        0,
+                        1
+                )),
+                List.of(),
+                true,
+                1
+        );
+
+        new LlmSearchCandidateSelector(selectionLlm, new ObjectMapper()).select(run, candidates);
+
+        assertThat(capturedSelectionPrompt.get())
+                .contains(
+                        "Reviewer repair context",
+                        "missingEvidenceTypes=user_review",
+                        "requiredEvidenceTypes=pricing_page",
+                        "Find official pricing evidence for Cursor.",
+                        "Repair the pricing claim with a current source.",
+                        "A pricing page must be selected."
+                );
     }
 
     @Test
@@ -2918,12 +3323,16 @@ class AnalysisWorkflowServiceTest {
     }
 
     private ResearcherNode researcherNode(SourceCollectionService sourceCollectionService, LlmClient llmClient) {
-        return new ResearcherNode(
+        ResearchAgent researchAgent = new ResearchAgent(
                 sourceCollectionService,
                 new EvidenceChunkService(),
                 EvidenceEmbeddingService.disabled(),
-                llmClient,
                 new LlmSearchQueryPlanner(llmClient, new ObjectMapper()),
+                new LlmSearchCandidateSelector(noopLlmClient(), new ObjectMapper())
+        );
+        return new ResearcherNode(
+                researchAgent,
+                llmClient,
                 new ObjectMapper(),
                 new FallbackResearchPlanFactory(),
                 new InterviewInsightExtractor()

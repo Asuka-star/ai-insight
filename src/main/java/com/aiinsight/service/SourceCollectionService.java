@@ -11,9 +11,11 @@ import org.springframework.util.StringUtils;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
@@ -65,6 +67,78 @@ public class SourceCollectionService {
     public List<EvidenceSource> collect(AnalysisRun run,
                                         boolean recollecting,
                                         List<SearchQueryPlanner.SearchQueryBatch> plannedSearchBatches) {
+        return collect(run, recollecting, plannedSearchBatches, true);
+    }
+
+    public List<EvidenceSource> collectUserDirectedSources(AnalysisRun run) {
+        return collect(run, false, List.of(), false);
+    }
+
+    public SearchCandidateCollection searchCandidates(AnalysisRun run,
+                                                       boolean recollecting,
+                                                       List<SearchQueryPlanner.SearchQueryBatch> plannedSearchBatches) {
+        List<SearchQueryPlanner.SearchQueryBatch> batches = searchBatches(run, recollecting, plannedSearchBatches);
+        if (batches.isEmpty()) {
+            return SearchCandidateCollection.empty();
+        }
+        List<String> queries = batches.stream()
+                .flatMap(batch -> batch.queries().stream())
+                .toList();
+        run.getResearchPackage().setActualSearchQueries(queries);
+        int sourcesPerCompetitor = searchSourcesPerCompetitor(batches.size());
+        int maxSearchSources = maxSearchSources(batches.size(), sourcesPerCompetitor);
+        if (!searchProvider.isAvailable()) {
+            return new SearchCandidateCollection(batches, List.of(), List.of(), false, maxSearchSources);
+        }
+
+        Set<String> seenUrls = new LinkedHashSet<>();
+        run.getEvidenceSources().stream()
+                .map(EvidenceSource::getUrl)
+                .filter(StringUtils::hasText)
+                .map(this::normalizeUrl)
+                .forEach(seenUrls::add);
+        List<SearchCandidateBatchResult> batchResults = collectSearchCandidateBatches(
+                run,
+                batches,
+                seenUrls,
+                sourcesPerCompetitor,
+                recollecting
+        );
+        List<String> failures = batchResults.stream()
+                .flatMap(result -> result.failures().stream())
+                .toList();
+        List<SearchCandidate> candidates = candidateRoundRobin(batchResults, maxSearchSources * 3);
+        return new SearchCandidateCollection(batches, candidates, failures, true, maxSearchSources);
+    }
+
+    public List<EvidenceSource> collectSelectedSearchCandidates(AnalysisRun run,
+                                                                boolean recollecting,
+                                                                SearchCandidateCollection candidateCollection,
+                                                                List<String> selectedCandidateIds) {
+        if (candidateCollection == null || !candidateCollection.searchAvailable()) {
+            return collect(run, recollecting, candidateCollection == null ? List.of() : candidateCollection.batches());
+        }
+        List<EvidenceSource> sources = collect(run, recollecting, candidateCollection.batches(), false);
+        run.getResearchPackage().setActualSearchQueries(candidateCollection.queries());
+        candidateCollection.failures().forEach(run.getRecommendedActions()::add);
+        int nextIndex = maxCitationNumber(sources) + 1;
+        CandidateFetchOutcome outcome = appendCandidateSearchEvidence(
+                run,
+                sources,
+                nextIndex,
+                candidateCollection,
+                selectedCandidateIds
+        );
+        if (outcome.needsOriginalSearchFill(candidateCollection) && !candidateCollection.candidates().isEmpty()) {
+            appendSearchEvidence(run, sources, maxCitationNumber(sources) + 1, recollecting, candidateCollection.batches());
+        }
+        return sources;
+    }
+
+    private List<EvidenceSource> collect(AnalysisRun run,
+                                         boolean recollecting,
+                                         List<SearchQueryPlanner.SearchQueryBatch> plannedSearchBatches,
+                                         boolean includeSearchEvidence) {
         run.getResearchPackage().setActualSearchQueries(List.of());
         List<EvidenceSource> sources = new ArrayList<>(run.getEvidenceSources());
         Set<String> seenUrls = new LinkedHashSet<>();
@@ -99,7 +173,9 @@ public class SourceCollectionService {
         }
 
         index = appendOfficialReferenceCandidates(run, sources, seenUrls, officialSeeds, index);
-        appendSearchEvidence(run, sources, index, recollecting, plannedSearchBatches);
+        if (includeSearchEvidence) {
+            appendSearchEvidence(run, sources, index, recollecting, plannedSearchBatches);
+        }
         return sources;
     }
 
@@ -486,6 +562,45 @@ public class SourceCollectionService {
         }
     }
 
+    private List<SearchCandidateBatchResult> collectSearchCandidateBatches(AnalysisRun run,
+                                                                           List<SearchQueryPlanner.SearchQueryBatch> batches,
+                                                                           Set<String> seenUrls,
+                                                                           int sourcesPerCompetitor,
+                                                                           boolean recollecting) {
+        ExecutorService executor = Executors.newFixedThreadPool(Math.min(batches.size(), properties.maxParallelBatches()));
+        try {
+            Set<String> existingSeenUrls = new LinkedHashSet<>(seenUrls);
+            List<CompletableFuture<SearchCandidateBatchResult>> futures = batches.stream()
+                    .map(batch -> CompletableFuture.supplyAsync(
+                            () -> collectSearchCandidateBatch(
+                                    run,
+                                    batch,
+                                    existingSeenUrls,
+                                    searchSourcesForBatch(run, batch, sourcesPerCompetitor, recollecting)
+                            ),
+                            executor
+                    ))
+                    .toList();
+            return futures.stream()
+                    .map(this::joinSearchCandidateBatch)
+                    .filter(result -> result != SearchCandidateBatchResult.EMPTY)
+                    .toList();
+        } finally {
+            executor.shutdown();
+        }
+    }
+
+    private SearchCandidateBatchResult joinSearchCandidateBatch(CompletableFuture<SearchCandidateBatchResult> future) {
+        try {
+            return future.join();
+        } catch (CompletionException ex) {
+            log.warn("Source collection search candidate batch failed unexpectedly: exceptionType={}, message={}",
+                    ex.getClass().getName(),
+                    ex.getMessage());
+            return SearchCandidateBatchResult.EMPTY;
+        }
+    }
+
     private int searchSourcesForBatch(AnalysisRun run,
                                       SearchQueryPlanner.SearchQueryBatch batch,
                                       int baseSourcesPerCompetitor,
@@ -578,6 +693,163 @@ public class SourceCollectionService {
             }
         }
         return new SearchBatchResult(batch.competitor(), collected, failures);
+    }
+
+    private SearchCandidateBatchResult collectSearchCandidateBatch(AnalysisRun run,
+                                                                   SearchQueryPlanner.SearchQueryBatch batch,
+                                                                   Set<String> existingSeenUrls,
+                                                                   int sourcesPerCompetitor) {
+        List<SearchCandidateDraft> candidates = new ArrayList<>();
+        List<String> failures = new ArrayList<>();
+        Set<String> localSeenUrls = new LinkedHashSet<>(existingSeenUrls);
+        int maxCandidates = Math.max(sourcesPerCompetitor * 3, sourcesPerCompetitor);
+        for (String query : batch.queries()) {
+            if (candidates.size() >= maxCandidates) {
+                break;
+            }
+            List<SearchResult> results;
+            try {
+                results = searchProvider.search(query, properties.maxResultsPerQuery());
+            } catch (RuntimeException ex) {
+                log.warn("Source collection search query failed before candidate selection: runId={}, competitor={}, query={}, exceptionType={}, message={}",
+                        run.getId(),
+                        batch.competitor(),
+                        query,
+                        ex.getClass().getName(),
+                        ex.getMessage());
+                failures.add("Search query failed: " + query + ": " + ex.getMessage());
+                continue;
+            }
+            for (SearchResult result : prioritizedSearchResults(batch, results)) {
+                if (!StringUtils.hasText(result.getUrl())) {
+                    continue;
+                }
+                if (!localSeenUrls.add(normalizeUrl(result.getUrl()))) {
+                    continue;
+                }
+                candidates.add(new SearchCandidateDraft(
+                        batch.competitor(),
+                        query,
+                        result.getRank(),
+                        result.getTitle(),
+                        result.getUrl(),
+                        result.getSnippet(),
+                        sourceTypeClassifier.classify(result.getUrl(), result.getTitle()),
+                        searchResultPriority(batch, result),
+                        sourcesPerCompetitor
+                ));
+                if (candidates.size() >= maxCandidates) {
+                    break;
+                }
+            }
+        }
+        return new SearchCandidateBatchResult(batch.competitor(), candidates, failures);
+    }
+
+    private List<SearchCandidate> candidateRoundRobin(List<SearchCandidateBatchResult> batchResults, int maxCandidates) {
+        List<SearchCandidate> candidates = new ArrayList<>();
+        int maxBatchCandidates = batchResults.stream()
+                .mapToInt(result -> result.candidates().size())
+                .max()
+                .orElse(0);
+        int nextId = 1;
+        for (int candidateIndex = 0; candidateIndex < maxBatchCandidates && candidates.size() < maxCandidates; candidateIndex++) {
+            for (SearchCandidateBatchResult batchResult : batchResults) {
+                if (candidateIndex >= batchResult.candidates().size()) {
+                    continue;
+                }
+                SearchCandidateDraft draft = batchResult.candidates().get(candidateIndex);
+                candidates.add(new SearchCandidate(
+                        "C" + nextId,
+                        draft.competitor(),
+                        draft.query(),
+                        draft.rank(),
+                        draft.title(),
+                        draft.url(),
+                        draft.snippet(),
+                        draft.sourceType(),
+                        draft.rulePriority(),
+                        draft.sourceBudget()
+                ));
+                nextId++;
+                if (candidates.size() >= maxCandidates) {
+                    break;
+                }
+            }
+        }
+        return candidates;
+    }
+
+    private CandidateFetchOutcome appendCandidateSearchEvidence(AnalysisRun run,
+                                                                List<EvidenceSource> sources,
+                                                                int index,
+                                                                SearchCandidateCollection candidateCollection,
+                                                                List<String> selectedCandidateIds) {
+        Set<String> seenUrls = new LinkedHashSet<>();
+        sources.stream()
+                .map(EvidenceSource::getUrl)
+                .filter(StringUtils::hasText)
+                .map(this::normalizeUrl)
+                .forEach(seenUrls::add);
+        List<SearchCandidate> orderedCandidates = selectedFirstCandidates(candidateCollection.candidates(), selectedCandidateIds);
+        int added = 0;
+        int nextIndex = index;
+        int maxSearchSources = Math.max(0, candidateCollection.maxSelectable());
+        Map<String, Integer> addedByCompetitor = new LinkedHashMap<>();
+        for (SearchCandidate candidate : orderedCandidates) {
+            if (added >= maxSearchSources) {
+                break;
+            }
+            String competitorKey = normalizeText(candidate.competitor());
+            int competitorAdded = addedByCompetitor.getOrDefault(competitorKey, 0);
+            if (competitorAdded >= Math.max(1, candidate.sourceBudget())) {
+                continue;
+            }
+            if (!seenUrls.add(normalizeUrl(candidate.url()))) {
+                continue;
+            }
+            EvidenceSource source = fromSearchResult("", candidate.toSearchResult());
+            if (source == null) {
+                continue;
+            }
+            String citationKey = "S" + nextIndex;
+            source.setCitationKey(citationKey);
+            sources.add(source);
+            nextIndex++;
+            added++;
+            addedByCompetitor.put(competitorKey, competitorAdded + 1);
+            log.info("Agent-selected search result promoted to fetched evidence: citationKey={}, candidateId={}, url={}, competitor={}",
+                    citationKey,
+                    candidate.id(),
+                    source.getUrl(),
+                    candidate.competitor());
+        }
+        if (added == 0 && !candidateCollection.candidates().isEmpty()) {
+            log.warn("Agent-selected candidate collection produced no fetched evidence: runId={}, candidates={}, selectedIds={}",
+                    run.getId(),
+                    candidateCollection.candidates().size(),
+                    selectedCandidateIds);
+        }
+        return new CandidateFetchOutcome(added, maxSearchSources);
+    }
+
+    private List<SearchCandidate> selectedFirstCandidates(List<SearchCandidate> candidates, List<String> selectedCandidateIds) {
+        if (candidates == null || candidates.isEmpty()) {
+            return List.of();
+        }
+        Set<String> selectedIds = selectedCandidateIds == null
+                ? Set.of()
+                : selectedCandidateIds.stream()
+                .filter(StringUtils::hasText)
+                .collect(java.util.stream.Collectors.toCollection(LinkedHashSet::new));
+        List<SearchCandidate> ordered = new ArrayList<>();
+        candidates.stream()
+                .filter(candidate -> selectedIds.contains(candidate.id()))
+                .forEach(ordered::add);
+        candidates.stream()
+                .filter(candidate -> !selectedIds.contains(candidate.id()))
+                .forEach(ordered::add);
+        return ordered;
     }
 
     private List<SearchResult> prioritizedSearchResults(SearchQueryPlanner.SearchQueryBatch batch, List<SearchResult> results) {
@@ -942,6 +1214,71 @@ public class SourceCollectionService {
             return normalized;
         }
         return normalized.substring(0, SNIPPET_LENGTH) + "...";
+    }
+
+    public record SearchCandidateCollection(List<SearchQueryPlanner.SearchQueryBatch> batches,
+                                            List<SearchCandidate> candidates,
+                                            List<String> failures,
+                                            boolean searchAvailable,
+                                            int maxSelectable) {
+
+        public SearchCandidateCollection {
+            batches = batches == null ? List.of() : List.copyOf(batches);
+            candidates = candidates == null ? List.of() : List.copyOf(candidates);
+            failures = failures == null ? List.of() : List.copyOf(failures);
+        }
+
+        private static SearchCandidateCollection empty() {
+            return new SearchCandidateCollection(List.of(), List.of(), List.of(), true, 0);
+        }
+
+        public List<String> queries() {
+            return batches.stream()
+                    .flatMap(batch -> batch.queries().stream())
+                    .toList();
+        }
+    }
+
+    public record SearchCandidate(String id,
+                                  String competitor,
+                                  String query,
+                                  int rank,
+                                  String title,
+                                  String url,
+                                  String snippet,
+                                  String sourceType,
+                                  int rulePriority,
+                                  int sourceBudget) {
+
+        private SearchResult toSearchResult() {
+            return new SearchResult(title, url, snippet, query, rank);
+        }
+    }
+
+    private record SearchCandidateDraft(String competitor,
+                                        String query,
+                                        int rank,
+                                        String title,
+                                        String url,
+                                        String snippet,
+                                        String sourceType,
+                                        int rulePriority,
+                                        int sourceBudget) {
+    }
+
+    private record CandidateFetchOutcome(int added, int target) {
+
+        private boolean needsOriginalSearchFill(SearchCandidateCollection candidateCollection) {
+            if (candidateCollection == null || candidateCollection.candidates().isEmpty()) {
+                return false;
+            }
+            int expectedTarget = Math.max(0, target);
+            return candidateCollection.candidates().size() >= expectedTarget && added < expectedTarget;
+        }
+    }
+
+    private record SearchCandidateBatchResult(String competitor, List<SearchCandidateDraft> candidates, List<String> failures) {
+        private static final SearchCandidateBatchResult EMPTY = new SearchCandidateBatchResult("", Collections.emptyList(), Collections.emptyList());
     }
 
     private record SearchBatchResult(String competitor, List<EvidenceSource> sources, List<String> failures) {
