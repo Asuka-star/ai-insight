@@ -40,13 +40,3 @@ export const ARTIFACT_LABELS: Record<ArtifactType, string> = {
   FINALIZATION_NOTE: "封版说明",
   FINAL_REPORT: "最终报告"
 };
-
-export const SOURCE_OPTIONS = [
-  { label: "官网", value: "official_site" },
-  { label: "价格页", value: "pricing_page" },
-  { label: "产品文档", value: "product_docs" },
-  { label: "更新日志", value: "release_notes" },
-  { label: "技术博客", value: "technical_blog" },
-  { label: "权威报道", value: "authoritative_media" },
-  { label: "公开评价", value: "public_reviews" }
-];

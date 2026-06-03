@@ -31,4 +31,8 @@ public class ReviewRepairTask {
     private String expectedFix;
     private String acceptanceCriteria;
     private List<String> requiredEvidenceTypes = new ArrayList<>();
+    private String competitorName;
+    private String dimension;
+    private List<String> sourcePreferences = new ArrayList<>();
+    private List<String> queries = new ArrayList<>();
 }

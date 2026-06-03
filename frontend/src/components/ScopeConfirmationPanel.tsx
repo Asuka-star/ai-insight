@@ -1,7 +1,6 @@
 import { memo, useCallback, useEffect, useState } from "react";
 import { CheckCircle2, ClipboardCheck, PlayCircle, RefreshCw } from "lucide-react";
 import type { AnalysisRun, ClarificationItem, ClarificationOption } from "../types";
-import { SOURCE_OPTIONS } from "../constants";
 import { displayRunPhase, resolveRunPhase } from "../utils";
 
 interface ScopeConfirmationPanelProps {
@@ -11,14 +10,12 @@ interface ScopeConfirmationPanelProps {
   competitors: string;
   dimensions: string;
   outputGoal: string;
-  sources: string[];
   sourceUrls: string;
   maxReviewReworkAttempts: number;
   onIndustryChange: (value: string) => void;
   onCompetitorsChange: (value: string) => void;
   onDimensionsChange: (value: string) => void;
   onOutputGoalChange: (value: string) => void;
-  onSourcesChange: (value: string[]) => void;
   onSourceUrlsChange: (value: string) => void;
   onMaxReviewReworkAttemptsChange: (value: number) => void;
   onApplyClarificationOption: (field: string, values: string[]) => void;
@@ -37,14 +34,12 @@ export function ScopeConfirmationPanel({
   competitors,
   dimensions,
   outputGoal,
-  sources,
   sourceUrls,
   maxReviewReworkAttempts,
   onIndustryChange,
   onCompetitorsChange,
   onDimensionsChange,
   onOutputGoalChange,
-  onSourcesChange,
   onSourceUrlsChange,
   onMaxReviewReworkAttemptsChange,
   onApplyClarificationOption,
@@ -61,8 +56,11 @@ export function ScopeConfirmationPanel({
   const questions = draft?.clarificationQuestions ?? [];
   const clarificationItems = draft?.clarificationItems ?? [];
   const isConfirmed = Boolean(draft?.confirmed || localConfirmed);
-  const pendingQuestions = isConfirmed ? [] : questions;
-  const pendingClarificationItems = isConfirmed ? [] : clarificationItems;
+  const waitingForClarification = creating && !isConfirmed;
+  const pendingQuestions = isConfirmed || waitingForClarification ? [] : questions;
+  const pendingClarificationItems = isConfirmed || waitingForClarification
+    ? []
+    : clarificationItems.filter((item) => item.field !== "sourcePreferences");
   const phaseText = String(phase);
   const hasDraft = Boolean(run && draft);
   const hasClarificationRequests = pendingQuestions.length > 0 || pendingClarificationItems.length > 0;
@@ -116,34 +114,6 @@ export function ScopeConfirmationPanel({
         </label>
       </div>
 
-      <div className="source-preference-block">
-        <div className="source-preference-header">
-          <span>重点覆盖来源</span>
-          <small>默认优先官方和权威资料</small>
-        </div>
-        <div className="source-options">
-          {SOURCE_OPTIONS.map((source) => (
-            <label key={source.value} className="check-row">
-              <input
-                type="checkbox"
-                checked={sources.includes(source.value)}
-                disabled={!scopeEditable}
-                onChange={(event) => {
-                  handleManualEdit(() => {
-                    onSourcesChange(
-                      event.target.checked
-                        ? [...sources, source.value]
-                        : sources.filter((value) => value !== source.value)
-                    );
-                  });
-                }}
-              />
-              {source.label}
-            </label>
-          ))}
-        </div>
-      </div>
-
       <label>
         公开来源 URL
         <textarea
@@ -169,7 +139,12 @@ export function ScopeConfirmationPanel({
         </select>
       </label>
 
-      {!run ? (
+      {waitingForClarification ? (
+        <div className="question-box quiet">
+          <strong>正在生成范围确认</strong>
+          <p>Clarifier 正在整理结构化范围，完成后会展示可确认的选项。</p>
+        </div>
+      ) : !run ? (
         <div className="question-box quiet">
           <strong>等待范围确认内容</strong>
           <p>填写范围信息后，这里会展示待确认的问题和结构化范围。</p>
@@ -209,7 +184,6 @@ export function ScopeConfirmationPanel({
                 competitors,
                 dimensions,
                 outputGoal,
-                sources,
                 sourceUrls
               }, item.selectedValues)}
               selectionSyncVersion={formEditVersion}
@@ -361,7 +335,6 @@ function selectedValuesForField(
     competitors: string;
     dimensions: string;
     outputGoal: string;
-    sources: string[];
     sourceUrls: string;
   },
   fallbackValues?: string[]
@@ -370,7 +343,6 @@ function selectedValuesForField(
     if (field === "industry") return singleValue(values.industry);
     if (field === "competitors") return splitFieldValues(values.competitors);
     if (field === "dimensions") return splitFieldValues(values.dimensions);
-    if (field === "sourcePreferences") return values.sources;
     if (field === "sourceUrls") return splitFieldValues(values.sourceUrls);
     if (field === "outputGoal") return singleValue(values.outputGoal);
     return [];

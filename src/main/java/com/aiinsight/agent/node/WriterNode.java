@@ -42,6 +42,7 @@ public class WriterNode implements AgentNode {
 
     private static final Pattern CITATION_PATTERN = Pattern.compile("\\[(S\\d+)]");
     private static final Pattern CLAIM_REFERENCE_PATTERN = Pattern.compile("\\[C-[^\\]]+]");
+    private static final int MAX_UPSTREAM_ARTIFACT_CHARS_FOR_PROMPT = 2_200;
 
     private final LlmClient llmClient;
     private final FallbackReportDraftFactory fallbackReportDraftFactory;
@@ -120,6 +121,8 @@ public class WriterNode implements AgentNode {
                 16. 如果 Reviewer 修复计划包含结构化修复任务，优先只修订 task 定位的 paragraph/excerpt/currentText；不要为了一个 citation 问题重写整份报告。
                 17. 每个 task 必须满足 expectedFix 和 criteria；无法满足时，把对应表述降级为“待验证/证据不足”，并放入风险与证据缺口。
                 18. 如果证据 authority/quality 为 USER_PROVIDED 或 INTERNAL_ONLY，只能写成“用户提供资料/内部资料显示”；不要写成“公开资料显示”“市场证据显示”或“外部验证显示”，除非同一结论还绑定了公开/官方来源。
+                19. 被 Reviewer 点名的 excerpt/currentText 不能原样保留；必须补 citation、降级措辞、删除无证据表述，或明确移动到风险与证据缺口。
+                20. 返工输出必须相对上一版报告有可见变化；不要只调整标题、顺序或措辞而保留同一个阻塞问题。
 
                 用户需求:
                 %s
@@ -172,7 +175,7 @@ public class WriterNode implements AgentNode {
                         ChatMessage.user(prompt)
                 ),
                 ChatOptions.writer()
-        ));
+        ).tagged(name().name(), "report-draft"));
     }
 
     private String sanitizeReportText(AnalysisRun run, String text) {
@@ -376,7 +379,7 @@ public class WriterNode implements AgentNode {
         return latestArtifact(run.getArtifacts(), type)
                 .map(artifact -> artifact.getContent() == null || artifact.getContent().isBlank()
                         ? "暂无 " + type + " 产物。"
-                        : artifact.getContent())
+                        : abbreviate(artifact.getContent(), MAX_UPSTREAM_ARTIFACT_CHARS_FOR_PROMPT))
                 .orElse("暂无 " + type + " 产物。");
     }
 

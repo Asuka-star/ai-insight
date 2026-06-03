@@ -1,6 +1,7 @@
 package com.aiinsight.service;
 
 import com.aiinsight.model.enums.AgentName;
+import com.aiinsight.model.enums.ResearchSubtaskStatus;
 import com.aiinsight.model.enums.ReviewAction;
 import com.aiinsight.model.review.ReviewRepairTask;
 import com.aiinsight.model.run.AnalysisRequirement;
@@ -89,6 +90,205 @@ class SourceCollectionServiceTest {
                 .extracting(EvidenceSource::getUrl)
                 .filteredOn(url -> url.startsWith("https://"))
                 .allMatch(url -> url.contains("search.example.test"));
+    }
+
+    @Test
+    void recordsResearchSubtasksForCandidateSearchAndFetch() {
+        SourceCollectionService service = new SourceCollectionService(fetchUsefulPages(), fakeSearchProvider());
+        AnalysisRun run = new AnalysisRun(new AnalysisRequirement(
+                "Analyze Notion pricing",
+                "AI documents",
+                List.of("Notion"),
+                List.of("pricing"),
+                List.of("pricing_page"),
+                List.of()
+        ));
+        List<SearchQueryPlanner.SearchQueryBatch> batches = List.of(
+                new SearchQueryPlanner.SearchQueryBatch("Notion", List.of("Notion official pricing plans AI documents"))
+        );
+
+        SourceCollectionService.SearchCandidateCollection candidates = service.searchCandidates(run, false, batches);
+
+        var plan = run.getResearchPackage().getResearchCollectionPlan();
+        assertThat(plan.getRunId()).isEqualTo(run.getId());
+        assertThat(plan.getGoal()).contains("Notion");
+        assertThat(plan.getSubtasks()).hasSize(1);
+        assertThat(plan.getEvidenceBudgets()).hasSize(1);
+        assertThat(plan.getEvidenceBudgets().get(0).getMaxAcceptedSources()).isGreaterThan(0);
+        assertThat(plan.getCandidateUrls()).hasSameSizeAs(candidates.candidates());
+        var subtask = plan.getSubtasks().get(0);
+        assertThat(subtask.getStatus()).isEqualTo(ResearchSubtaskStatus.SEARCHED);
+        assertThat(subtask.getCompetitorName()).isEqualTo("Notion");
+        assertThat(subtask.getDimension()).isEqualTo("pricing");
+        assertThat(subtask.getCandidateUrlCount()).isGreaterThan(0);
+        assertThat(subtask.getStartedAt()).isNotNull();
+
+        service.collectSelectedSearchCandidates(run, false, candidates, List.of(candidates.candidates().get(0).id()));
+
+        assertThat(subtask.getStatus()).isEqualTo(ResearchSubtaskStatus.SUCCEEDED);
+        assertThat(subtask.getFetchedPageCount()).isGreaterThan(0);
+        assertThat(subtask.getAcceptedEvidenceCount()).isGreaterThan(0);
+        assertThat(subtask.getFinishedAt()).isNotNull();
+    }
+
+    @Test
+    void fetchesSelectedSearchCandidatesInParallel() {
+        AtomicInteger inFlight = new AtomicInteger();
+        AtomicInteger maxInFlight = new AtomicInteger();
+        SourceCollectionProperties properties = new SourceCollectionProperties();
+        properties.setMaxParallelFetches(4);
+        SourceCollectionService service = new SourceCollectionService(
+                parallelRecordingFetchService(inFlight, maxInFlight),
+                new NoopSearchProvider(),
+                new SearchQueryPlanner(),
+                properties
+        );
+        AnalysisRun run = new AnalysisRun(new AnalysisRequirement(
+                "Analyze Cursor",
+                "AI coding tools",
+                List.of("Cursor"),
+                List.of("pricing"),
+                List.of("official_site"),
+                List.of()
+        ));
+        List<SourceCollectionService.SearchCandidate> candidateList = java.util.stream.IntStream.rangeClosed(1, 4)
+                .mapToObj(index -> new SourceCollectionService.SearchCandidate(
+                        "C" + index,
+                        "Cursor",
+                        "Cursor pricing",
+                        index,
+                        "Cursor page " + index,
+                        "https://candidate.example.test/page-" + index,
+                        "Cursor pricing and product evidence.",
+                        "pricing_page",
+                        index,
+                        4
+                ))
+                .toList();
+        SourceCollectionService.SearchCandidateCollection candidates = new SourceCollectionService.SearchCandidateCollection(
+                List.of(new SearchQueryPlanner.SearchQueryBatch("Cursor", List.of("Cursor pricing"))),
+                candidateList,
+                List.of(),
+                true,
+                4
+        );
+        SourceCollectionService.SearchCandidateCollection initialized = service.searchCandidates(
+                run,
+                false,
+                candidates.batches()
+        );
+        assertThat(initialized.candidates()).isEmpty();
+        run.getResearchPackage().getResearchCollectionPlan().getEvidenceBudgets().forEach(budget ->
+                budget.setMaxAcceptedSources(4));
+
+        var sources = service.collectSelectedSearchCandidates(
+                run,
+                false,
+                candidates,
+                candidateList.stream().map(SourceCollectionService.SearchCandidate::id).toList()
+        );
+
+        assertThat(sources).hasSize(4);
+        assertThat(maxInFlight.get()).isGreaterThan(1);
+        assertThat(run.getResearchPackage().getResearchCollectionPlan().getSubtasks().get(0).getFetchedPageCount())
+                .isEqualTo(4);
+    }
+
+    @Test
+    void recordsDuplicateCandidateUrlsAcrossCompetitors() {
+        SourceCollectionService service = new SourceCollectionService(fetchUsefulPages(), new SearchProvider() {
+            @Override
+            public boolean isAvailable() {
+                return true;
+            }
+
+            @Override
+            public List<SearchResult> search(String query, int count) {
+                return List.of(new SearchResult(
+                        "Shared pricing page",
+                        "https://shared.example.test/pricing",
+                        "Shared pricing page reused by multiple competitors.",
+                        query,
+                        1
+                ));
+            }
+        });
+        AnalysisRun run = new AnalysisRun(new AnalysisRequirement(
+                "Analyze shared pricing",
+                "AI tools",
+                List.of("Alpha", "Beta"),
+                List.of("pricing"),
+                List.of("pricing_page"),
+                List.of()
+        ));
+        List<SearchQueryPlanner.SearchQueryBatch> batches = List.of(
+                new SearchQueryPlanner.SearchQueryBatch("Alpha", List.of("Alpha pricing")),
+                new SearchQueryPlanner.SearchQueryBatch("Beta", List.of("Beta pricing"))
+        );
+
+        SourceCollectionService.SearchCandidateCollection candidates = service.searchCandidates(run, false, batches);
+
+        var candidateUrls = run.getResearchPackage().getResearchCollectionPlan().getCandidateUrls();
+        assertThat(candidates.candidates()).hasSize(1);
+        assertThat(candidateUrls).hasSize(2);
+        assertThat(candidateUrls).filteredOn(candidate -> candidate.isDuplicate()).hasSize(1)
+                .allSatisfy(candidate -> {
+                    assertThat(candidate.getDuplicateOf()).isNotNull();
+                    assertThat(candidate.getRejectionReason()).isEqualTo("duplicate_url");
+                });
+    }
+
+    @Test
+    void appliesEvidenceBudgetWhenPromotingCandidateEvidence() {
+        SourceCollectionService service = new SourceCollectionService(fetchUsefulPages(), new NoopSearchProvider());
+        AnalysisRun run = new AnalysisRun(new AnalysisRequirement(
+                "Analyze Cursor",
+                "AI coding tools",
+                List.of("Cursor"),
+                List.of("pricing"),
+                List.of("official_site"),
+                List.of()
+        ));
+        List<SourceCollectionService.SearchCandidate> candidateList = java.util.stream.IntStream.rangeClosed(1, 3)
+                .mapToObj(index -> new SourceCollectionService.SearchCandidate(
+                        "C" + index,
+                        "Cursor",
+                        "Cursor pricing",
+                        index,
+                        "Cursor page " + index,
+                        "https://budget.example.test/page-" + index,
+                        "Cursor pricing and product evidence.",
+                        "pricing_page",
+                        index,
+                        3
+                ))
+                .toList();
+        SourceCollectionService.SearchCandidateCollection candidates = new SourceCollectionService.SearchCandidateCollection(
+                List.of(new SearchQueryPlanner.SearchQueryBatch("Cursor", List.of("Cursor pricing"))),
+                candidateList,
+                List.of(),
+                true,
+                3
+        );
+
+        SourceCollectionService.SearchCandidateCollection initialized = service.searchCandidates(
+                run,
+                false,
+                candidates.batches()
+        );
+        assertThat(initialized.candidates()).isEmpty();
+        run.getResearchPackage().getResearchCollectionPlan().getEvidenceBudgets().get(0).setMaxAcceptedSources(1);
+
+        var sources = service.collectSelectedSearchCandidates(
+                run,
+                false,
+                candidates,
+                candidateList.stream().map(SourceCollectionService.SearchCandidate::id).toList()
+        );
+
+        assertThat(sources).hasSize(1);
+        assertThat(run.getResearchPackage().getResearchCollectionPlan().getSubtasks().get(0).getAcceptedEvidenceCount())
+                .isEqualTo(1);
     }
 
     @Test
@@ -959,6 +1159,86 @@ class SourceCollectionServiceTest {
         assertThat(run.getRecommendedActions()).anyMatch(action -> action.contains("没有形成可用网页证据"));
     }
 
+    @Test
+    void dropsLowQualitySearchDerivedSources() {
+        WebPageFetchService fetchService = new WebPageFetchService() {
+            @Override
+            public FetchedPage fetch(String url) {
+                return FetchedPage.success(
+                        url,
+                        "Demo video page",
+                        """
+                                This page contains a long transcript-like promotional description with enough text to pass
+                                basic extraction length checks, but it is still a low-quality video result and should not
+                                become fetched evidence for downstream analysis.
+                                """,
+                        "robots.txt checked: allowed for public fetch.",
+                        "video",
+                        "LOW",
+                        200,
+                        "text/html"
+                );
+            }
+        };
+        SourceCollectionService service = new SourceCollectionService(fetchService, searchProviderWithSnippet(
+                "Demo video",
+                "https://www.youtube.com/watch?v=abc123",
+                "Video walkthrough"
+        ));
+        AnalysisRun run = new AnalysisRun(new AnalysisRequirement(
+                "Analyze Claude Code",
+                "AI coding tools",
+                List.of("Claude Code"),
+                List.of("agent workflow"),
+                List.of("public_review"),
+                List.of()
+        ));
+
+        var sources = service.collect(run, false);
+
+        assertThat(sources).isEmpty();
+    }
+
+    @Test
+    void doesNotDeriveClaudeChineseLocaleOfficialFallbacks() {
+        List<String> fetchedUrls = new ArrayList<>();
+        WebPageFetchService fetchService = new WebPageFetchService() {
+            @Override
+            public FetchedPage fetch(String url) {
+                fetchedUrls.add(url);
+                if (url.equals("https://claude.com/product/claude-code")) {
+                    return FetchedPage.success(
+                            url,
+                            "Claude Code",
+                            """
+                                    Claude Code official product page describes agentic coding, terminal workflows,
+                                    enterprise development practices, documentation, security, and release context.
+                                    """,
+                            "robots.txt checked: allowed for public fetch.",
+                            "official_site",
+                            "HIGH",
+                            200,
+                            "text/html"
+                    );
+                }
+                return FetchedPage.failed(url, "simulated missing official section", "HTTP_4XX");
+            }
+        };
+        SourceCollectionService service = new SourceCollectionService(fetchService, new NoopSearchProvider());
+        AnalysisRun run = new AnalysisRun(new AnalysisRequirement(
+                "Analyze Claude Code",
+                "AI coding tools",
+                List.of("Claude Code"),
+                List.of("docs", "security", "pricing"),
+                List.of("official_site", "docs", "security", "pricing_page"),
+                List.of("https://claude.com/product/claude-code")
+        ));
+
+        service.collect(run, false);
+
+        assertThat(fetchedUrls).noneMatch(url -> url.contains("https://claude.com/cn/"));
+    }
+
     private WebPageFetchService fetchAlwaysFails() {
         return new WebPageFetchService() {
             @Override
@@ -972,6 +1252,38 @@ class SourceCollectionServiceTest {
         return new WebPageFetchService() {
             @Override
             public FetchedPage fetch(String url) {
+                return FetchedPage.success(
+                        url,
+                        "Useful page for " + url,
+                        """
+                                This official product documentation page describes pricing, reviews, enterprise controls,
+                                collaboration workflows, permission governance, AI features, release notes, support options,
+                                customer feedback, integration details, and product positioning for competitive analysis.
+                                The content is intentionally long enough to be treated as a useful fetched search result.
+                                """,
+                        "robots.txt checked: allowed for public fetch.",
+                        "docs",
+                        "HIGH",
+                        200,
+                        "text/html"
+                );
+            }
+        };
+    }
+
+    private WebPageFetchService parallelRecordingFetchService(AtomicInteger inFlight, AtomicInteger maxInFlight) {
+        return new WebPageFetchService() {
+            @Override
+            public FetchedPage fetch(String url) {
+                int current = inFlight.incrementAndGet();
+                maxInFlight.accumulateAndGet(current, Math::max);
+                try {
+                    Thread.sleep(80);
+                } catch (InterruptedException ex) {
+                    Thread.currentThread().interrupt();
+                } finally {
+                    inFlight.decrementAndGet();
+                }
                 return FetchedPage.success(
                         url,
                         "Useful page for " + url,

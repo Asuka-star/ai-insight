@@ -117,9 +117,9 @@ npm install
 npm run dev
 ```
 
-## Spring AI 与小米 LLM 配置
+## Spring AI 与 LLM 配置
 
-项目通过 Spring AI 的 OpenAI ChatModel 接入小米 OpenAI-compatible 接口，业务侧仍然只依赖 `LlmClient` 门面。不要提交真实 API Key。
+项目通过 Spring AI 的 OpenAI ChatModel 接入 OpenAI-compatible 接口，业务侧仍然只依赖 `LlmClient` 门面。默认主模型使用小米接口；如果配置了豆包接口，Clarifier 会单独路由到豆包小模型。不要提交真实 API Key。
 
 PowerShell 示例：
 
@@ -128,10 +128,17 @@ $env:XIAOMI_LLM_API_KEY="your-api-key"
 $env:XIAOMI_LLM_BASE_URL="https://token-plan-cn.xiaomimimo.com/v1"
 $env:XIAOMI_LLM_COMPLETIONS_PATH="/chat/completions"
 $env:XIAOMI_LLM_MODEL="mimo-v2.5-pro"
+$env:DOUBAO_LLM_API_KEY="your-doubao-key"
+$env:DOUBAO_LLM_BASE_URL="https://ark.cn-beijing.volces.com/api/v3"
+$env:DOUBAO_LLM_COMPLETIONS_PATH="/chat/completions"
+$env:DOUBAO_LLM_ENDPOINT_ID="ep-xxxxxxxx"
+$env:DOUBAO_LLM_DISPLAY_MODEL="Doubao-Seed-2.0-lite"
 mvn spring-boot:run
 ```
 
 `XIAOMI_LLM_BASE_URL` 当前默认包含 `/v1`，因此 `XIAOMI_LLM_COMPLETIONS_PATH` 默认是 `/chat/completions`。如果后续换成不带 `/v1` 的 OpenAI-compatible base url，可以把 completions path 改成 `/v1/chat/completions`。
+
+`DOUBAO_LLM_ENDPOINT_ID` 是火山方舟控制台里的 Endpoint ID，形如 `ep-...`；它会作为 OpenAI-compatible 请求里的 `model` 参数。`DOUBAO_LLM_API_KEY` 或 `DOUBAO_LLM_ENDPOINT_ID` 为空时，Clarifier 会继续使用默认主模型；两者都配置后，仅 `CLARIFIER/scope-clarification` 走豆包小模型，Researcher、Extractor、Analyst、Writer 和 Reviewer 仍使用默认主模型。
 
 也可以在本地 `.env` 中维护配置，`.env` 已加入 `.gitignore`。
 
@@ -139,6 +146,8 @@ mvn spring-boot:run
 
 ```env
 XIAOMI_LLM_API_KEY=your-xiaomi-key
+DOUBAO_LLM_API_KEY=your-doubao-key
+DOUBAO_LLM_ENDPOINT_ID=ep-xxxxxxxx
 TAVILY_API_KEY=your-tavily-key
 POSTGRES_URL=jdbc:postgresql://localhost:5433/ai_insight
 POSTGRES_USER=ai_insight

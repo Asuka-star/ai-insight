@@ -19,6 +19,13 @@ class AnalysisRunSchemaTest {
         assertThat(run.getResearchPackage()).isNotNull();
         assertThat(run.getResearchPackage().getResearchPlan()).isNotNull();
         assertThat(run.getResearchPackage().getResearchPlan().getEvidenceGaps()).isEmpty();
+        assertThat(run.getResearchPackage().getResearchCollectionPlan()).isNotNull();
+        assertThat(run.getResearchPackage().getResearchCollectionPlan().getSubtasks()).isEmpty();
+        assertThat(run.getResearchPackage().getResearchCollectionPlan().getCandidateUrls()).isEmpty();
+        assertThat(run.getResearchPackage().getResearchCollectionPlan().getEvidenceBudgets()).isEmpty();
+        assertThat(run.getResearchPackage().getResearchCollectionPlan().getCoverageGaps()).isEmpty();
+        assertThat(run.getResearchPackage().getResearchCollectionPlan().getRepairTargets()).isEmpty();
+        assertThat(run.getResearchPackage().getResearchCollectionPlan().getLeadResearchPlan()).isNotNull();
         assertThat(run.getResearchPackage().getInterviewInsights()).isEmpty();
         assertThat(run.getCompetitorProfiles()).isEmpty();
         assertThat(run.getClaims()).isEmpty();

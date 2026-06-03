@@ -57,12 +57,31 @@ public class AnalysisEventBroker {
 
     public void publish(AnalysisRun run, String type, String message) {
         RunEvent event = RunEvent.of(run.getId(), type, message);
-        UUID runId = run.getId();
+        publish(run.getId(), event.getType(), event);
+        publishSnapshot(run);
+    }
+
+    public void publishPayload(AnalysisRun run, String type, Object payload) {
+        publish(run.getId(), type, payload);
+        publishSnapshot(run);
+    }
+
+    private void publish(UUID runId, String type, Object payload) {
         emitters.getOrDefault(runId, List.of()).forEach(emitter -> {
-            if (!send(emitter, event)) {
+            if (!send(emitter, type, payload)) {
                 remove(runId, emitter);
             }
         });
+    }
+
+    private void publishSnapshot(AnalysisRun fallbackRun) {
+        if (fallbackRun == null) {
+            return;
+        }
+        AnalysisRun snapshot = repository == null
+                ? fallbackRun
+                : repository.findById(fallbackRun.getId()).orElse(fallbackRun);
+        publish(snapshot.getId(), RUN_SNAPSHOT_EVENT, snapshot);
     }
 
     public void close(UUID runId) {

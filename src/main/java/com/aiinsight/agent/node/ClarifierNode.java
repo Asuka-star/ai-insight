@@ -110,13 +110,12 @@ public class ClarifierNode implements AgentNode {
                   "industry": "行业或业务场景",
                   "competitors": ["竞品名称"],
                   "dimensions": ["分析维度"],
-                  "sourcePreferences": ["official_site", "pricing_page", "product_docs", "release_notes", "technical_blog", "authoritative_media", "public_reviews"],
                   "sourceUrls": ["只允许复述用户已提供的 URL，不要编造 URL"],
                   "outputGoal": "报告用途",
                   "clarificationQuestions": ["需要用户确认的问题"],
                   "clarificationItems": [
                     {
-                      "field": "industry|competitors|dimensions|sourcePreferences|sourceUrls|outputGoal",
+                      "field": "industry|competitors|dimensions|sourceUrls|outputGoal",
                       "question": "需要用户确认的问题",
                       "reason": "为什么要确认",
                       "required": true,
@@ -131,17 +130,15 @@ public class ClarifierNode implements AgentNode {
                 1. 用户已明确给出的竞品、维度、URL 或报告用途必须原样保留。
                 2. 只补全占位或缺失字段，不确定就写入 clarificationQuestions。
                 3. sourceUrls 只能复述用户已提供的 URL，不要编造 URL。
-                4. 默认优先官方、权威和可复核来源，sourcePreferences 只表示重点覆盖类型。
-                5. clarificationItems 要给出可点选的正常选项；如果是单值字段，values 放一个值；如果是列表字段，values 放完整列表。
-                6. 如果竞品名称疑似拼写错误、错别字或品牌别名，不要静默改写；保留用户原值，并在 clarificationItems 中给出修正选项，values 放修正后的完整竞品列表。
-                7. 如果竞品过少或用户表达“同类产品/标杆产品”等模糊范围，可以在 clarificationItems 中给出补充竞品选项，values 放补充后的完整竞品列表。
-                8. 输出要短，确保 JSON 完整闭合。
+                4. clarificationItems 要给出可点选的正常选项；如果是单值字段，values 放一个值；如果是列表字段，values 放完整列表。
+                5. 如果竞品名称疑似拼写错误、错别字或品牌别名，不要静默改写；保留用户原值，并在 clarificationItems 中给出修正选项，values 放修正后的完整竞品列表。
+                6. 如果竞品过少或用户表达“同类产品/标杆产品”等模糊范围，可以在 clarificationItems 中给出补充竞品选项，values 放补充后的完整竞品列表。
+                7. 输出要短，确保 JSON 完整闭合。
 
                 原始需求：%s
                 industry=%s
                 competitors=%s
                 dimensions=%s
-                sources=%s
                 urls=%s
                 goal=%s
                 """.formatted(
@@ -149,7 +146,6 @@ public class ClarifierNode implements AgentNode {
                 nullToEmpty(requirement.getIndustry()),
                 requirement.getCompetitors(),
                 requirement.getDimensions(),
-                requirement.getSourcePreferences(),
                 requirement.getSourceUrls(),
                 nullToEmpty(requirement.getOutputGoal())
         );
@@ -159,7 +155,7 @@ public class ClarifierNode implements AgentNode {
                         ChatMessage.user(prompt)
                 ),
                 ChatOptions.clarifier()
-        ));
+        ).tagged(name().name(), "scope-clarification"));
     }
 
     private ClarificationDraft parseLlmDraft(String raw) {
@@ -169,7 +165,6 @@ public class ClarifierNode implements AgentNode {
             draft.setIndustry(text(root, "industry"));
             draft.setCompetitors(textList(root, "competitors"));
             draft.setDimensions(textList(root, "dimensions"));
-            draft.setSourcePreferences(textList(root, "sourcePreferences"));
             draft.setSourceUrls(urlList(root, "sourceUrls"));
             draft.setOutputGoal(text(root, "outputGoal"));
             draft.setClarificationQuestions(textList(root, "clarificationQuestions"));
@@ -205,8 +200,14 @@ public class ClarifierNode implements AgentNode {
     private List<ClarificationItem> mergeItems(List<ClarificationItem> llmItems) {
         LinkedHashSet<String> seen = new LinkedHashSet<>();
         List<ClarificationItem> merged = new ArrayList<>();
-        addItems(merged, seen, llmItems);
+        addItems(merged, seen, userVisibleItems(llmItems));
         return merged;
+    }
+
+    private List<ClarificationItem> userVisibleItems(List<ClarificationItem> items) {
+        return items.stream()
+                .filter(item -> !"sourcePreferences".equals(item.getField()))
+                .toList();
     }
 
     private void addItems(List<ClarificationItem> target, LinkedHashSet<String> seen, List<ClarificationItem> items) {

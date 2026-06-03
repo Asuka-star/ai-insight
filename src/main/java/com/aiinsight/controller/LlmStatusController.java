@@ -1,6 +1,7 @@
 package com.aiinsight.controller;
 
 import com.aiinsight.dto.LlmStatusResponse;
+import com.aiinsight.llm.DoubaoLlmProperties;
 import com.aiinsight.llm.LlmClient;
 import com.aiinsight.llm.XiaomiLlmProperties;
 import lombok.RequiredArgsConstructor;
@@ -16,6 +17,7 @@ public class LlmStatusController {
 
     private final LlmClient llmClient;
     private final XiaomiLlmProperties properties;
+    private final DoubaoLlmProperties doubaoProperties;
 
     @GetMapping("/status")
     public LlmStatusResponse status() {
@@ -25,7 +27,14 @@ public class LlmStatusController {
                 "xiaomi-openai-compatible",
                 properties.getModel(),
                 properties.getBaseUrl(),
-                properties.getCompletionsPath()
+                properties.getCompletionsPath(),
+                StringUtils.hasText(doubaoProperties.getApiKey()),
+                StringUtils.hasText(doubaoProperties.getEndpointId()),
+                "doubao-openai-compatible",
+                doubaoProperties.getEndpointId(),
+                doubaoProperties.getDisplayModel(),
+                doubaoProperties.getBaseUrl(),
+                doubaoProperties.getCompletionsPath()
         );
     }
 }

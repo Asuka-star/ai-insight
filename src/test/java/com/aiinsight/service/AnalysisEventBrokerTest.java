@@ -41,6 +41,29 @@ class AnalysisEventBrokerTest {
         assertThat(brokenEmitter.completeCalled).isFalse();
     }
 
+    @Test
+    void publishAlsoSendsCurrentRunSnapshot() {
+        AnalysisEventBroker broker = new AnalysisEventBroker();
+        AnalysisRun run = new AnalysisRun(new AnalysisRequirement());
+        CountingEmitter emitter = new CountingEmitter();
+        @SuppressWarnings("unchecked")
+        Map<UUID, List<SseEmitter>> emitters = (Map<UUID, List<SseEmitter>>) ReflectionTestUtils.getField(broker, "emitters");
+        emitters.put(run.getId(), new CopyOnWriteArrayList<>(List.of(emitter)));
+
+        broker.publish(run, "agent_started", "agent started");
+
+        assertThat(emitter.sendCount).isEqualTo(2);
+    }
+
+    private static class CountingEmitter extends SseEmitter {
+        private int sendCount;
+
+        @Override
+        public void send(SseEventBuilder builder) {
+            sendCount++;
+        }
+    }
+
     private static class BrokenEmitter extends SseEmitter {
         private boolean completeCalled;
 

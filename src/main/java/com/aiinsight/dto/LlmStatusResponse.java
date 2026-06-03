@@ -6,6 +6,13 @@ public record LlmStatusResponse(
         String provider,
         String model,
         String baseUrl,
-        String completionsPath
+        String completionsPath,
+        boolean clarifierApiKeyConfigured,
+        boolean clarifierEndpointConfigured,
+        String clarifierProvider,
+        String clarifierEndpointId,
+        String clarifierModel,
+        String clarifierBaseUrl,
+        String clarifierCompletionsPath
 ) {
 }

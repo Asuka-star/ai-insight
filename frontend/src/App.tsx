@@ -15,9 +15,9 @@ import {
   Sparkles,
   UploadCloud
 } from "lucide-react";
-import type { AnalysisContextMessage, AgentName, AnalysisArtifact, AnalysisRun, AnalysisRunMetrics, AnalysisRunSummary, ContextIntent, ReviewFinding, RunEvent } from "./types";
+import type { AgentStep, AnalysisContextMessage, AgentName, AnalysisArtifact, AnalysisRun, AnalysisRunMetrics, AnalysisRunSummary, ContextIntent, ReviewFinding, RunEvent } from "./types";
 import { addContext, addEvidence, clarifyRequirement, createRun, deleteDocument, deleteRun, getRun, getRunMetrics, listRunSummaries, rerunAgent, startAnalysis, updateRequirement, uploadDocument } from "./api";
-import { AGENT_LABELS, ARTIFACT_LABELS, SOURCE_OPTIONS } from "./constants";
+import { AGENT_LABELS, ARTIFACT_LABELS } from "./constants";
 import {
   calculateRunMetrics,
   countCitedClaims,
@@ -33,6 +33,7 @@ import { StatusBadge } from "./components/StatusBadge";
 import { AgentTimeline } from "./components/AgentTimeline";
 import { EvidencePanel } from "./components/EvidencePanel";
 import { ReviewPanel } from "./components/ReviewPanel";
+import { ResearchCollectionPanel } from "./components/ResearchCollectionPanel";
 import { CollapsiblePanel } from "./components/CollapsiblePanel";
 import { TraceDrawer } from "./components/TraceDrawer";
 import { ScopeConfirmationPanel } from "./components/ScopeConfirmationPanel";
@@ -43,7 +44,7 @@ import { DeleteHistoryDialog } from "./components/DeleteHistoryDialog";
 import { ResourcePackDrawer } from "./components/ResourcePackDrawer";
 
 type MainView = "dag" | "report" | "schema" | "matrix" | "versions";
-type RightPanelId = "timeline" | "evidence" | "review" | "metrics";
+type RightPanelId = "timeline" | "collection" | "evidence" | "review" | "metrics";
 
 const MIN_LEFT_RAIL_WIDTH = 240;
 const MAX_LEFT_RAIL_WIDTH = 420;
@@ -53,7 +54,6 @@ const MAX_RIGHT_RAIL_WIDTH = 520;
 const RESIZE_LAYOUT_RESERVE = 72;
 const CURRENT_RUN_STORAGE_KEY = "ai-insight.currentRunId";
 const SCOPE_DRAFT_STORAGE_KEY = "ai-insight.scopeDraft";
-const DEFAULT_SOURCE_VALUES = SOURCE_OPTIONS.map((source) => source.value);
 const WorkflowGraph = lazy(() => import("./components/WorkflowGraph").then((module) => ({ default: module.WorkflowGraph })));
 const ArtifactViewer = lazy(() => import("./components/ArtifactViewer").then((module) => ({ default: module.ArtifactViewer })));
 const SchemaPanel = lazy(() => import("./components/SchemaPanel").then((module) => ({ default: module.SchemaPanel })));
@@ -63,7 +63,6 @@ interface ScopeDraft {
   competitors: string;
   dimensions: string;
   outputGoal: string;
-  sources: string[];
   sourceUrls: string;
   maxReviewReworkAttempts: number;
 }
@@ -77,7 +76,6 @@ export function App() {
   const [competitors, setCompetitors] = useState(() => initialScopeDraftRef.current?.competitors ?? "");
   const [dimensions, setDimensions] = useState(() => initialScopeDraftRef.current?.dimensions ?? "");
   const [outputGoal, setOutputGoal] = useState(() => initialScopeDraftRef.current?.outputGoal ?? "");
-  const [sources, setSources] = useState<string[]>(() => initialScopeDraftRef.current?.sources ?? DEFAULT_SOURCE_VALUES);
   const [sourceUrls, setSourceUrls] = useState(() => initialScopeDraftRef.current?.sourceUrls ?? "");
   const [maxReviewReworkAttempts, setMaxReviewReworkAttempts] = useState(() => initialScopeDraftRef.current?.maxReviewReworkAttempts ?? 1);
   const [selectedArtifactId, setSelectedArtifactId] = useState<string>();
@@ -86,6 +84,7 @@ export function App() {
   const [selectedCitationRequestId, setSelectedCitationRequestId] = useState(0);
   const [selectedClaimId, setSelectedClaimId] = useState<string>();
   const [selectedAgent, setSelectedAgent] = useState<AgentName | null>(null);
+  const [traceDrawerAgent, setTraceDrawerAgent] = useState<AgentName | null>(null);
   const [contextText, setContextText] = useState("");
   const [contextIntent, setContextIntent] = useState<ContextIntent>("ADJUST_SCOPE");
   const [contextTargetAgent, setContextTargetAgent] = useState<AgentName>();
@@ -105,7 +104,8 @@ export function App() {
   const [localContextMessages, setLocalContextMessages] = useState<AnalysisContextMessage[]>([]);
   const [mainView, setMainView] = useState<MainView>("dag");
   const [collapsedRightPanels, setCollapsedRightPanels] = useState<Record<RightPanelId, boolean>>({
-    timeline: false,
+    timeline: true,
+    collection: false,
     evidence: false,
     review: false,
     metrics: true
@@ -114,6 +114,7 @@ export function App() {
   const [eventMessage, setEventMessage] = useState("等待填写范围确认");
   const [backendOk, setBackendOk] = useState(false);
   const [isCreating, setIsCreating] = useState(false);
+  const [pendingClarificationRunId, setPendingClarificationRunId] = useState<string>();
   const [isScopeBusy, setIsScopeBusy] = useState(false);
   const [isHistoryLoading, setIsHistoryLoading] = useState(false);
   const [deletingRunId, setDeletingRunId] = useState<string>();
@@ -138,7 +139,6 @@ export function App() {
       competitors: scope.competitors ?? [],
       dimensions: scope.dimensions ?? [],
       outputGoal: scope.outputGoal ?? "",
-      sourcePreferences: scope.sourcePreferences ?? [],
       sourceUrls: scope.sourceUrls ?? [],
       maxReviewReworkAttempts: run.maxReviewReworkAttempts ?? 1,
       confirmed: Boolean(run.clarificationDraft?.confirmed)
@@ -169,6 +169,7 @@ export function App() {
       setSelectedClaimId(undefined);
       setSelectedAgent(null);
       setRerunningAgent(null);
+      setPendingClarificationRunId(undefined);
       setMainView("dag");
       setLocalContextMessages([]);
       setEventMessage("历史会话已恢复");
@@ -196,7 +197,7 @@ export function App() {
     if (window.localStorage.getItem(CURRENT_RUN_STORAGE_KEY) !== id) return;
     window.localStorage.setItem(CURRENT_RUN_STORAGE_KEY, id);
     setBackendOk(true);
-    setRun(latest);
+    setRun((current) => mergeRunSnapshotWithLocalRunningStep(current, latest));
     setHistoryRuns((runs) => upsertHistorySummary(runs, summaryFromRun(latest)));
   }, [loadHistory, run?.id]);
 
@@ -241,10 +242,19 @@ export function App() {
     run?.workflowTransitions?.length
   ]);
 
-  const requestRunRefresh = useCallback((runId: string) => {
+  const requestRunRefresh = useCallback((runId: string, delayMs = 500) => {
     if (refreshTimerRef.current) {
-      if (refreshTimerRunIdRef.current === runId) return;
+      if (refreshTimerRunIdRef.current === runId && delayMs > 0) return;
       clearPendingRunRefresh();
+    }
+    if (delayMs <= 0) {
+      if (!isCurrentWorkspaceRun(runId)) return;
+      refreshRun(runId).catch((error) => {
+        if (isCurrentWorkspaceRun(runId)) {
+          setEventMessage(error.message);
+        }
+      });
+      return;
     }
     refreshTimerRunIdRef.current = runId;
     refreshTimerRef.current = window.setTimeout(() => {
@@ -257,7 +267,7 @@ export function App() {
           setEventMessage(error.message);
         }
       });
-    }, 500);
+    }, delayMs);
   }, [clearPendingRunRefresh, refreshRun]);
 
   useEffect(() => {
@@ -313,6 +323,8 @@ export function App() {
       "agent_rerun_started",
       "agent_rerun_completed",
       "agent_rerun_failed",
+      "research.collection.plan.updated",
+      "research.repair.targets.updated",
       "review_rework_started",
       "review_rework_completed",
       "run_cancelled",
@@ -324,14 +336,20 @@ export function App() {
       const snapshot = safeParseRunSnapshot(event);
       if (!snapshot || snapshot.id !== activeRunId || !isCurrentWorkspaceRun(snapshot.id)) return;
       setBackendOk(true);
-      setRun(snapshot);
+      setRun((current) => mergeRunSnapshotWithLocalRunningStep(current, snapshot));
+      if (isClarificationSettled(snapshot)) {
+        setPendingClarificationRunId(undefined);
+      }
       setHistoryRuns((runs) => upsertHistorySummary(runs, summaryFromRun(snapshot)));
     });
     eventTypes.forEach((type) => {
       events.addEventListener(type, (event) => {
         const data = safeParseEvent(event);
         setEventMessage(data?.message || type);
-        requestRunRefresh(activeRunId);
+        if (type === "clarification_ready" || type === "run_failed" || type === "run_cancelled") {
+          setPendingClarificationRunId(undefined);
+        }
+        requestRunRefresh(activeRunId, type === "agent_started" ? 0 : 500);
       });
     });
     events.onerror = () => setEventMessage("SSE 暂不可用，使用轮询刷新");
@@ -352,6 +370,19 @@ export function App() {
       clearPendingRunRefresh();
     };
   }, [clearPendingRunRefresh]);
+
+  useEffect(() => {
+    if (!selectedAgent && traceDrawerAgent) {
+      setTraceDrawerAgent(null);
+    }
+  }, [selectedAgent, traceDrawerAgent]);
+
+  useEffect(() => {
+    if (!run || pendingClarificationRunId !== run.id) return;
+    if (isClarificationSettled(run)) {
+      setPendingClarificationRunId(undefined);
+    }
+  }, [pendingClarificationRunId, run?.id, run?.status, run?.steps.length]);
 
   const selectedArtifact = useMemo(() => {
     const artifacts = run?.artifacts ?? [];
@@ -394,9 +425,6 @@ export function App() {
     setDimensions((scope.dimensions ?? []).join(", "));
     setOutputGoal(scope.outputGoal ?? "");
     setSourceUrls((scope.sourceUrls ?? []).join("\n"));
-    if (scope.sourcePreferences?.length) {
-      setSources(scope.sourcePreferences);
-    }
     setMaxReviewReworkAttempts(run.maxReviewReworkAttempts ?? 1);
     setLocalScopeConfirmed(Boolean(run.clarificationDraft?.confirmed));
   }, [scopeSyncKey]);
@@ -408,7 +436,6 @@ export function App() {
       competitors,
       dimensions,
       outputGoal,
-      sources,
       sourceUrls,
       maxReviewReworkAttempts
     });
@@ -418,7 +445,6 @@ export function App() {
     competitors,
     dimensions,
     outputGoal,
-    sources,
     sourceUrls,
     maxReviewReworkAttempts
   ]);
@@ -445,6 +471,11 @@ export function App() {
         evidence: false
       };
     });
+  }, []);
+
+  const handleOpenAgentTrace = useCallback((agentName: AgentName) => {
+    setSelectedAgent(agentName);
+    setTraceDrawerAgent(agentName);
   }, []);
 
   const startRailResize = useCallback((
@@ -495,12 +526,12 @@ export function App() {
     window.localStorage.removeItem(CURRENT_RUN_STORAGE_KEY);
     const draft = readScopeDraft();
     setRun(null);
+    setPendingClarificationRunId(undefined);
     setServerRunMetrics(null);
     setIndustry(draft?.industry ?? "");
     setCompetitors(draft?.competitors ?? "");
     setDimensions(draft?.dimensions ?? "");
     setOutputGoal(draft?.outputGoal ?? "");
-    setSources(draft?.sources ?? DEFAULT_SOURCE_VALUES);
     setSourceUrls(draft?.sourceUrls ?? "");
     setMaxReviewReworkAttempts(draft?.maxReviewReworkAttempts ?? 1);
     setSelectedArtifactId(undefined);
@@ -570,6 +601,7 @@ export function App() {
     setArtifactPinned(false);
     setSelectedCitationKey(undefined);
     setSelectedAgent(null);
+    setPendingClarificationRunId(undefined);
     setLocalContextMessages([]);
     try {
       const competitorList = splitList(competitors);
@@ -581,7 +613,6 @@ export function App() {
         industry,
         competitors: competitorList,
         dimensions: dimensionList,
-        sourcePreferences: sources,
         sourceUrls: sourceUrlList,
         outputGoal,
         maxReviewReworkAttempts
@@ -589,12 +620,16 @@ export function App() {
       if (requestToken !== workspaceRequestTokenRef.current) return;
       setBackendOk(true);
       setRun(nextRun);
+      if (!isClarificationSettled(nextRun)) {
+        setPendingClarificationRunId(nextRun.id);
+      }
       requestRunRefresh(nextRun.id);
       removeScopeDraft();
       window.localStorage.setItem(CURRENT_RUN_STORAGE_KEY, nextRun.id);
       setHistoryRuns((runs) => upsertHistorySummary(runs, summaryFromRun(nextRun)));
     } catch (error) {
       if (requestToken !== workspaceRequestTokenRef.current) return;
+      setPendingClarificationRunId(undefined);
       setBackendOk(false);
       setEventMessage(error instanceof Error ? error.message : "范围确认生成失败");
     } finally {
@@ -614,7 +649,6 @@ export function App() {
         industry,
         competitors: splitList(competitors),
         dimensions: splitList(dimensions),
-        sourcePreferences: sources,
         sourceUrls: splitLines(sourceUrls),
         outputGoal,
         maxReviewReworkAttempts
@@ -640,8 +674,6 @@ export function App() {
       setCompetitors(normalizedValues.join("、"));
     } else if (field === "dimensions") {
       setDimensions(normalizedValues.join("、"));
-    } else if (field === "sourcePreferences") {
-      setSources(normalizedValues);
     } else if (field === "sourceUrls") {
       setSourceUrls(normalizedValues.join("\n"));
     } else if (field === "outputGoal") {
@@ -662,7 +694,6 @@ export function App() {
         industry,
         competitors: splitList(competitors),
         dimensions: splitList(dimensions),
-        sourcePreferences: sources,
         sourceUrls: splitLines(sourceUrls),
         outputGoal,
         maxReviewReworkAttempts
@@ -693,7 +724,6 @@ export function App() {
         industry,
         competitors: splitList(competitors),
         dimensions: splitList(dimensions),
-        sourcePreferences: sources,
         sourceUrls: splitLines(sourceUrls),
         outputGoal,
         maxReviewReworkAttempts
@@ -844,6 +874,7 @@ export function App() {
     if (!run || runMutationDisabled || rerunningAgent) return;
     const runId = run.id;
     setRerunningAgent(agentName);
+    setRun((current) => withOptimisticRerunStep(current, agentName));
     setEventMessage(`正在从 ${AGENT_LABELS[agentName]} 继续重跑下游链路`);
     try {
       const nextRun = await rerunAgent(runId, agentName);
@@ -855,6 +886,7 @@ export function App() {
       setEventMessage(error instanceof Error ? `重跑失败：${error.message}` : "重跑失败");
     } finally {
       if (isCurrentWorkspaceRun(runId)) {
+        refreshRun(runId).catch(() => undefined);
         setRerunningAgent(null);
       }
     }
@@ -901,6 +933,8 @@ export function App() {
   };
   const phase = String(resolveRunPhase(run));
   const runMutationDisabled = !run || Boolean(rerunningAgent) || ["RUNNING", "REVIEWING", "REVISING", "CANCELLED"].includes(phase);
+  const pendingClarification = isCreating
+    || Boolean(run?.id && pendingClarificationRunId === run.id && !isClarificationSettled(run));
   const userResourceSources = useMemo(
     () => (run?.evidenceSources ?? []).filter(isUserResourceSource),
     [run?.evidenceSources]
@@ -963,14 +997,12 @@ export function App() {
             competitors={competitors}
             dimensions={dimensions}
             outputGoal={outputGoal}
-            sources={sources}
             sourceUrls={sourceUrls}
             maxReviewReworkAttempts={maxReviewReworkAttempts}
             onIndustryChange={setIndustry}
             onCompetitorsChange={setCompetitors}
             onDimensionsChange={setDimensions}
             onOutputGoalChange={setOutputGoal}
-            onSourcesChange={setSources}
             onSourceUrlsChange={setSourceUrls}
             onMaxReviewReworkAttemptsChange={setMaxReviewReworkAttempts}
             onApplyClarificationOption={handleApplyClarificationOption}
@@ -978,7 +1010,7 @@ export function App() {
             onReclarify={handleReclarifyScope}
             onConfirm={handleConfirmRequirement}
             onStart={handleStartAnalysis}
-            creating={isCreating}
+            creating={pendingClarification}
             busy={isScopeBusy}
           />
 
@@ -1075,7 +1107,7 @@ export function App() {
 
             {mainView === "dag" ? (
               <Suspense fallback={<PanelLoading label="正在加载工作流视图" />}>
-                <WorkflowGraph run={run} onSelectAgent={setSelectedAgent} />
+                <WorkflowGraph run={run} onSelectAgent={handleOpenAgentTrace} />
               </Suspense>
             ) : null}
 
@@ -1161,17 +1193,23 @@ export function App() {
             eyebrow="时间线"
             title="执行回放"
             icon={<Activity size={18} />}
-            summary={isCreating ? "澄清执行中" : `${run?.steps.length ?? 0} 个步骤`}
+            summary={pendingClarification ? "澄清执行中" : `${run?.steps.length ?? 0} 个步骤`}
             collapsed={collapsedRightPanels.timeline}
             onToggle={() => toggleRightPanel("timeline")}
           >
             <AgentTimeline
               run={run}
               selectedAgent={selectedAgent}
-              onSelectAgent={setSelectedAgent}
-              pendingClarification={isCreating}
+              onSelectAgent={handleOpenAgentTrace}
+              pendingClarification={pendingClarification}
             />
           </CollapsiblePanel>
+
+          <ResearchCollectionPanel
+            plan={run?.researchPackage?.researchCollectionPlan}
+            collapsed={collapsedRightPanels.collection}
+            onToggle={() => toggleRightPanel("collection")}
+          />
 
           <EvidencePanel
             sources={run?.evidenceSources ?? []}
@@ -1221,9 +1259,12 @@ export function App() {
       </main>
 
       <TraceDrawer
-        agent={selectedAgent}
-        traces={(run?.traces ?? []).filter((trace) => trace.agentName === selectedAgent)}
-        onClose={() => setSelectedAgent(null)}
+        agent={traceDrawerAgent}
+        traces={(run?.traces ?? []).filter((trace) => trace.agentName === traceDrawerAgent)}
+        onClose={() => {
+          setTraceDrawerAgent(null);
+          setSelectedAgent(null);
+        }}
       />
 
       {run?.errorMessage ? (
@@ -1324,7 +1365,6 @@ function normalizeScopeDraft(draft: Partial<ScopeDraft>): ScopeDraft {
     competitors: draft.competitors ?? "",
     dimensions: draft.dimensions ?? "",
     outputGoal: draft.outputGoal ?? "",
-    sources: Array.isArray(draft.sources) ? draft.sources.filter((source): source is string => typeof source === "string") : DEFAULT_SOURCE_VALUES,
     sourceUrls: draft.sourceUrls ?? "",
     maxReviewReworkAttempts: Number.isFinite(draft.maxReviewReworkAttempts) ? Number(draft.maxReviewReworkAttempts) : 1
   };
@@ -1338,13 +1378,7 @@ function hasScopeDraftContent(draft: ScopeDraft) {
     || draft.outputGoal.trim()
     || draft.sourceUrls.trim()
     || draft.maxReviewReworkAttempts !== 1
-    || !sameStringArray(draft.sources, DEFAULT_SOURCE_VALUES)
   );
-}
-
-function sameStringArray(left: string[], right: string[]) {
-  if (left.length !== right.length) return false;
-  return left.every((value, index) => value === right[index]);
 }
 
 function PanelLoading({ label }: { label: string }) {
@@ -1362,6 +1396,51 @@ function upsertHistorySummary(runs: AnalysisRunSummary[], latest: AnalysisRunSum
     ? runs.map((item) => item.id === latest.id ? latest : item)
     : [latest, ...runs];
   return [...nextRuns].sort((left, right) => timestampValue(right.updatedAt ?? right.createdAt) - timestampValue(left.updatedAt ?? left.createdAt));
+}
+
+function withOptimisticRerunStep(run: AnalysisRun | null, agentName: AgentName): AnalysisRun | null {
+  if (!run) return run;
+  const latestSameAgent = [...run.steps].reverse().find((step) => step.agentName === agentName);
+  if (latestSameAgent?.status === "RUNNING") {
+    return run;
+  }
+  const startedAt = new Date().toISOString();
+  const step: AgentStep = {
+    id: `local-rerun-${agentName}-${Date.now()}`,
+    agentName,
+    title: AGENT_LABELS[agentName] ?? agentName,
+    status: "RUNNING",
+    inputSummary: `手动重跑：正在从 ${AGENT_LABELS[agentName] ?? agentName} 继续重跑下游链路`,
+    startedAt,
+    issues: []
+  };
+  return {
+    ...run,
+    steps: [...run.steps, step],
+    updatedAt: startedAt
+  };
+}
+
+function mergeRunSnapshotWithLocalRunningStep(current: AnalysisRun | null, snapshot: AnalysisRun): AnalysisRun {
+  if (!current || current.id !== snapshot.id) return snapshot;
+  const localRunningSteps = current.steps.filter((step) => step.id.startsWith("local-rerun-") && step.status === "RUNNING");
+  if (!localRunningSteps.length) return snapshot;
+  const preserved = localRunningSteps.filter((localStep) => {
+    const localStartedAt = timestampValue(localStep.startedAt);
+    const latestSameAgent = [...snapshot.steps]
+      .reverse()
+      .find((step) => step.agentName === localStep.agentName);
+    if (!latestSameAgent) {
+      return true;
+    }
+    const latestStartedAt = timestampValue(latestSameAgent.startedAt);
+    return latestStartedAt > 0 && localStartedAt > 0 && latestStartedAt < localStartedAt;
+  });
+  if (!preserved.length) return snapshot;
+  return {
+    ...snapshot,
+    steps: [...snapshot.steps, ...preserved]
+  };
 }
 
 function summaryFromRun(run: AnalysisRun): AnalysisRunSummary {
@@ -1415,6 +1494,16 @@ function isCurrentWorkspaceRun(runId: string) {
 
 function hasMainAnalysisStarted(run: AnalysisRun) {
   return run.steps.some((step) => step.agentName !== "CLARIFIER");
+}
+
+function isClarificationSettled(run: AnalysisRun) {
+  if (run.status === "FAILED" || run.status === "CANCELLED") {
+    return true;
+  }
+  return run.steps.some((step) => (
+    step.agentName === "CLARIFIER"
+    && (step.status === "SUCCEEDED" || step.status === "FAILED" || step.status === "CANCELLED")
+  ));
 }
 
 function splitLines(value: string) {

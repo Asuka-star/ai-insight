@@ -2,8 +2,11 @@ package com.aiinsight.agent.node;
 
 import com.aiinsight.llm.ChatRequest;
 import com.aiinsight.llm.LlmClient;
+import com.aiinsight.model.enums.AgentName;
 import com.aiinsight.model.enums.ArtifactType;
 import com.aiinsight.model.enums.FactType;
+import com.aiinsight.model.enums.ReviewAction;
+import com.aiinsight.model.review.ReviewRepairTask;
 import com.aiinsight.model.run.AnalysisRequirement;
 import com.aiinsight.model.run.AnalysisRun;
 import com.aiinsight.model.run.AgentTrace;
@@ -24,6 +27,154 @@ class ExtractorNodeTest {
     @AfterEach
     void clearTrace() {
         AgentTraceContext.clear();
+    }
+
+    @Test
+    void extractorPromptIncludesTargetedRepairTasksDuringReviewRework() {
+        AtomicReference<String> promptCapture = new AtomicReference<>();
+        LlmClient llmClient = new LlmClient() {
+            @Override
+            public boolean isAvailable() {
+                return true;
+            }
+
+            @Override
+            public String complete(ChatRequest request) {
+                promptCapture.set(request.getMessages().get(1).getContent());
+                return """
+                        {
+                          "profiles": [
+                            {
+                              "productName": "Cursor",
+                              "companyName": "Cursor",
+                              "positioning": "AI code editor",
+                              "targetUsers": ["Developers"],
+                              "features": [
+                                {"name":"Composer","description":"Multi-file code editing","evidenceIds":["S1"]}
+                              ],
+                              "pricing": {
+                                "strategySummary": "待验证",
+                                "hasFreePlan": false,
+                                "plans": [],
+                                "evidenceIds": []
+                              },
+                              "personas": [],
+                              "strengths": ["Multi-file editing"],
+                              "weaknesses": ["待验证"],
+                              "evidenceIds": ["S1"]
+                            }
+                          ]
+                        }
+                        """;
+            }
+        };
+        AnalysisRun run = new AnalysisRun(new AnalysisRequirement(
+                "Analyze Cursor",
+                "AI coding tools",
+                List.of("Cursor"),
+                List.of("features"),
+                List.of("official_site"),
+                List.of()
+        ));
+        run.getEvidenceSources().add(new EvidenceSource(
+                "S1",
+                "Cursor product page",
+                "https://example.test/cursor",
+                "official_site",
+                "FETCHED",
+                "LIVE_FETCHED",
+                "HIGH",
+                "NONE",
+                "Cursor Composer supports multi-file code edits.",
+                "Cursor Composer supports multi-file code edits.",
+                "test evidence"
+        ));
+        run.getReviewDecision().setAction(ReviewAction.REWORK_ANALYSIS);
+        run.getReviewDecision().setTargetAgent(AgentName.EXTRACTOR);
+        run.getReviewDecision().setRepairScopeSummary("目标 Agent=EXTRACTOR；阻断问题=1。");
+        run.getReviewDecision().setRepairInstructions(List.of("Extractor should repair only affected extracted facts."));
+        ReviewRepairTask task = new ReviewRepairTask();
+        task.setTargetAgent(AgentName.EXTRACTOR);
+        task.setAction("REPAIR_FACT_EXTRACTION");
+        task.setFactId("F7");
+        task.setChunkKey("S1-C2");
+        task.setCitationKey("S1");
+        task.setCurrentText("Unsupported pricing fact");
+        task.setInstruction("Fix fact=F7 evidence binding.");
+        task.setExpectedFix("Move unsupported value to unknowns.");
+        task.setAcceptanceCriteria("Fact must cite supporting evidence or be removed.");
+        run.getReviewDecision().setRepairTasks(List.of(task));
+
+        new ExtractorNode(llmClient, new FallbackExtractionFactory()).execute(run);
+
+        assertThat(promptCapture.get())
+                .contains("复核修复任务", "F7", "S1-C2", "Unsupported pricing fact", "Move unsupported value to unknowns");
+    }
+
+    @Test
+    void toleratesTextualUnknownFreePlanFlagWithoutFallback() {
+        LlmClient llmClient = new LlmClient() {
+            @Override
+            public boolean isAvailable() {
+                return true;
+            }
+
+            @Override
+            public String complete(ChatRequest request) {
+                return """
+                        {
+                          "profiles": [
+                            {
+                              "productName": "Cursor",
+                              "companyName": "Anysphere",
+                              "positioning": "AI code editor",
+                              "targetUsers": ["Developers"],
+                              "features": [
+                                {"name":"Composer","description":"Multi-file code editing","evidenceIds":["S1"]}
+                              ],
+                              "pricing": {
+                                "strategySummary": "Needs verification",
+                                "hasFreePlan": "\\u5f85\\u9a8c\\u8bc1",
+                                "plans": [],
+                                "evidenceIds": ["S1"]
+                              },
+                              "personas": [],
+                              "strengths": ["Multi-file editing"],
+                              "weaknesses": ["Needs verification"],
+                              "evidenceIds": ["S1"]
+                            }
+                          ]
+                        }
+                        """;
+            }
+        };
+        AnalysisRun run = new AnalysisRun(new AnalysisRequirement(
+                "Analyze Cursor",
+                "AI coding tools",
+                List.of("Cursor"),
+                List.of("features", "pricing"),
+                List.of("official_site"),
+                List.of()
+        ));
+        run.getEvidenceSources().add(new EvidenceSource(
+                "S1",
+                "Cursor product page",
+                "https://example.test/cursor",
+                "official_site",
+                "FETCHED",
+                "LIVE_FETCHED",
+                "HIGH",
+                "NONE",
+                "Cursor Composer supports multi-file code edits.",
+                "Cursor Composer supports multi-file code edits.",
+                "test evidence"
+        ));
+
+        new ExtractorNode(llmClient, new FallbackExtractionFactory()).execute(run);
+
+        assertThat(run.getRecommendedActions()).noneMatch(action -> action.contains("LLM Schema"));
+        assertThat(run.getCompetitorProfiles()).hasSize(1);
+        assertThat(run.getCompetitorProfiles().get(0).getProductName()).isEqualTo("Cursor");
     }
 
     @Test

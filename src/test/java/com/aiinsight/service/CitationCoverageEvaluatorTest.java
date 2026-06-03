@@ -537,6 +537,85 @@ class CitationCoverageEvaluatorTest {
     }
 
     @Test
+    void groupsUnsupportedExtractedFactAcrossMultipleWeakEvidenceBindings() {
+        AnalysisRun run = new AnalysisRun();
+        run.getEvidenceSources().add(source(
+                "S40",
+                "Cursor Composer docs",
+                "https://docs.cursor.com/composer",
+                "product_docs",
+                "FIRST_PARTY_OFFICIAL",
+                "Cursor Composer supports multi-file code editing."
+        ));
+        run.getEvidenceSources().add(source(
+                "S41",
+                "Cursor pricing",
+                "https://cursor.com/pricing",
+                "pricing_page",
+                "FIRST_PARTY_OFFICIAL",
+                "Cursor offers Team and Business pricing tiers."
+        ));
+        run.getEvidenceChunks().add(chunk("S40-C1", "S40", "feature", "FIRST_PARTY_OFFICIAL",
+                "Cursor Composer supports multi-file code editing."));
+        run.getEvidenceChunks().add(chunk("S41-C1", "S41", "pricing", "FIRST_PARTY_OFFICIAL",
+                "Cursor offers Team and Business pricing tiers."));
+        ExtractedFact fact = fact("F40", "Cursor", FactType.SECURITY,
+                "compliance", "Cursor includes SOC 2 enterprise compliance controls.", List.of("S40", "S41"), List.of("S40-C1", "S41-C1"));
+        run.getCompetitorFactSets().add(factSet("Cursor", fact));
+
+        var findings = evaluator.evaluate("## Report\n\nSummary only.", run);
+
+        var unsupportedFactFindings = findings.stream()
+                .filter(finding -> "fact_unsupported_by_evidence".equals(finding.getCategory()))
+                .filter(finding -> "F40".equals(finding.getFactId()))
+                .toList();
+        assertThat(unsupportedFactFindings).hasSize(1);
+        assertThat(unsupportedFactFindings.get(0).getSeverity()).isEqualTo(ReviewSeverity.HIGH);
+        assertThat(unsupportedFactFindings.get(0).getMessage()).contains("S40", "S41");
+    }
+
+    @Test
+    void downgradesExtraWeakFactEvidenceWhenAnotherBindingSupportsTheFact() {
+        AnalysisRun run = new AnalysisRun();
+        run.getEvidenceSources().add(source(
+                "S42",
+                "Cursor security docs",
+                "https://docs.cursor.com/security",
+                "security_docs",
+                "FIRST_PARTY_OFFICIAL",
+                "Cursor includes SOC 2 enterprise compliance controls."
+        ));
+        run.getEvidenceSources().add(source(
+                "S43",
+                "Cursor Composer docs",
+                "https://docs.cursor.com/composer",
+                "product_docs",
+                "FIRST_PARTY_OFFICIAL",
+                "Cursor Composer supports multi-file code editing."
+        ));
+        run.getEvidenceChunks().add(chunk("S42-C1", "S42", "security", "FIRST_PARTY_OFFICIAL",
+                "Cursor includes SOC 2 enterprise compliance controls."));
+        run.getEvidenceChunks().add(chunk("S43-C1", "S43", "feature", "FIRST_PARTY_OFFICIAL",
+                "Cursor Composer supports multi-file code editing."));
+        ExtractedFact fact = fact("F42", "Cursor", FactType.SECURITY,
+                "compliance", "Cursor includes SOC 2 enterprise compliance controls.", List.of("S42", "S43"), List.of("S42-C1", "S43-C1"));
+        run.getCompetitorFactSets().add(factSet("Cursor", fact));
+
+        var findings = evaluator.evaluate("## Report\n\nSummary only.", run);
+
+        assertThat(findings)
+                .noneMatch(finding -> "fact_unsupported_by_evidence".equals(finding.getCategory())
+                        && "F42".equals(finding.getFactId()));
+        assertThat(findings)
+                .anySatisfy(finding -> {
+                    assertThat(finding.getSeverity()).isEqualTo(ReviewSeverity.MEDIUM);
+                    assertThat(finding.getCategory()).isEqualTo("fact_partial_evidence_binding_weak");
+                    assertThat(finding.getFactId()).isEqualTo("F42");
+                    assertThat(finding.getCitationKey()).isEqualTo("S43");
+                });
+    }
+
+    @Test
     void flagsHighConfidenceClaimThatOverInterpretsBoundFacts() {
         AnalysisRun run = new AnalysisRun();
         run.getEvidenceSources().add(source(

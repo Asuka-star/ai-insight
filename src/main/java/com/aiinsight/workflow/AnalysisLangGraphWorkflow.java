@@ -7,9 +7,12 @@ import com.aiinsight.model.enums.AnalysisStatus;
 import com.aiinsight.model.run.AnalysisRun;
 import com.aiinsight.model.enums.ReviewAction;
 import com.aiinsight.model.review.ReviewDecision;
+import com.aiinsight.model.review.ReviewFinding;
+import com.aiinsight.model.review.ReviewRepairTask;
 import com.aiinsight.model.run.WorkflowTransition;
 import com.aiinsight.repository.AnalysisRunRepository;
 import com.aiinsight.service.AnalysisEventBroker;
+import lombok.extern.slf4j.Slf4j;
 import org.bsc.langgraph4j.CompiledGraph;
 import org.bsc.langgraph4j.GraphDefinition;
 import org.bsc.langgraph4j.StateGraph;
@@ -18,6 +21,7 @@ import org.bsc.langgraph4j.action.AsyncNodeAction;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.EnumMap;
@@ -28,6 +32,7 @@ import java.util.UUID;
 import java.util.concurrent.CancellationException;
 
 @Component
+@Slf4j
 public class AnalysisLangGraphWorkflow {
 
     static final String ROUTE_FINISH = "finish";
@@ -36,6 +41,7 @@ public class AnalysisLangGraphWorkflow {
     private static final String ROUTE_REANALYZE = "reanalyze";
     private static final String ROUTE_REVISE = "revise";
     private static final String REVIEW_GATE = "REVIEW_GATE";
+    private static final int MAX_MANUAL_RERUN_REPAIR_FINDINGS = 12;
 
     private final WorkflowNodeExecutor nodeExecutor;
     private final AnalysisRunRepository repository;
@@ -81,6 +87,7 @@ public class AnalysisLangGraphWorkflow {
         if (node == null) {
             throw new IllegalArgumentException("Unsupported agent: " + agentName);
         }
+        prepareManualRerunReviewContext(runId, agentName);
         AnalysisRun run = null;
         for (AgentNode cascadeNode : rerunCascade(agentName)) {
             run = nodeExecutor.executeNode(
@@ -144,11 +151,30 @@ public class AnalysisLangGraphWorkflow {
             throw new CancellationException("Analysis workflow cancelled: " + run.getId());
         }
         int attempts = state.reworkAttempts();
+        int maxAttempts = maxReviewReworkAttempts(run);
+        boolean repeatedBlockers = hasRepeatedBlockingFindings(run);
         // REVIEW_GATE 是整个可信闭环的唯一分岔点：Reviewer 写入 ReviewDecision，
         // 这里把结构化 action 映射成 LangGraph 路由，并把选择持久化给前端回放。
-        String route = nextRoute(run, attempts);
+        String route = nextRoute(run, attempts, repeatedBlockers);
         // 每一次条件边选择都落库，前端才能解释“Reviewer 为什么打回到某个 Agent”。
-        recordTransition(run, route, attempts, "auto-review-gate");
+        WorkflowTransition transition = recordTransition(run, route, attempts, "auto-review-gate");
+        ReviewDecision decision = run.getReviewDecision();
+        if (ROUTE_FINISH.equals(route) && repeatedBlockers && decision != null && decision.getAction() != ReviewAction.PASS) {
+            run.getRecommendedActions().add("Automatic review rework stopped because blocking findings remained unchanged after the previous repair attempt; please inspect unresolved findings manually.");
+            repository.save(run);
+        }
+        log.info("Review gate decision: runId={}, route={}, target={}, action={}, attempt={}, maxAttempts={}, findings={}, blockingFindings={}, repeatedBlockers={}, resolutionStatus={}, finishReason={}",
+                run.getId(),
+                route,
+                targetNodeFor(route),
+                decision == null ? null : decision.getAction(),
+                attempts,
+                maxAttempts,
+                run.getReviewFindings().size(),
+                decision == null || decision.getBlockingFindingIds() == null ? 0 : decision.getBlockingFindingIds().size(),
+                repeatedBlockers,
+                transition.getResolutionStatus(),
+                reviewFinishReason(run, attempts, maxAttempts, route, repeatedBlockers));
         if (!ROUTE_FINISH.equals(route)) {
             attempts++;
             eventBroker.publish(run, "review_rework_started", "复核 Agent 请求打回路径：" + route);
@@ -161,7 +187,7 @@ public class AnalysisLangGraphWorkflow {
         );
     }
 
-    private void recordTransition(AnalysisRun run, String route, int attempt, String trigger) {
+    private WorkflowTransition recordTransition(AnalysisRun run, String route, int attempt, String trigger) {
         ReviewDecision decision = run.getReviewDecision();
         WorkflowTransition previous = latestTransition(run);
         WorkflowTransition transition = new WorkflowTransition(
@@ -182,11 +208,32 @@ public class AnalysisLangGraphWorkflow {
         transition.setResolutionStatus(resolutionStatus(previous, transition));
         run.getWorkflowTransitions().add(transition);
         repository.save(run);
+        return transition;
     }
 
-    private String nextRoute(AnalysisRun run, int reworkAttempts) {
+    private String reviewFinishReason(AnalysisRun run, int attempts, int maxAttempts, String route, boolean repeatedBlockers) {
+        if (!ROUTE_FINISH.equals(route)) {
+            return "not_finished";
+        }
+        ReviewDecision decision = run.getReviewDecision();
+        if (decision == null || decision.getAction() == ReviewAction.PASS) {
+            return "review_passed";
+        }
+        if (repeatedBlockers) {
+            return "unchanged_blockers_after_rework";
+        }
+        if (attempts >= maxAttempts) {
+            return "max_rework_attempts_reached";
+        }
+        return "review_action_finished";
+    }
+
+    private String nextRoute(AnalysisRun run, int reworkAttempts, boolean repeatedBlockers) {
         // MVP 限制自动返工轮次，防止 Reviewer 和上游 Agent 在证据不足时无限循环。
         if (reworkAttempts >= maxReviewReworkAttempts(run)) {
+            return ROUTE_FINISH;
+        }
+        if (reworkAttempts > 0 && repeatedBlockers) {
             return ROUTE_FINISH;
         }
         // ReviewAction 是后端和前端共同理解的返工协议：
@@ -233,6 +280,212 @@ public class AnalysisLangGraphWorkflow {
         return GraphDefinition.END;
     }
 
+    private void prepareManualRerunReviewContext(UUID runId, AgentName agentName) {
+        if (agentName == AgentName.CLARIFIER || agentName == AgentName.REVIEWER) {
+            return;
+        }
+        AnalysisRun run = repository.findById(runId).orElseThrow(() -> new RunNotFoundException(runId));
+        if (run.getReviewFindings().isEmpty()) {
+            return;
+        }
+
+        List<ReviewFinding> findings = manualRerunFindings(run, agentName);
+        List<ReviewRepairTask> existingTasks = existingManualRerunTasks(run, agentName);
+        if (findings.isEmpty() && existingTasks.isEmpty()) {
+            return;
+        }
+
+        ReviewDecision previous = run.getReviewDecision() == null ? new ReviewDecision() : run.getReviewDecision();
+        ReviewDecision decision = new ReviewDecision();
+        decision.setAction(actionForManualRerun(agentName));
+        decision.setTargetAgent(agentName);
+        decision.setReason("Manual rerun of " + agentName + " is carrying previous Reviewer findings.");
+        decision.setAffectedClaimIds(findings.stream()
+                .map(ReviewFinding::getClaimId)
+                .filter(this::hasText)
+                .distinct()
+                .toList());
+        decision.setRequiredEvidenceTypes(previous.getRequiredEvidenceTypes() == null
+                ? List.of()
+                : new ArrayList<>(previous.getRequiredEvidenceTypes()));
+        decision.setFindingCategories(findings.stream()
+                .map(ReviewFinding::getCategory)
+                .filter(this::hasText)
+                .distinct()
+                .toList());
+        decision.setBlockingFindingIds(findings.stream()
+                .map(finding -> finding.getId().toString())
+                .toList());
+        decision.setRepairInstructions(List.of(
+                "手动重跑 " + agentName + " 时，请优先修复上一轮 Reviewer 指出的相关问题；不要原样保留被质检指出的问题文本。",
+                "修复后下游 agent 会自动重跑，并由 Reviewer 重新验收。"
+        ));
+        List<ReviewRepairTask> tasks = new ArrayList<>(existingTasks);
+        LinkedHashSet<String> existingFindingIds = tasks.stream()
+                .map(ReviewRepairTask::getFindingId)
+                .filter(this::hasText)
+                .collect(LinkedHashSet::new, LinkedHashSet::add, LinkedHashSet::addAll);
+        findings.stream()
+                .filter(finding -> !existingFindingIds.contains(finding.getId().toString()))
+                .map(finding -> repairTaskForManualRerun(agentName, finding))
+                .forEach(tasks::add);
+        decision.setRepairTasks(tasks.stream()
+                .limit(MAX_MANUAL_RERUN_REPAIR_FINDINGS)
+                .toList());
+        decision.setRepairScopeSummary("手动重跑 " + agentName + " 自动携带上一轮 Reviewer 问题："
+                + decision.getRepairTasks().size() + " 个修复任务；类别=" + decision.getFindingCategories());
+        decision.setDecidedAt(Instant.now());
+        run.setReviewDecision(decision);
+        repository.save(run);
+        log.info("Prepared manual rerun review context: runId={}, agent={}, findings={}, existingTasks={}, tasks={}",
+                runId,
+                agentName,
+                findings.size(),
+                existingTasks.size(),
+                decision.getRepairTasks().size());
+    }
+
+    private List<ReviewFinding> manualRerunFindings(AnalysisRun run, AgentName agentName) {
+        List<ReviewFinding> nonLowFindings = run.getReviewFindings().stream()
+                .filter(finding -> finding.getSeverity() == null || !"LOW".equals(finding.getSeverity().name()))
+                .toList();
+        List<ReviewFinding> candidates = nonLowFindings.isEmpty() ? run.getReviewFindings() : nonLowFindings;
+        List<ReviewFinding> matched = candidates.stream()
+                .filter(finding -> targetAgentForFinding(finding) == agentName)
+                .limit(MAX_MANUAL_RERUN_REPAIR_FINDINGS)
+                .toList();
+        if (!matched.isEmpty()) {
+            return matched;
+        }
+        return candidates.stream()
+                .limit(MAX_MANUAL_RERUN_REPAIR_FINDINGS)
+                .toList();
+    }
+
+    private List<ReviewRepairTask> existingManualRerunTasks(AnalysisRun run, AgentName agentName) {
+        ReviewDecision decision = run.getReviewDecision();
+        if (decision == null || decision.getRepairTasks() == null || decision.getRepairTasks().isEmpty()) {
+            return List.of();
+        }
+        return decision.getRepairTasks().stream()
+                .filter(task -> task.getTargetAgent() == agentName)
+                .limit(MAX_MANUAL_RERUN_REPAIR_FINDINGS)
+                .toList();
+    }
+
+    private ReviewRepairTask repairTaskForManualRerun(AgentName agentName, ReviewFinding finding) {
+        ReviewRepairTask task = new ReviewRepairTask();
+        task.setTargetAgent(agentName);
+        task.setFindingId(finding.getId().toString());
+        task.setArtifactId(finding.getArtifactId());
+        task.setClaimId(finding.getClaimId());
+        task.setFactId(finding.getFactId());
+        task.setChunkKey(finding.getChunkKey());
+        task.setCitationKey(finding.getCitationKey());
+        task.setParagraphIndex(finding.getParagraphIndex());
+        task.setExcerpt(finding.getExcerpt());
+        task.setCurrentText(firstText(finding.getExcerpt(), finding.getMessage()));
+        task.setCategory(finding.getCategory());
+        task.setAction(repairActionForManualRerun(agentName));
+        task.setInstruction("修复上一轮 Reviewer 问题：" + shortText(finding.getMessage(), 220));
+        task.setExpectedFix(expectedFixForManualRerun(agentName));
+        task.setAcceptanceCriteria("下一轮 Reviewer 不应再出现同一 findingId/category/claim/citation 对应的问题。");
+        return task;
+    }
+
+    private ReviewAction actionForManualRerun(AgentName agentName) {
+        return switch (agentName) {
+            case RESEARCHER -> ReviewAction.RECOLLECT_EVIDENCE;
+            case WRITER -> ReviewAction.REVISE_REPORT;
+            case EXTRACTOR, ANALYST -> ReviewAction.REWORK_ANALYSIS;
+            case CLARIFIER, REVIEWER -> ReviewAction.PASS;
+        };
+    }
+
+    private String repairActionForManualRerun(AgentName agentName) {
+        return switch (agentName) {
+            case RESEARCHER -> "RECOLLECT_EVIDENCE";
+            case EXTRACTOR -> "REPAIR_FACT_EXTRACTION";
+            case ANALYST -> "REPAIR_CLAIM_EVIDENCE";
+            case WRITER -> "REVISE_REPORT";
+            case CLARIFIER, REVIEWER -> "REVIEW_ONLY";
+        };
+    }
+
+    private String expectedFixForManualRerun(AgentName agentName) {
+        return switch (agentName) {
+            case RESEARCHER -> "补齐 Reviewer 指出的证据缺口，并优先围绕 repairTasks 中的 claim/citation/chunk 补证。";
+            case EXTRACTOR -> "删除或修正无法由证据支撑的结构化 fact，并修复 evidenceIds/chunkKey 绑定。";
+            case ANALYST -> "重建受影响 claim，确保结论与 fact/evidence 一致，证据不足时降级为待验证。";
+            case WRITER -> "修订受影响段落，移除过度表述、补齐引用或改写为证据可支撑的表达。";
+            case CLARIFIER, REVIEWER -> "重新复核。";
+        };
+    }
+
+    private AgentName targetAgentForFinding(ReviewFinding finding) {
+        String text = normalizeFindingText(finding);
+        if (hasText(finding.getFactId())
+                || text.contains("fact_unsupported")
+                || text.contains("extracted fact")
+                || text.contains("extract")
+                || text.contains("profile")
+                || text.contains("pricing")) {
+            return AgentName.EXTRACTOR;
+        }
+        if (text.contains("missing evidence")
+                || text.contains("evidence gap")
+                || text.contains("source_quality")
+                || text.contains("coverage")
+                || text.contains("补证")
+                || text.contains("证据缺口")) {
+            return AgentName.RESEARCHER;
+        }
+        if (text.contains("report")
+                || text.contains("paragraph")
+                || text.contains("writer")
+                || text.contains("actionability")
+                || text.contains("citation_missing")
+                || text.contains("引用缺失")) {
+            return AgentName.WRITER;
+        }
+        if (hasText(finding.getClaimId())
+                || text.contains("claim")
+                || text.contains("matrix")
+                || text.contains("swot")
+                || text.contains("analysis")
+                || text.contains("overclaim")) {
+            return AgentName.ANALYST;
+        }
+        if (finding.getParagraphIndex() != null) {
+            return AgentName.WRITER;
+        }
+        return AgentName.ANALYST;
+    }
+
+    private String normalizeFindingText(ReviewFinding finding) {
+        return ("%s %s %s".formatted(
+                textOrDash(finding.getCategory()),
+                textOrDash(finding.getMessage()),
+                textOrDash(finding.getRecommendation())
+        )).toLowerCase();
+    }
+
+    private String firstText(String first, String second) {
+        return hasText(first) ? first.trim() : textOrDash(second);
+    }
+
+    private String shortText(String value, int maxLength) {
+        String normalized = textOrDash(value).replaceAll("\\s+", " ").trim();
+        if (normalized.length() <= maxLength) {
+            return normalized;
+        }
+        return normalized.substring(0, maxLength) + "...";
+    }
+
+    private boolean hasText(String value) {
+        return value != null && !value.isBlank();
+    }
+
     private List<AgentNode> rerunCascade(AgentName agentName) {
         // Manual reruns replay the selected agent plus deterministic downstream dependencies only.
         // Reviewer is the terminal executable agent; finish no longer triggers a copied-report step.
@@ -267,16 +520,32 @@ public class AnalysisLangGraphWorkflow {
         return transitions.get(transitions.size() - 1);
     }
 
+    private boolean hasRepeatedBlockingFindings(AnalysisRun run) {
+        WorkflowTransition previous = latestTransition(run);
+        if (previous == null || previousSignatures(previous).isEmpty()) {
+            return false;
+        }
+        List<String> currentSignatures = blockingFindingSignatures(run);
+        if (currentSignatures.isEmpty()) {
+            return false;
+        }
+        return currentSignatures.stream().anyMatch(previousSignatures(previous)::contains);
+    }
+
     private List<String> blockingFindingSignatures(AnalysisRun run) {
         LinkedHashSet<String> decisionIds = new LinkedHashSet<>(run.getReviewDecision().getBlockingFindingIds() == null
                 ? List.of()
                 : run.getReviewDecision().getBlockingFindingIds());
         return run.getReviewFindings().stream()
                 .filter(finding -> decisionIds.contains(finding.getId().toString()))
-                .map(finding -> "%s|%s|%s".formatted(
+                .map(finding -> "%s|claim=%s|fact=%s|chunk=%s|citation=%s|paragraph=%s|excerpt=%s".formatted(
                         textOrDash(finding.getCategory()),
                         textOrDash(finding.getClaimId()),
-                        textOrDash(finding.getCitationKey())
+                        textOrDash(finding.getFactId()),
+                        textOrDash(finding.getChunkKey()),
+                        textOrDash(finding.getCitationKey()),
+                        finding.getParagraphIndex() == null ? "-" : finding.getParagraphIndex(),
+                        shortTextHash(finding.getExcerpt())
                 ))
                 .distinct()
                 .toList();
@@ -319,6 +588,16 @@ public class AnalysisLangGraphWorkflow {
 
     private String textOrDash(String value) {
         return value == null || value.isBlank() ? "-" : value.trim();
+    }
+
+    private String shortTextHash(String value) {
+        if (value == null || value.isBlank()) {
+            return "-";
+        }
+        String normalized = value.toLowerCase()
+                .replaceAll("\\s+", " ")
+                .trim();
+        return Integer.toHexString(normalized.hashCode());
     }
 
     private String inputSummary(AnalysisGraphState state) {

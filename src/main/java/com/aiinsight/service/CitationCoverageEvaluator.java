@@ -317,7 +317,9 @@ public class CitationCoverageEvaluator {
                     findings.add(finding);
                 }
             }
-            for (String evidenceId : factEvidenceIds) {
+            List<String> unsupportedEvidenceIds = new ArrayList<>();
+            int supportedEvidenceCount = 0;
+            for (String evidenceId : factEvidenceIds.stream().filter(StringUtils::hasText).distinct().toList()) {
                 if (!knownEvidenceIds.contains(evidenceId)) {
                     findings.add(factFinding(
                             ReviewSeverity.HIGH,
@@ -331,27 +333,53 @@ public class CitationCoverageEvaluator {
                     continue;
                 }
                 if (StringUtils.hasText(fact.getValue()) && !citationSupportsParagraph(fact.getValue(), evidenceId, run)) {
-                    ReviewSeverity severity = shouldBlockUnsupportedFact(fact)
-                            ? ReviewSeverity.HIGH
-                            : ReviewSeverity.MEDIUM;
-                    if (severity == ReviewSeverity.HIGH || weakUnsupportedFactFindings < 6) {
-                        findings.add(factFinding(
-                                severity,
-                                "fact_unsupported_by_evidence",
-                                "Extracted fact value is not supported by its evidence [" + evidenceId + "]: " + abbreviate(fact.getValue()),
-                                "Rerun Extractor to correct the fact value/evidence binding, or move the unsupported field to unknowns.",
-                                claimId,
-                                fact,
-                                evidenceId
-                        ));
-                    }
-                    if (severity != ReviewSeverity.HIGH) {
-                        weakUnsupportedFactFindings++;
-                    }
+                    unsupportedEvidenceIds.add(evidenceId);
+                } else {
+                    supportedEvidenceCount++;
+                }
+            }
+            if (!unsupportedEvidenceIds.isEmpty()) {
+                boolean hasSupportingEvidence = supportedEvidenceCount > 0;
+                ReviewSeverity severity = !hasSupportingEvidence && shouldBlockUnsupportedFact(fact)
+                        ? ReviewSeverity.HIGH
+                        : ReviewSeverity.MEDIUM;
+                if (severity == ReviewSeverity.HIGH || weakUnsupportedFactFindings < 6) {
+                    String unsupportedIds = limitedJoin(unsupportedEvidenceIds, 6);
+                    String category = hasSupportingEvidence
+                            ? "fact_partial_evidence_binding_weak"
+                            : "fact_unsupported_by_evidence";
+                    String message = hasSupportingEvidence
+                            ? "Extracted fact has supporting evidence, but some bound evidence ids look weak [" + unsupportedIds + "]: " + abbreviate(fact.getValue())
+                            : "Extracted fact value is not supported by its bound evidence ids [" + unsupportedIds + "]: " + abbreviate(fact.getValue());
+                    String recommendation = hasSupportingEvidence
+                            ? "Keep the supported evidence binding and remove weak extra evidenceIds/chunkKeys instead of rerunning the whole analysis."
+                            : "Rerun Extractor to correct the fact value/evidence binding, or move the unsupported field to unknowns.";
+                    findings.add(factFinding(
+                            severity,
+                            category,
+                            message,
+                            recommendation,
+                            claimId,
+                            fact,
+                            unsupportedEvidenceIds.get(0)
+                    ));
+                }
+                if (severity != ReviewSeverity.HIGH) {
+                    weakUnsupportedFactFindings++;
                 }
             }
         }
         return findings;
+    }
+
+    private String limitedJoin(List<String> values, int limit) {
+        List<String> visible = values.stream()
+                .filter(StringUtils::hasText)
+                .limit(limit)
+                .toList();
+        String joined = String.join(", ", visible);
+        int hidden = values.size() - visible.size();
+        return hidden > 0 ? joined + ", +" + hidden + " more" : joined;
     }
 
     private Map<String, String> claimIdByFactId(AnalysisRun run) {

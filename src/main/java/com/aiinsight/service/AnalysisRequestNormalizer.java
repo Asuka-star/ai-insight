@@ -19,7 +19,7 @@ public class AnalysisRequestNormalizer {
             "产品定位", "核心功能", "目标用户", "商业模式", "价格策略", "优劣势", "机会点", "风险提示"
     );
 
-    private static final List<String> DEFAULT_SOURCES = List.of(
+    static final List<String> DEFAULT_SOURCES = List.of(
             "official_site", "pricing_page", "product_docs", "release_notes", "technical_blog", "authoritative_media", "public_reviews"
     );
     private static final Pattern URL_PATTERN = Pattern.compile("https?://[^\\s，。；、,;]+");
@@ -37,13 +37,12 @@ public class AnalysisRequestNormalizer {
                 ? inferCompetitors(request.getPrompt())
                 : request.getCompetitors();
         List<String> dimensions = request.getDimensions().isEmpty() ? DEFAULT_DIMENSIONS : request.getDimensions();
-        List<String> sourcePreferences = request.getSourcePreferences().isEmpty() ? DEFAULT_SOURCES : request.getSourcePreferences();
         return new AnalysisRequirement(
                 request.getPrompt(),
                 industry,
                 competitors,
                 dimensions,
-                sourcePreferences,
+                DEFAULT_SOURCES,
                 normalizeSourceUrls(request),
                 request.getOutputGoal()
         );

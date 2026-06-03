@@ -10,6 +10,10 @@ import com.aiinsight.model.enums.AgentName;
 import com.aiinsight.model.run.AgentTrace;
 import com.aiinsight.model.run.AnalysisRun;
 import com.aiinsight.model.run.EvidenceChunk;
+import com.aiinsight.model.schema.ResearchCollectionPlan;
+import com.aiinsight.model.schema.ResearchCoverageGap;
+import com.aiinsight.model.schema.ResearchRepairTarget;
+import com.aiinsight.model.schema.ResearchSubtask;
 import com.aiinsight.service.AnalysisEventBroker;
 import com.aiinsight.service.AnalysisWorkflowService;
 import jakarta.validation.Valid;
@@ -132,6 +136,34 @@ public class AnalysisRunController {
                                                       @RequestParam String query,
                                                       @RequestParam(required = false) Integer topK) {
         return workflowService.retrieveEvidence(runId, query, topK);
+    }
+
+    @GetMapping("/{runId}/research-collection-plan")
+    public ResearchCollectionPlan researchCollectionPlan(@PathVariable UUID runId) {
+        return workflowService.researchCollectionPlan(runId);
+    }
+
+    @GetMapping("/{runId}/research-subtasks")
+    public Collection<ResearchSubtask> researchSubtasks(@PathVariable UUID runId,
+                                                        @RequestParam(required = false) String status,
+                                                        @RequestParam(required = false) String competitorName,
+                                                        @RequestParam(required = false) String dimension) {
+        return workflowService.researchSubtasks(runId, status, competitorName, dimension);
+    }
+
+    @GetMapping("/{runId}/research-coverage-gaps")
+    public Collection<ResearchCoverageGap> researchCoverageGaps(@PathVariable UUID runId,
+                                                                @RequestParam(required = false) String competitorName,
+                                                                @RequestParam(required = false) String dimension) {
+        return workflowService.researchCoverageGaps(runId, competitorName, dimension);
+    }
+
+    @GetMapping("/{runId}/research-repair-targets")
+    public Collection<ResearchRepairTarget> researchRepairTargets(@PathVariable UUID runId,
+                                                                  @RequestParam(required = false) String competitorName,
+                                                                  @RequestParam(required = false) String dimension,
+                                                                  @RequestParam(required = false) String status) {
+        return workflowService.researchRepairTargets(runId, competitorName, dimension, status);
     }
 
     @GetMapping(path = "/{runId}/events", produces = MediaType.TEXT_EVENT_STREAM_VALUE)

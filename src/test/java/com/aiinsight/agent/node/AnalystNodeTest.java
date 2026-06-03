@@ -3,9 +3,12 @@ package com.aiinsight.agent.node;
 import com.aiinsight.llm.ChatRequest;
 import com.aiinsight.llm.LlmClient;
 import com.aiinsight.model.enums.ArtifactType;
+import com.aiinsight.model.enums.AgentName;
 import com.aiinsight.model.enums.ClaimType;
 import com.aiinsight.model.enums.ConfidenceLevel;
 import com.aiinsight.model.enums.FactType;
+import com.aiinsight.model.enums.ReviewAction;
+import com.aiinsight.model.review.ReviewRepairTask;
 import com.aiinsight.model.run.AnalysisRequirement;
 import com.aiinsight.model.run.AnalysisRun;
 import com.aiinsight.model.run.EvidenceChunk;
@@ -162,6 +165,172 @@ class AnalystNodeTest {
         assertThat(swot)
                 .contains("Cursor Composer is a useful benchmark")
                 .doesNotContain("UNSUPPORTED SWOT TEXT");
+    }
+
+    @Test
+    void analystRepairKeepsClaimIdAndDowngradesUnresolvedTaskClaim() {
+        String claimText = "Cursor Composer is clearly the strongest workflow benchmark.";
+        LlmClient llmClient = new LlmClient() {
+            @Override
+            public boolean isAvailable() {
+                return true;
+            }
+
+            @Override
+            public String complete(ChatRequest request) {
+                return """
+                        {
+                          "claims": [
+                            {
+                              "type": "OPPORTUNITY",
+                              "content": "%s",
+                              "confidence": "HIGH",
+                              "competitorNames": ["Cursor"],
+                              "evidenceIds": ["S1"]
+                            }
+                          ]
+                        }
+                        """.formatted(claimText);
+            }
+        };
+        AnalysisRun run = new AnalysisRun(new AnalysisRequirement(
+                "Analyze Cursor",
+                "AI coding tools",
+                List.of("Cursor"),
+                List.of("features"),
+                List.of("official_site"),
+                List.of()
+        ));
+        run.getEvidenceSources().add(new EvidenceSource(
+                "S1",
+                "Cursor product page",
+                "https://example.test/cursor",
+                "official_site",
+                "FETCHED",
+                "LIVE_FETCHED",
+                "HIGH",
+                "NONE",
+                "Cursor Composer supports multi-file code edits.",
+                "Cursor Composer supports multi-file code edits.",
+                "test evidence"
+        ));
+        AnalysisClaim previous = new AnalysisClaim();
+        previous.setId("C-KEEP");
+        previous.setType(ClaimType.OPPORTUNITY);
+        previous.setContent(claimText);
+        previous.setConfidence(ConfidenceLevel.HIGH);
+        previous.setCompetitorNames(List.of("Cursor"));
+        previous.setEvidenceIds(List.of("S1"));
+        run.getClaims().add(previous);
+
+        run.getReviewDecision().setAction(ReviewAction.REWORK_ANALYSIS);
+        run.getReviewDecision().setTargetAgent(AgentName.ANALYST);
+        ReviewRepairTask task = new ReviewRepairTask();
+        task.setTargetAgent(AgentName.ANALYST);
+        task.setClaimId("C-KEEP");
+        task.setCitationKey("S1");
+        task.setCategory("claim_fact_mismatch");
+        task.setCurrentText(claimText);
+        run.getReviewDecision().setRepairTasks(List.of(task));
+
+        new AnalystNode(llmClient, new ObjectMapper(), new FallbackAnalysisDraftFactory()).execute(run);
+
+        assertThat(run.getClaims()).hasSize(1);
+        AnalysisClaim repaired = run.getClaims().get(0);
+        assertThat(repaired.getId()).isEqualTo("C-KEEP");
+        assertThat(repaired.getConfidence()).isEqualTo(ConfidenceLevel.LOW);
+        assertThat(repaired.getEvidenceIds()).doesNotContain("S1");
+        assertThat(repaired.getContent()).contains("证据不足", "待验证");
+    }
+
+    @Test
+    void analystRepairDoesNotDowngradeClaimReboundToNewEvidence() {
+        String claimText = "Cursor Composer is a strong workflow benchmark.";
+        LlmClient llmClient = new LlmClient() {
+            @Override
+            public boolean isAvailable() {
+                return true;
+            }
+
+            @Override
+            public String complete(ChatRequest request) {
+                return """
+                        {
+                          "claims": [
+                            {
+                              "type": "OPPORTUNITY",
+                              "content": "%s",
+                              "confidence": "HIGH",
+                              "competitorNames": ["Cursor"],
+                              "evidenceIds": ["S2"]
+                            }
+                          ]
+                        }
+                        """.formatted(claimText);
+            }
+        };
+        AnalysisRun run = new AnalysisRun(new AnalysisRequirement(
+                "Analyze Cursor",
+                "AI coding tools",
+                List.of("Cursor"),
+                List.of("features"),
+                List.of("official_site"),
+                List.of()
+        ));
+        run.getEvidenceSources().add(new EvidenceSource(
+                "S1",
+                "Old weak page",
+                "https://example.test/old",
+                "public_review",
+                "FETCHED",
+                "LIVE_FETCHED",
+                "LOW",
+                "NONE",
+                "Old weak snippet.",
+                "Old weak snippet.",
+                "old evidence"
+        ));
+        run.getEvidenceSources().add(new EvidenceSource(
+                "S2",
+                "Cursor official docs",
+                "https://example.test/cursor/docs",
+                "official_site",
+                "FETCHED",
+                "LIVE_FETCHED",
+                "HIGH",
+                "NONE",
+                "Cursor Composer supports multi-file workflow editing.",
+                "Cursor Composer supports multi-file workflow editing.",
+                "new evidence"
+        ));
+        run.getEvidenceSources().get(1).setSourceAuthority("FIRST_PARTY_OFFICIAL");
+        AnalysisClaim previous = new AnalysisClaim();
+        previous.setId("C-KEEP");
+        previous.setType(ClaimType.OPPORTUNITY);
+        previous.setContent(claimText);
+        previous.setConfidence(ConfidenceLevel.HIGH);
+        previous.setCompetitorNames(List.of("Cursor"));
+        previous.setEvidenceIds(List.of("S1"));
+        run.getClaims().add(previous);
+
+        run.getReviewDecision().setAction(ReviewAction.REWORK_ANALYSIS);
+        run.getReviewDecision().setTargetAgent(AgentName.ANALYST);
+        ReviewRepairTask task = new ReviewRepairTask();
+        task.setTargetAgent(AgentName.ANALYST);
+        task.setClaimId("C-KEEP");
+        task.setCitationKey("S1");
+        task.setCategory("claim_fact_mismatch");
+        task.setCurrentText(claimText);
+        run.getReviewDecision().setRepairTasks(List.of(task));
+
+        new AnalystNode(llmClient, new ObjectMapper(), new FallbackAnalysisDraftFactory()).execute(run);
+
+        assertThat(run.getClaims()).hasSize(1);
+        AnalysisClaim repaired = run.getClaims().get(0);
+        assertThat(repaired.getId()).isEqualTo("C-KEEP");
+        assertThat(repaired.getConfidence()).isEqualTo(ConfidenceLevel.HIGH);
+        assertThat(repaired.getEvidenceIds()).containsExactly("S2");
+        assertThat(repaired.getContent()).doesNotContain("证据不足", "待验证");
     }
 
     private CompetitorFactSet cursorFactSet() {

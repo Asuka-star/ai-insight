@@ -15,6 +15,7 @@ import com.aiinsight.llm.ChatOptions;
 import com.aiinsight.llm.ChatRequest;
 import com.aiinsight.llm.LlmClient;
 import com.aiinsight.service.CitationCoverageEvaluator;
+import com.aiinsight.service.ResearchCoverageService;
 import com.aiinsight.service.fallback.FallbackReviewReportFactory;
 import com.aiinsight.agent.AgentNode;
 import com.aiinsight.observability.AgentTraceContext;
@@ -37,13 +38,16 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 import org.springframework.util.StringUtils;
 
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.regex.Matcher;
@@ -59,6 +63,11 @@ public class ReviewerNode implements AgentNode {
 
     private static final Pattern CITATION_KEY_PATTERN = Pattern.compile("\\bS\\d+\\b");
     private static final int MAX_FINDING_CATEGORY_LENGTH = 128;
+    private static final int MAX_LLM_FINDINGS_PER_SUBTASK = 4;
+    private static final int MAX_LLM_FINDING_MESSAGE_LENGTH = 180;
+    private static final int MAX_LLM_FINDING_RECOMMENDATION_LENGTH = 180;
+    private static final int MAX_LLM_FINDING_EXCERPT_LENGTH = 240;
+    private static final int MAX_REPAIR_TASKS = 12;
     private static final Set<String> MANUAL_ONLY_EVIDENCE_TYPES = Set.of(
             "survey_result",
             "interview_note",
@@ -72,6 +81,14 @@ public class ReviewerNode implements AgentNode {
     private final LlmClient llmClient;
     private final FallbackReviewReportFactory fallbackReviewReportFactory;
     private final ObjectMapper objectMapper = new ObjectMapper();
+    private ResearchCoverageService researchCoverageService = new ResearchCoverageService();
+
+    @Autowired(required = false)
+    public void setResearchCoverageService(ResearchCoverageService researchCoverageService) {
+        if (researchCoverageService != null) {
+            this.researchCoverageService = researchCoverageService;
+        }
+    }
 
     @Override
     public AgentName name() {
@@ -123,6 +140,8 @@ public class ReviewerNode implements AgentNode {
         }
         applyRepairVerificationScope(run, previousDecision);
         run.setReviewDecision(buildDecision(run));
+        researchCoverageService.enrichRepairTasks(run);
+        researchCoverageService.refreshRepairTargets(run);
         String content = StringUtils.hasText(semanticReviewContent)
                 ? semanticReviewContent + "\n\n" + fallbackReviewReportFactory.build(run)
                 : fallbackReviewReportFactory.build(run);
@@ -140,6 +159,7 @@ public class ReviewerNode implements AgentNode {
         int downgradedNewHighFindings = 0;
         for (ReviewFinding finding : run.getReviewFindings()) {
             if (finding.getSeverity() == ReviewSeverity.HIGH
+                    && isLlmSemanticFinding(finding)
                     && !matchesPreviousRepairTask(finding, previousDecision.getRepairTasks())) {
                 finding.setSeverity(ReviewSeverity.MEDIUM);
                 finding.setMessage("返工验证模式中发现的新问题（不阻断本轮修复验收）：" + finding.getMessage());
@@ -151,6 +171,18 @@ public class ReviewerNode implements AgentNode {
                     "返工验证模式已将 " + downgradedNewHighFindings
                             + " 个非上一轮 blocker 的新 HIGH 问题降为质量提醒；本轮优先验证上一轮修复任务是否完成。");
         }
+    }
+
+    private boolean isLlmSemanticFinding(ReviewFinding finding) {
+        String category = normalizeLower(finding.getCategory());
+        return category.startsWith("llm_")
+                || category.contains("semantic")
+                || category.contains("overclaim")
+                || category.startsWith("report_")
+                || category.contains("actionability")
+                || category.contains("schema_consistency")
+                || category.contains("matrix_claim_conflict")
+                || category.contains("swot_claim_conflict");
     }
 
     private boolean isRepairVerificationMode(ReviewDecision previousDecision) {
@@ -226,14 +258,15 @@ public class ReviewerNode implements AgentNode {
             return decision;
         }
         applyBlockingDecision(run, decision, blockingFindings);
+        List<ReviewFinding> targetFindings = targetFindings(decision, blockingFindings);
         decision.setBlockingFindingIds(blockingFindings.stream()
                 .map(finding -> finding.getId().toString())
                 .toList());
-        decision.setFindingCategories(distinctCategories(blockingFindings));
-        decision.setRepairInstructions(repairInstructions(decision, blockingFindings));
-        decision.setRepairTasks(repairTasks(run, decision, blockingFindings));
+        decision.setFindingCategories(distinctCategories(targetFindings));
+        decision.setRepairInstructions(repairInstructions(decision, targetFindings));
+        decision.setRepairTasks(repairTasks(run, decision, targetFindings));
         // 决策元数据沿用前端“定位问题”使用的 claim 绑定；没有可绑定 finding 时再退回无证据 claim。
-        List<String> affectedClaimIds = blockingFindings.stream()
+        List<String> affectedClaimIds = targetFindings.stream()
                 .map(finding -> finding.getClaimId())
                 .filter(id -> id != null && !id.isBlank())
                 .distinct()
@@ -245,8 +278,31 @@ public class ReviewerNode implements AgentNode {
                     .toList();
         }
         decision.setAffectedClaimIds(affectedClaimIds);
-        decision.setRepairScopeSummary(repairScopeSummary(decision, blockingFindings));
+        decision.setRepairScopeSummary(repairScopeSummary(decision, targetFindings));
         return decision;
+    }
+
+    private List<ReviewFinding> targetFindings(ReviewDecision decision, List<ReviewFinding> blockingFindings) {
+        List<ReviewFinding> matched = blockingFindings.stream()
+                .filter(finding -> isTargetFinding(decision, finding))
+                .toList();
+        return matched.isEmpty() ? blockingFindings : matched;
+    }
+
+    private boolean isTargetFinding(ReviewDecision decision, ReviewFinding finding) {
+        if (decision.getAction() == ReviewAction.RECOLLECT_EVIDENCE) {
+            return needsMoreEvidence(finding);
+        }
+        if (decision.getAction() == ReviewAction.REWORK_ANALYSIS && decision.getTargetAgent() == AgentName.EXTRACTOR) {
+            return needsExtractionRework(finding);
+        }
+        if (decision.getAction() == ReviewAction.REWORK_ANALYSIS && decision.getTargetAgent() == AgentName.ANALYST) {
+            return needsAnalysisRework(finding);
+        }
+        if (decision.getAction() == ReviewAction.REVISE_REPORT) {
+            return !needsMoreEvidence(finding) && !needsExtractionRework(finding) && !needsAnalysisRework(finding);
+        }
+        return true;
     }
 
     private boolean isBlockingFinding(ReviewFinding finding) {
@@ -298,9 +354,34 @@ public class ReviewerNode implements AgentNode {
     }
 
     private List<ReviewRepairTask> repairTasks(AnalysisRun run, ReviewDecision decision, List<ReviewFinding> blockingFindings) {
-        return blockingFindings.stream()
+        Map<String, ReviewFinding> uniqueFindings = new LinkedHashMap<>();
+        for (ReviewFinding finding : blockingFindings) {
+            uniqueFindings.putIfAbsent(repairTaskDedupeKey(finding), finding);
+        }
+        return uniqueFindings.values().stream()
+                .limit(MAX_REPAIR_TASKS)
                 .map(finding -> repairTask(run, decision, finding))
                 .toList();
+    }
+
+    private String repairTaskDedupeKey(ReviewFinding finding) {
+        String category = normalizeLower(finding.getCategory());
+        if (StringUtils.hasText(finding.getFactId())) {
+            return category + "|fact|" + finding.getFactId();
+        }
+        if (StringUtils.hasText(finding.getClaimId())) {
+            return category + "|claim|" + finding.getClaimId();
+        }
+        if (StringUtils.hasText(finding.getChunkKey())) {
+            return category + "|chunk|" + finding.getChunkKey();
+        }
+        if (StringUtils.hasText(finding.getCitationKey())) {
+            return category + "|citation|" + finding.getCitationKey();
+        }
+        if (finding.getParagraphIndex() != null) {
+            return category + "|paragraph|" + finding.getParagraphIndex();
+        }
+        return category + "|message|" + normalizeLower(finding.getMessage());
     }
 
     private ReviewRepairTask repairTask(AnalysisRun run, ReviewDecision decision, ReviewFinding finding) {
@@ -594,9 +675,11 @@ public class ReviewerNode implements AgentNode {
         CompletableFuture<LlmSubtaskResult<?>> schemaConsistencyTask = CompletableFuture.supplyAsync(
                 AgentTraceContext.wrap(() -> LlmSubtaskSupport.runSubtask("Reviewer", "schema-consistency", () -> reviewSchemaConsistencyWithLlm(run)))
         );
-        CompletableFuture<LlmSubtaskResult<?>> sourceQualityTask = CompletableFuture.supplyAsync(
+        CompletableFuture<LlmSubtaskResult<?>> sourceQualityTask = sourceQualityNeedsSemanticReview(run)
+                ? CompletableFuture.supplyAsync(
                 AgentTraceContext.wrap(() -> LlmSubtaskSupport.runSubtask("Reviewer", "source-quality", () -> reviewSourceQualityWithLlm(run)))
-        );
+        )
+                : CompletableFuture.completedFuture(skippedReviewSubtask("source-quality", "No weak source signals detected."));
         CompletableFuture<LlmSubtaskResult<?>> reportActionabilityTask = CompletableFuture.supplyAsync(
                 AgentTraceContext.wrap(() -> LlmSubtaskSupport.runSubtask("Reviewer", "report-actionability", () -> reviewReportActionabilityWithLlm(run, draft)))
         );
@@ -639,6 +722,19 @@ public class ReviewerNode implements AgentNode {
                 + "\n\n结构化新增问题：" + added;
     }
 
+    private LlmSubtaskResult<?> skippedReviewSubtask(String name, String summary) {
+        return new LlmSubtaskResult<>(name, new LlmReviewResult(summary, List.of()), null);
+    }
+
+    private boolean sourceQualityNeedsSemanticReview(AnalysisRun run) {
+        return run.getEvidenceSources().stream().anyMatch(this::isWeakSource)
+                || run.getReviewFindings().stream()
+                .map(ReviewFinding::getCategory)
+                .filter(StringUtils::hasText)
+                .map(category -> normalizeLower(category))
+                .anyMatch(category -> category.contains("source") || category.contains("citation") || category.contains("evidence"));
+    }
+
     private LlmReviewResult reviewClaimEvidenceWithLlm(AnalysisRun run) {
         String prompt = """
                 你是竞品分析工作流中的 claim-evidence Reviewer。请只检查结构化 claim 是否被 evidenceIds 真正支撑。
@@ -661,7 +757,7 @@ public class ReviewerNode implements AgentNode {
                 claimEvidencePairs(run),
                 compactRuleFindings(run)
         );
-        return completeReviewSubtask(prompt);
+        return completeReviewSubtask("claim-evidence", prompt);
     }
 
     private LlmReviewResult reviewReportOverclaimWithLlm(AnalysisRun run, AnalysisArtifact draft) {
@@ -689,7 +785,7 @@ public class ReviewerNode implements AgentNode {
                 compactEvidenceBlock(run, draft),
                 compactClaimsBlock(run)
         );
-        return completeReviewSubtask(prompt);
+        return completeReviewSubtask("report-overclaim", prompt);
     }
 
     private LlmReviewResult reviewSchemaConsistencyWithLlm(AnalysisRun run) {
@@ -717,7 +813,7 @@ public class ReviewerNode implements AgentNode {
                 compactClaimsBlock(run),
                 compactAnalysisArtifacts(run)
         );
-        return completeReviewSubtask(prompt);
+        return completeReviewSubtask("schema-consistency", prompt);
     }
 
     private LlmReviewResult reviewSourceQualityWithLlm(AnalysisRun run) {
@@ -743,7 +839,7 @@ public class ReviewerNode implements AgentNode {
                 sourceQualityBlock(run),
                 compactRuleFindings(run)
         );
-        return completeReviewSubtask(prompt);
+        return completeReviewSubtask("source-quality", prompt);
     }
 
     private LlmReviewResult reviewReportActionabilityWithLlm(AnalysisRun run, AnalysisArtifact draft) {
@@ -776,17 +872,17 @@ public class ReviewerNode implements AgentNode {
                 compactClaimsBlock(run),
                 abbreviate(draft.getContent(), 1800)
         );
-        return completeReviewSubtask(prompt);
+        return completeReviewSubtask("report-actionability", prompt);
     }
 
-    private LlmReviewResult completeReviewSubtask(String prompt) {
+    private LlmReviewResult completeReviewSubtask(String subtaskName, String prompt) {
         String raw = llmClient.complete(new ChatRequest(
                 List.of(
                         ChatMessage.system("你是严格的事实核查和引用覆盖 Reviewer Agent。"),
                         ChatMessage.user(prompt)
                 ),
                 ChatOptions.reviewer()
-        ));
+        ).tagged(name().name(), subtaskName));
         return parseLlmReviewResult(raw);
     }
 
@@ -800,7 +896,12 @@ public class ReviewerNode implements AgentNode {
             JsonNode findingsNode = root.has("findings") ? root.get("findings") : root;
             List<LlmFindingDraft> findings = objectMapper.convertValue(findingsNode, new TypeReference<>() {
             });
-            return new LlmReviewResult(summary, findings == null ? List.of() : findings);
+            List<LlmFindingDraft> boundedFindings = findings == null
+                    ? List.of()
+                    : findings.stream()
+                    .limit(MAX_LLM_FINDINGS_PER_SUBTASK)
+                    .toList();
+            return new LlmReviewResult(summary, boundedFindings);
         } catch (IllegalArgumentException | JsonProcessingException ex) {
             return new LlmReviewResult("", List.of());
         }
@@ -838,13 +939,15 @@ public class ReviewerNode implements AgentNode {
         ReviewFinding finding = new ReviewFinding(
                 severity,
                 sanitizeCategory(draft.category),
-                draft.message.trim(),
-                StringUtils.hasText(draft.recommendation) ? draft.recommendation.trim() : "请人工复核该问题并补充证据或修订报告。"
+                abbreviate(draft.message.trim(), MAX_LLM_FINDING_MESSAGE_LENGTH),
+                StringUtils.hasText(draft.recommendation)
+                        ? abbreviate(draft.recommendation.trim(), MAX_LLM_FINDING_RECOMMENDATION_LENGTH)
+                        : "请人工复核该问题并补充证据或修订报告。"
         );
         finding.setClaimId(blankToNull(draft.claimId));
         finding.setCitationKey(sanitizeCitationKey(draft.citationKey));
         finding.setParagraphIndex(draft.paragraphIndex);
-        finding.setExcerpt(blankToNull(draft.excerpt));
+        finding.setExcerpt(blankToNull(abbreviate(draft.excerpt, MAX_LLM_FINDING_EXCERPT_LENGTH)));
         return finding;
     }
 
@@ -1100,7 +1203,11 @@ public class ReviewerNode implements AgentNode {
     private boolean isWeakSource(com.aiinsight.model.run.EvidenceSource source) {
         return "FETCH_FAILED".equals(source.getCollectionStatus())
                 || "SEARCH_RESULT_SNIPPET".equals(source.getFreshness())
-                || "search_result_snippet".equals(source.getSourceType());
+                || "search_result_snippet".equals(source.getSourceType())
+                || "LOW".equals(source.getSourceQuality())
+                || "UNUSABLE".equals(source.getSourceQuality())
+                || "video".equals(source.getSourceType())
+                || "forum".equals(source.getSourceType());
     }
 
     private String chunkKinds(AnalysisRun run, String citationKey) {

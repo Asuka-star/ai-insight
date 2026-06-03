@@ -1,15 +1,22 @@
 package com.aiinsight.workflow;
 
 import com.aiinsight.agent.AgentNode;
+import com.aiinsight.dto.ResearchCollectionEvent;
 import com.aiinsight.exception.RunNotFoundException;
 import com.aiinsight.model.enums.AgentName;
 import com.aiinsight.model.enums.AnalysisStatus;
+import com.aiinsight.model.enums.ArtifactType;
+import com.aiinsight.model.enums.ReviewAction;
 import com.aiinsight.model.enums.StepStatus;
 import com.aiinsight.model.review.ReviewDecision;
 import com.aiinsight.model.run.AgentStep;
 import com.aiinsight.model.run.AgentTrace;
 import com.aiinsight.model.run.AnalysisRequirement;
+import com.aiinsight.model.run.AnalysisArtifact;
 import com.aiinsight.model.run.AnalysisRun;
+import com.aiinsight.model.schema.AnalysisClaim;
+import com.aiinsight.model.schema.CompetitorFactSet;
+import com.aiinsight.model.schema.CompetitorProfile;
 import com.aiinsight.model.schema.ResearchPackage;
 import com.aiinsight.model.schema.ResearchPlan;
 import com.aiinsight.observability.AgentTraceContext;
@@ -20,6 +27,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
 import java.time.Instant;
+import java.util.Comparator;
 import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.CancellationException;
@@ -53,6 +61,7 @@ public class WorkflowNodeExecutor {
         run.getSteps().add(step);
         addTraceIfAbsent(run, trace);
         repository.save(run);
+        RepairSnapshot repairSnapshot = RepairSnapshot.capture(run, node.name());
         eventBroker.publish(run, "agent_started", node.name() + " started");
         log.info("Agent node started: runId={}, agent={}, stepId={}, inputSummary={}",
                 runId,
@@ -64,12 +73,15 @@ public class WorkflowNodeExecutor {
             if (updatedRun != null) {
                 run = updatedRun;
             }
+            recordRepairDelta(run, node, repairSnapshot);
             ensureNotCancelled(runId);
             step.succeed(buildOutputSummary(run, node));
             completeTrace(trace, step, run, "SUCCEEDED", startedAt);
             addTraceIfAbsent(run, trace);
+            run = mergeClarifierResultIfUserMovedOn(runId, node, run, step, trace);
             repository.save(run);
             eventBroker.publish(run, "agent_succeeded", node.name() + " succeeded");
+            publishResearchCollectionEvent(run, node);
             log.info("Agent node completed: runId={}, agent={}, stepId={}, status={}, fallbackUsed={}, modelName={}, latencyMs={}, evidenceSources={}, claims={}, artifacts={}, findings={}",
                     run.getId(),
                     node.name(),
@@ -180,6 +192,102 @@ public class WorkflowNodeExecutor {
             }
         }
         run.getTraces().add(trace);
+    }
+
+    private void recordRepairDelta(AnalysisRun run, AgentNode node, RepairSnapshot before) {
+        if (before == null || !before.active()) {
+            return;
+        }
+        RepairSnapshot after = RepairSnapshot.capture(run, node.name());
+        String summary = repairDeltaSummary(node.name(), before, after);
+        AgentTraceContext.recordProcessSummary(summary);
+        log.info("Review repair delta: runId={}, agent={}, changed={}, before={}, after={}",
+                run.getId(),
+                node.name(),
+                before.materiallyChanged(after),
+                before.shortSummary(),
+                after.shortSummary());
+        if (!before.materiallyChanged(after)) {
+            addRecommendedActionOnce(run, "Reviewer 打回后 " + node.name()
+                    + " 返工没有产生实质变化；请检查 repairTasks 是否过宽、证据是否不足，或改为人工处理对应阻塞问题。");
+        }
+    }
+
+    private String repairDeltaSummary(AgentName agentName, RepairSnapshot before, RepairSnapshot after) {
+        boolean changed = before.materiallyChanged(after);
+        return """
+                Review repair delta:
+                - agent=%s
+                - changed=%s
+                - before=%s
+                - after=%s
+                """.formatted(agentName, changed, before.shortSummary(), after.shortSummary());
+    }
+
+    private void addRecommendedActionOnce(AnalysisRun run, String action) {
+        if (!run.getRecommendedActions().contains(action)) {
+            run.getRecommendedActions().add(action);
+        }
+    }
+
+    private AnalysisRun mergeClarifierResultIfUserMovedOn(UUID runId,
+                                                          AgentNode node,
+                                                          AnalysisRun completedRun,
+                                                          AgentStep step,
+                                                          AgentTrace trace) {
+        if (node.name() != AgentName.CLARIFIER) {
+            return completedRun;
+        }
+        AnalysisRun latest = repository.findById(runId).orElse(completedRun);
+        if (!hasUserProgressAfterClarifierStarted(latest)) {
+            return completedRun;
+        }
+
+        // Clarifier can run asynchronously after the draft is created. If the user has already confirmed
+        // the scope, added evidence, or started the main workflow, do not save the older Clarifier snapshot.
+        replaceStep(latest, step);
+        replaceTrace(latest, trace);
+        mergeMissingArtifacts(latest, completedRun);
+        mergeMissingRecommendedActions(latest, completedRun);
+        if (canStillApplyClarifierScope(latest)) {
+            latest.setRequirement(completedRun.getRequirement());
+            latest.setClarificationDraft(completedRun.getClarificationDraft());
+        }
+        log.info("Merged late Clarifier result without overwriting newer run state: runId={}, status={}, evidenceSources={}, steps={}",
+                latest.getId(),
+                latest.getStatus(),
+                latest.getEvidenceSources().size(),
+                latest.getSteps().size());
+        return latest;
+    }
+
+    private boolean hasUserProgressAfterClarifierStarted(AnalysisRun latest) {
+        return latest.getStatus() != AnalysisStatus.AWAITING_CONFIRMATION
+                || latest.getSteps().stream().anyMatch(step -> step.getAgentName() != AgentName.CLARIFIER)
+                || latest.getClarificationDraft() != null && latest.getClarificationDraft().isConfirmed()
+                || !latest.getEvidenceSources().isEmpty()
+                || !latest.getEvidenceChunks().isEmpty()
+                || !latest.getUserProvidedEvidence().isEmpty()
+                || !latest.getContextMessages().isEmpty();
+    }
+
+    private boolean canStillApplyClarifierScope(AnalysisRun latest) {
+        return latest.getStatus() == AnalysisStatus.AWAITING_CONFIRMATION
+                && latest.getSteps().stream().noneMatch(step -> step.getAgentName() != AgentName.CLARIFIER)
+                && (latest.getClarificationDraft() == null || !latest.getClarificationDraft().isConfirmed());
+    }
+
+    private void mergeMissingArtifacts(AnalysisRun target, AnalysisRun source) {
+        source.getArtifacts().stream()
+                .filter(artifact -> target.getArtifacts().stream()
+                        .noneMatch(existing -> existing.getId().equals(artifact.getId())))
+                .forEach(target.getArtifacts()::add);
+    }
+
+    private void mergeMissingRecommendedActions(AnalysisRun target, AnalysisRun source) {
+        source.getRecommendedActions().stream()
+                .filter(action -> !target.getRecommendedActions().contains(action))
+                .forEach(target.getRecommendedActions()::add);
     }
 
     private String buildInputSummary(AnalysisRun run, AgentNode node, String routeSummary) {
@@ -323,7 +431,174 @@ public class WorkflowNodeExecutor {
             Thread.sleep(120);
         } catch (InterruptedException ex) {
             Thread.currentThread().interrupt();
-            throw new IllegalStateException("Analysis workflow interrupted", ex);
+            log.warn("Skipped readable event pause because the workflow thread was interrupted.");
+        }
+    }
+
+    private void publishResearchCollectionEvent(AnalysisRun run, AgentNode node) {
+        if (run.getResearchPackage() == null || run.getResearchPackage().getResearchCollectionPlan() == null) {
+            return;
+        }
+        if (node.name() == AgentName.RESEARCHER) {
+            eventBroker.publishPayload(
+                    run,
+                    "research.collection.plan.updated",
+                    ResearchCollectionEvent.of(run.getId(), "research.collection.plan.updated", "Research collection plan updated", run.getResearchPackage().getResearchCollectionPlan())
+            );
+        } else if (node.name() == AgentName.REVIEWER) {
+            eventBroker.publishPayload(
+                    run,
+                    "research.repair.targets.updated",
+                    ResearchCollectionEvent.of(run.getId(), "research.repair.targets.updated", "Research repair targets updated", run.getResearchPackage().getResearchCollectionPlan())
+            );
+        }
+    }
+
+    private record RepairSnapshot(
+            AgentName agentName,
+            boolean active,
+            int evidenceSources,
+            int claims,
+            int artifacts,
+            String claimsFingerprint,
+            String reportFingerprint,
+            String evidenceFingerprint,
+            String profileFingerprint,
+            String factFingerprint
+    ) {
+
+        static RepairSnapshot capture(AnalysisRun run, AgentName agentName) {
+            boolean active = isRepairTarget(run, agentName);
+            return new RepairSnapshot(
+                    agentName,
+                    active,
+                    run.getEvidenceSources().size(),
+                    run.getClaims().size(),
+                    run.getArtifacts().size(),
+                    fingerprint(claimsText(run)),
+                    fingerprint(latestArtifactContent(run, ArtifactType.REPORT_DRAFT)),
+                    fingerprint(run.getEvidenceSources().stream()
+                            .map(source -> "%s|%s|%s|%s".formatted(
+                                    source.getCitationKey(),
+                                    source.getUrl(),
+                                    source.getSourceQuality(),
+                                    source.getCollectionStatus()))
+                            .sorted()
+                            .collect(Collectors.joining("\n"))),
+                    fingerprint(run.getCompetitorProfiles().stream()
+                            .map(RepairSnapshot::profileText)
+                            .sorted()
+                            .collect(Collectors.joining("\n"))),
+                    fingerprint(run.getCompetitorFactSets().stream()
+                            .map(RepairSnapshot::factSetText)
+                            .sorted()
+                            .collect(Collectors.joining("\n")))
+            );
+        }
+
+        boolean materiallyChanged(RepairSnapshot after) {
+            if (after == null) {
+                return false;
+            }
+            return switch (agentName) {
+                case RESEARCHER -> evidenceSources != after.evidenceSources
+                        || !evidenceFingerprint.equals(after.evidenceFingerprint);
+                case EXTRACTOR -> !profileFingerprint.equals(after.profileFingerprint)
+                        || !factFingerprint.equals(after.factFingerprint);
+                case ANALYST -> claims != after.claims
+                        || !claimsFingerprint.equals(after.claimsFingerprint);
+                case WRITER -> !reportFingerprint.equals(after.reportFingerprint);
+                default -> true;
+            };
+        }
+
+        String shortSummary() {
+            return "evidence=%d, claims=%d, artifacts=%d, claimsFp=%s, reportFp=%s, evidenceFp=%s, profileFp=%s, factFp=%s"
+                    .formatted(evidenceSources, claims, artifacts, claimsFingerprint, reportFingerprint,
+                            evidenceFingerprint, profileFingerprint, factFingerprint);
+        }
+
+        private static boolean isRepairTarget(AnalysisRun run, AgentName agentName) {
+            ReviewDecision decision = run.getReviewDecision();
+            return decision != null
+                    && decision.getAction() != ReviewAction.PASS
+                    && decision.getTargetAgent() == agentName;
+        }
+
+        private static String claimsText(AnalysisRun run) {
+            return run.getClaims().stream()
+                    .map(RepairSnapshot::claimText)
+                    .sorted()
+                    .collect(Collectors.joining("\n"));
+        }
+
+        private static String claimText(AnalysisClaim claim) {
+            return "%s|%s|%s|%s|%s".formatted(
+                    claim.getType(),
+                    claim.getConfidence(),
+                    sortedText(claim.getCompetitorNames()),
+                    sortedText(claim.getEvidenceIds()),
+                    normalize(claim.getContent())
+            );
+        }
+
+        private static String profileText(CompetitorProfile profile) {
+            return "%s|%s|%s|%s|%s".formatted(
+                    normalize(profile.getProductName()),
+                    normalize(profile.getPositioning()),
+                    sortedText(profile.getTargetUsers()),
+                    sortedText(profile.getStrengths()),
+                    sortedText(profile.getWeaknesses())
+            );
+        }
+
+        private static String factSetText(CompetitorFactSet factSet) {
+            return "%s|%s|%s".formatted(
+                    normalize(factSet.getCompetitorName()),
+                    factSet.getFacts().stream()
+                            .map(fact -> "%s|%s|%s|%s".formatted(
+                                    fact.getId(),
+                                    fact.getFactType(),
+                                    normalize(fact.getValue()),
+                                    sortedText(fact.getEvidenceIds())))
+                            .sorted()
+                            .collect(Collectors.joining(";")),
+                    factSet.getUnknowns().stream()
+                            .map(unknown -> "%s|%s|%s".formatted(
+                                    normalize(unknown.getField()),
+                                    normalize(unknown.getReason()),
+                                    sortedText(unknown.getNeededEvidenceTypes())))
+                            .sorted()
+                            .collect(Collectors.joining(";"))
+            );
+        }
+
+        private static String latestArtifactContent(AnalysisRun run, ArtifactType type) {
+            return run.getArtifacts().stream()
+                    .filter(artifact -> artifact.getType() == type)
+                    .max(Comparator.comparingInt(AnalysisArtifact::getVersion))
+                    .map(AnalysisArtifact::getContent)
+                    .orElse("");
+        }
+
+        private static String sortedText(List<String> values) {
+            if (values == null || values.isEmpty()) {
+                return "";
+            }
+            return values.stream()
+                    .map(RepairSnapshot::normalize)
+                    .sorted()
+                    .collect(Collectors.joining(","));
+        }
+
+        private static String fingerprint(String value) {
+            return Integer.toHexString(normalize(value).hashCode());
+        }
+
+        private static String normalize(String value) {
+            return value == null ? "" : value.toLowerCase()
+                    .replaceAll("\\s+", " ")
+                    .trim();
         }
     }
 }
