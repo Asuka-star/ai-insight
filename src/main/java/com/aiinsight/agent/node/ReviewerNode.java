@@ -26,6 +26,7 @@ import com.aiinsight.util.LlmSubtaskSupport;
 import com.aiinsight.util.LlmSubtaskSupport.LlmSubtaskResult;
 import static com.aiinsight.util.AgentUtils.CITATION_PATTERN;
 import static com.aiinsight.util.AgentUtils.abbreviate;
+import static com.aiinsight.util.AgentUtils.containsAny;
 import static com.aiinsight.util.AgentUtils.containsIgnoreCase;
 import static com.aiinsight.util.AgentUtils.countBySeverity;
 import static com.aiinsight.util.AgentUtils.hasText;
@@ -160,7 +161,6 @@ public class ReviewerNode implements AgentNode {
         int downgradedNewHighFindings = 0;
         for (ReviewFinding finding : run.getReviewFindings()) {
             if (finding.getSeverity() == ReviewSeverity.HIGH
-                    && isLlmSemanticFinding(finding)
                     && !matchesPreviousRepairTask(finding, previousDecision.getRepairTasks())) {
                 finding.setSeverity(ReviewSeverity.MEDIUM);
                 finding.setMessage("返工验证模式中发现的新问题（不阻断本轮修复验收）：" + finding.getMessage());
@@ -172,18 +172,6 @@ public class ReviewerNode implements AgentNode {
                     "返工验证模式已将 " + downgradedNewHighFindings
                             + " 个非上一轮 blocker 的新 HIGH 问题降为质量提醒；本轮优先验证上一轮修复任务是否完成。");
         }
-    }
-
-    private boolean isLlmSemanticFinding(ReviewFinding finding) {
-        String category = normalizeLower(finding.getCategory());
-        return category.startsWith("llm_")
-                || category.contains("semantic")
-                || category.contains("overclaim")
-                || category.startsWith("report_")
-                || category.contains("actionability")
-                || category.contains("schema_consistency")
-                || category.contains("matrix_claim_conflict")
-                || category.contains("swot_claim_conflict");
     }
 
     private boolean isRepairVerificationMode(ReviewDecision previousDecision) {
@@ -561,7 +549,10 @@ public class ReviewerNode implements AgentNode {
 
     private void applyBlockingDecision(AnalysisRun run, ReviewDecision decision, List<ReviewFinding> blockingFindings) {
         List<String> missingEvidenceTypes = run.getResearchPackage().getMissingEvidenceTypes();
-        List<String> autoCollectableEvidenceTypes = autoCollectableEvidenceTypes(missingEvidenceTypes);
+        List<String> autoCollectableEvidenceTypes = mergedAutoCollectableEvidenceTypes(
+                missingEvidenceTypes,
+                blockingFindings
+        );
         List<String> manualOnlyEvidenceTypes = manualOnlyEvidenceTypes(missingEvidenceTypes);
         // 路由优先级：如果确实缺采集证据，先回 Researcher；否则结构化 claim 问题回 Analyst；
         // 剩下的引用写法、报告措辞或 LLM overclaim 交给 Writer 修订。
@@ -662,6 +653,37 @@ public class ReviewerNode implements AgentNode {
                 .toList();
     }
 
+    private List<String> mergedAutoCollectableEvidenceTypes(List<String> missingEvidenceTypes,
+                                                            List<ReviewFinding> blockingFindings) {
+        Set<String> evidenceTypes = new LinkedHashSet<>(autoCollectableEvidenceTypes(missingEvidenceTypes));
+        blockingFindings.stream()
+                .flatMap(finding -> inferredAutoCollectableEvidenceTypes(finding).stream())
+                .filter(type -> !isManualOnlyEvidenceType(type))
+                .forEach(evidenceTypes::add);
+        return new ArrayList<>(evidenceTypes);
+    }
+
+    private List<String> inferredAutoCollectableEvidenceTypes(ReviewFinding finding) {
+        String text = normalizeLower("%s %s %s".formatted(
+                textOrDash(finding.getCategory()),
+                textOrDash(finding.getMessage()),
+                textOrDash(finding.getRecommendation())
+        ));
+        Set<String> evidenceTypes = new LinkedHashSet<>();
+        if (containsAny(text,
+                "claim_missing_sentiment_source", "sentiment", "user review", "users report", "customer feedback",
+                "public_review", "community", "reviews", "review source", "feedback source")) {
+            evidenceTypes.add("public_review");
+        }
+        if (containsAny(text, "pricing source", "pricing_page", "price source", "pricing evidence")) {
+            evidenceTypes.add("pricing_page");
+        }
+        if (containsAny(text, "security source", "security_docs", "permission source", "compliance source")) {
+            evidenceTypes.add("security");
+        }
+        return new ArrayList<>(evidenceTypes);
+    }
+
     private List<String> manualOnlyEvidenceTypes(List<String> evidenceTypes) {
         if (evidenceTypes == null || evidenceTypes.isEmpty()) {
             return List.of();
@@ -681,6 +703,9 @@ public class ReviewerNode implements AgentNode {
         String category = normalizeLower(finding.getCategory());
         return category.equals("citation_missing")
                 || category.equals("claim_missing_evidence")
+                || category.equals("claim_missing_sentiment_source")
+                || category.contains("missing_source")
+                || category.contains("missing_evidence")
                 || category.contains("low_quality_source")
                 || category.contains("snippet_only")
                 || category.contains("blocked_source")

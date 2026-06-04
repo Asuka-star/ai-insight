@@ -338,6 +338,10 @@ public class AnalysisLangGraphWorkflow {
         decision.setRepairTasks(tasks.stream()
                 .limit(MAX_MANUAL_RERUN_REPAIR_FINDINGS)
                 .toList());
+        decision.setRequiredEvidenceTypes(mergedRequiredEvidenceTypes(
+                decision.getRequiredEvidenceTypes(),
+                decision.getRepairTasks()
+        ));
         decision.setRepairScopeSummary("手动重跑 " + agentName + " 自动携带上一轮 Reviewer 问题："
                 + decision.getRepairTasks().size() + " 个修复任务；类别=" + decision.getFindingCategories());
         decision.setDecidedAt(Instant.now());
@@ -382,9 +386,7 @@ public class AnalysisLangGraphWorkflow {
         if (!scoped.isEmpty()) {
             return scoped;
         }
-        return candidates.stream()
-                .limit(MAX_MANUAL_RERUN_REPAIR_FINDINGS)
-                .toList();
+        return List.of();
     }
 
     private int severityRank(ReviewFinding finding) {
@@ -434,6 +436,11 @@ public class AnalysisLangGraphWorkflow {
         task.setInstruction("修复上一轮 Reviewer 问题：" + shortText(finding.getMessage(), 220));
         task.setExpectedFix(expectedFixForManualRerun(agentName));
         task.setAcceptanceCriteria("下一轮 Reviewer 不应再出现同一 findingId/category/claim/citation 对应的问题。");
+        if (agentName == AgentName.RESEARCHER) {
+            List<String> evidenceTypes = inferredResearchEvidenceTypes(finding);
+            task.setRequiredEvidenceTypes(evidenceTypes);
+            task.setSourcePreferences(evidenceTypes);
+        }
         return task;
     }
 
@@ -444,6 +451,52 @@ public class AnalysisLangGraphWorkflow {
             case EXTRACTOR, ANALYST -> ReviewAction.REWORK_ANALYSIS;
             case CLARIFIER, REVIEWER -> ReviewAction.PASS;
         };
+    }
+
+    private List<String> mergedRequiredEvidenceTypes(List<String> currentTypes, List<ReviewRepairTask> tasks) {
+        LinkedHashSet<String> evidenceTypes = new LinkedHashSet<>();
+        if (currentTypes != null) {
+            currentTypes.stream()
+                    .filter(this::hasText)
+                    .forEach(evidenceTypes::add);
+        }
+        if (tasks != null) {
+            tasks.stream()
+                    .flatMap(task -> task.getRequiredEvidenceTypes() == null
+                            ? List.<String>of().stream()
+                            : task.getRequiredEvidenceTypes().stream())
+                    .filter(this::hasText)
+                    .forEach(evidenceTypes::add);
+        }
+        return new ArrayList<>(evidenceTypes);
+    }
+
+    private List<String> inferredResearchEvidenceTypes(ReviewFinding finding) {
+        String text = normalizeFindingText(finding);
+        LinkedHashSet<String> evidenceTypes = new LinkedHashSet<>();
+        if (text.contains("claim_missing_sentiment_source")
+                || text.contains("sentiment")
+                || text.contains("user review")
+                || text.contains("customer feedback")
+                || text.contains("public_review")
+                || text.contains("community")
+                || text.contains("reviews")
+                || text.contains("feedback source")) {
+            evidenceTypes.add("public_review");
+        }
+        if (text.contains("pricing source")
+                || text.contains("pricing_page")
+                || text.contains("price source")
+                || text.contains("pricing evidence")) {
+            evidenceTypes.add("pricing_page");
+        }
+        if (text.contains("security source")
+                || text.contains("security_docs")
+                || text.contains("permission source")
+                || text.contains("compliance source")) {
+            evidenceTypes.add("security");
+        }
+        return new ArrayList<>(evidenceTypes);
     }
 
     private List<AgentName> manualRerunRepairScope(AgentName agentName) {
@@ -479,6 +532,9 @@ public class AnalysisLangGraphWorkflow {
 
     private AgentName targetAgentForFinding(ReviewFinding finding) {
         String text = normalizeFindingText(finding);
+        if (isResearchEvidenceFinding(text)) {
+            return AgentName.RESEARCHER;
+        }
         if (hasText(finding.getFactId())
                 || text.contains("fact_unsupported")
                 || text.contains("extracted fact")
@@ -486,20 +542,6 @@ public class AnalysisLangGraphWorkflow {
                 || text.contains("profile")
                 || text.contains("pricing")) {
             return AgentName.EXTRACTOR;
-        }
-        if (text.contains("missing evidence")
-                || text.contains("missing_evidence")
-                || text.contains("evidence gap")
-                || text.contains("source_quality")
-                || text.contains("low_quality_source")
-                || text.contains("marketing_only_source")
-                || text.contains("snippet_only_source")
-                || text.contains("blocked_source")
-                || text.contains("fetch_failed_source")
-                || text.contains("coverage")
-                || text.contains("补证")
-                || text.contains("证据缺口")) {
-            return AgentName.RESEARCHER;
         }
         if (text.contains("report")
                 || text.contains("paragraph")
@@ -521,6 +563,36 @@ public class AnalysisLangGraphWorkflow {
             return AgentName.WRITER;
         }
         return AgentName.ANALYST;
+    }
+
+    private boolean isResearchEvidenceFinding(String text) {
+        return text.contains("missing evidence")
+                || text.contains("missing_evidence")
+                || text.contains("missing_source")
+                || text.contains("claim_missing_sentiment_source")
+                || text.contains("evidence gap")
+                || text.contains("sentiment")
+                || text.contains("user review")
+                || text.contains("customer feedback")
+                || text.contains("public_review")
+                || text.contains("review source")
+                || text.contains("feedback source")
+                || text.contains("pricing source")
+                || text.contains("pricing_page")
+                || text.contains("price source")
+                || text.contains("security source")
+                || text.contains("security_docs")
+                || text.contains("permission source")
+                || text.contains("compliance source")
+                || text.contains("source_quality")
+                || text.contains("low_quality_source")
+                || text.contains("marketing_only_source")
+                || text.contains("snippet_only_source")
+                || text.contains("blocked_source")
+                || text.contains("fetch_failed_source")
+                || text.contains("coverage")
+                || text.contains("补证")
+                || text.contains("证据缺口");
     }
 
     private String normalizeFindingText(ReviewFinding finding) {

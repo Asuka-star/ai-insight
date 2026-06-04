@@ -12,12 +12,15 @@ import com.aiinsight.model.run.AnalysisRun;
 import com.aiinsight.model.run.AgentTrace;
 import com.aiinsight.model.run.EvidenceChunk;
 import com.aiinsight.model.run.EvidenceSource;
+import com.aiinsight.model.schema.CompetitorProfile;
 import com.aiinsight.observability.AgentTraceContext;
 import com.aiinsight.service.fallback.FallbackExtractionFactory;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -109,6 +112,91 @@ class ExtractorNodeTest {
 
         assertThat(promptCapture.get())
                 .contains("复核修复任务", "F7", "S1-C2", "Unsupported pricing fact", "Move unsupported value to unknowns");
+    }
+
+    @Test
+    void extractsProfilesPerCompetitorToKeepJsonSmall() {
+        List<String> subtasks = new ArrayList<>();
+        LlmClient llmClient = new LlmClient() {
+            @Override
+            public boolean isAvailable() {
+                return true;
+            }
+
+            @Override
+            public String complete(ChatRequest request) {
+                subtasks.add(request.getSubtaskName());
+                String productName = request.getSubtaskName().contains("Claude Code") ? "Claude Code" : "Cursor";
+                String evidenceId = "Claude Code".equals(productName) ? "S2" : "S1";
+                return """
+                        {
+                          "profiles": [
+                            {
+                              "productName": "%s",
+                              "companyName": "%s",
+                              "positioning": "AI coding assistant",
+                              "targetUsers": ["Developers"],
+                              "features": [
+                                {"name":"Coding workflow","description":"Evidence-backed coding workflow","evidenceIds":["%s"]}
+                              ],
+                              "pricing": {
+                                "strategySummary": "待验证",
+                                "hasFreePlan": false,
+                                "plans": [],
+                                "evidenceIds": []
+                              },
+                              "personas": [],
+                              "strengths": ["Evidence-backed coding workflow"],
+                              "weaknesses": ["待验证"],
+                              "evidenceIds": ["%s"]
+                            }
+                          ]
+                        }
+                        """.formatted(productName, productName, evidenceId, evidenceId);
+            }
+        };
+        AnalysisRun run = new AnalysisRun(new AnalysisRequirement(
+                "Analyze Cursor and Claude Code",
+                "AI coding tools",
+                List.of("Cursor", "Claude Code"),
+                List.of("features"),
+                List.of("official_site"),
+                List.of()
+        ));
+        run.getEvidenceSources().add(new EvidenceSource(
+                "S1",
+                "Cursor product page",
+                "https://example.test/cursor",
+                "official_site",
+                "FETCHED",
+                "LIVE_FETCHED",
+                "HIGH",
+                "NONE",
+                "Cursor supports coding workflow.",
+                "Cursor supports coding workflow.",
+                "test evidence"
+        ));
+        run.getEvidenceSources().add(new EvidenceSource(
+                "S2",
+                "Claude Code product page",
+                "https://example.test/claude-code",
+                "official_site",
+                "FETCHED",
+                "LIVE_FETCHED",
+                "HIGH",
+                "NONE",
+                "Claude Code supports coding workflow.",
+                "Claude Code supports coding workflow.",
+                "test evidence"
+        ));
+
+        new ExtractorNode(llmClient, new FallbackExtractionFactory()).execute(run);
+
+        assertThat(subtasks).containsExactly("profile-extraction:Cursor", "profile-extraction:Claude Code");
+        assertThat(run.getCompetitorProfiles())
+                .extracting(CompetitorProfile::getProductName)
+                .containsExactly("Cursor", "Claude Code");
+        assertThat(run.getRecommendedActions()).noneMatch(action -> action.contains("LLM Schema"));
     }
 
     @Test
@@ -745,6 +833,92 @@ class ExtractorNodeTest {
                         "rawPreview=",
                         "not a profiles array or object"
                 );
+    }
+
+    @Test
+    void retriesMalformedProfileJsonBeforeFallback() {
+        AtomicInteger calls = new AtomicInteger();
+        AtomicReference<String> retrySubtask = new AtomicReference<>();
+        LlmClient llmClient = new LlmClient() {
+            @Override
+            public boolean isAvailable() {
+                return true;
+            }
+
+            @Override
+            public String complete(ChatRequest request) {
+                if (calls.incrementAndGet() == 1) {
+                    return """
+                            {"profiles":[{"productName":"Cursor","companyName":"Cursor","positioning":"AI code editor","targetUsers":["Developers"],"features":[{"name":"Composer","description":"Multi-file editing","evidenceIds":["S1"]}],"pricing":{"strategySummary":"待验证","hasFreePlan":false,"plans":[],"evidenceIds":[]},"personas":[],"strengths":["Multi-file editing"],"weaknesses":[],"evidenceIds":["S1"]}}
+                            """;
+                }
+                retrySubtask.set(request.getSubtaskName());
+                return """
+                        {
+                          "profiles": [
+                            {
+                              "productName": "Cursor",
+                              "companyName": "Cursor",
+                              "positioning": "AI code editor",
+                              "targetUsers": ["Developers"],
+                              "features": [
+                                {"name":"Composer","description":"Multi-file editing","evidenceIds":["S1"]}
+                              ],
+                              "pricing": {
+                                "strategySummary": "待验证",
+                                "hasFreePlan": false,
+                                "plans": [],
+                                "evidenceIds": []
+                              },
+                              "personas": [],
+                              "strengths": ["Multi-file editing"],
+                              "weaknesses": [],
+                              "evidenceIds": ["S1"]
+                            }
+                          ]
+                        }
+                        """;
+            }
+        };
+        AnalysisRun run = runWithCursorEvidence();
+        AgentTrace trace = new AgentTrace();
+        AgentTraceContext.start(trace);
+
+        new ExtractorNode(llmClient, new FallbackExtractionFactory()).execute(run);
+
+        assertThat(calls.get()).isEqualTo(2);
+        assertThat(retrySubtask.get()).isEqualTo("profile-json-repair");
+        assertThat(trace.getFallbackUsed()).isFalse();
+        assertThat(trace.getProcessSnapshot()).contains("Extractor JSON repair retry succeeded");
+        assertThat(run.getRecommendedActions()).noneMatch(action -> action.contains("LLM Schema"));
+        assertThat(run.getCompetitorProfiles()).hasSize(1);
+        assertThat(run.getCompetitorProfiles().get(0).getFeatureTree().getRoots())
+                .extracting(node -> node.getName())
+                .containsExactly("Composer");
+    }
+
+    @Test
+    void blankSingleCompetitorProfileFallsBackWithVisibleAction() {
+        LlmClient llmClient = new LlmClient() {
+            @Override
+            public boolean isAvailable() {
+                return true;
+            }
+
+            @Override
+            public String complete(ChatRequest request) {
+                return "";
+            }
+        };
+        AnalysisRun run = runWithCursorEvidence();
+
+        new ExtractorNode(llmClient, new FallbackExtractionFactory()).execute(run);
+
+        assertThat(run.getRecommendedActions())
+                .anyMatch(action -> action.contains("LLM Schema 抽取失败"));
+        assertThat(run.getCompetitorProfiles())
+                .extracting(CompetitorProfile::getProductName)
+                .containsExactly("Cursor");
     }
 
     @Test

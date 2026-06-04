@@ -37,6 +37,7 @@ public class SourceCollectionService {
 
     private static final int SNIPPET_LENGTH = 220;
     private static final int MIN_SEARCH_FETCH_TEXT_LENGTH = 180;
+    private static final int MIN_SEARCH_ARTICLE_TEXT_LENGTH = 320;
     private static final int MAX_OFFICIAL_REFERENCE_SOURCES_PER_URL = 4;
     private static final Set<String> SEARCH_DERIVED_REJECTED_TYPES = Set.of("video", "forum");
 
@@ -117,7 +118,7 @@ public class SourceCollectionService {
                 .toList();
         run.getResearchPackage().setActualSearchQueries(queries);
         int sourcesPerCompetitor = searchSourcesPerCompetitor(batches.size());
-        int maxSearchSources = maxSearchSources(batches.size(), sourcesPerCompetitor);
+        int maxSearchSources = maxSearchSources(run, batches.size(), sourcesPerCompetitor, recollecting);
         if (!searchProvider.isAvailable()) {
             failSearchSubtasks(collectionPlan, "search_provider_unavailable", 0);
             return new SearchCandidateCollection(batches, List.of(), List.of(), false, maxSearchSources);
@@ -176,7 +177,7 @@ public class SourceCollectionService {
                 selectedCandidateIds,
                 "agent-selected"
         );
-        if (outcome.needsCandidatePoolFill(candidateCollection)) {
+        if (!recollecting && outcome.needsCandidatePoolFill(candidateCollection)) {
             List<String> backupCandidateIds = outcome.backupCandidateIds(candidateCollection);
             markFetchingSubtasks(collectionPlan, backupCandidateIds);
             CandidateFetchOutcome fillOutcome = appendCandidateSearchEvidence(
@@ -467,6 +468,9 @@ public class SourceCollectionService {
         if (host.endsWith("claude.com") && path.matches("/cn/(docs|documentation|help|guide|guides|security|pricing|plans|changelog|release-notes|releases|updates)(/.*)?")) {
             return true;
         }
+        if (host.endsWith("claude.ai") && path.matches("/(documentation|docs|help|guide|guides|security|pricing|plans|case-studies|solutions|changelog|release-notes|releases|updates)(/.*)?")) {
+            return true;
+        }
         return path.contains("app-unavailable-in-region");
     }
 
@@ -518,7 +522,7 @@ public class SourceCollectionService {
                 .forEach(seenUrls::add);
 
         int sourcesPerCompetitor = searchSourcesPerCompetitor(batches.size());
-        int maxSearchSources = maxSearchSources(batches.size(), sourcesPerCompetitor);
+        int maxSearchSources = maxSearchSources(run, batches.size(), sourcesPerCompetitor, recollecting);
         long started = System.nanoTime();
         List<SearchCandidateBatchResult> batchResults = collectSearchCandidateBatches(
                 run,
@@ -624,6 +628,16 @@ public class SourceCollectionService {
                 properties.hardMaxSearchSources(),
                 Math.max(properties.minSearchSources(), competitorCount * sourcesPerCompetitor)
         );
+    }
+
+    private int maxSearchSources(AnalysisRun run, int competitorCount, int sourcesPerCompetitor, boolean recollecting) {
+        if (!recollecting) {
+            return maxSearchSources(competitorCount, sourcesPerCompetitor);
+        }
+        int repairTaskCount = Math.max(1, researcherRepairTasks(run).size());
+        int repairLimit = Math.min(4, repairTaskCount * 2);
+        int batchLimit = Math.max(1, competitorCount * Math.max(1, Math.min(2, sourcesPerCompetitor)));
+        return Math.min(properties.hardMaxSearchSources(), Math.max(1, Math.min(repairLimit, batchLimit)));
     }
 
     private ResearchCollectionPlan initializeResearchCollectionPlan(AnalysisRun run,
@@ -981,29 +995,31 @@ public class SourceCollectionService {
                                       int baseSourcesPerCompetitor,
                                       boolean recollecting) {
         ReviewDecision decision = run.getRepairDecisionFor(AgentName.RESEARCHER);
-        if (!recollecting || decision == null || decision.getRepairTasks().isEmpty()) {
+        List<com.aiinsight.model.review.ReviewRepairTask> repairTasks = researcherRepairTasks(run);
+        if (!recollecting || decision == null || repairTasks.isEmpty()) {
             return baseSourcesPerCompetitor;
         }
         // Reviewer 打回后不平均加大所有竞品的搜索量，而是优先给 repairTasks 中被点名的竞品
         // 多留抓取名额；其他竞品保留少量兜底，避免完全错过新的公开资料。
         Set<String> focusedCompetitors = focusedRepairCompetitors(run);
         if (focusedCompetitors.isEmpty()) {
-            return baseSourcesPerCompetitor;
+            return Math.max(1, Math.min(2, baseSourcesPerCompetitor));
         }
         if (focusedCompetitors.contains(normalizeText(batch.competitor()))) {
-            return Math.min(baseSourcesPerCompetitor + 2, 5);
+            return Math.max(1, Math.min(2, baseSourcesPerCompetitor));
         }
-        return Math.max(1, baseSourcesPerCompetitor - 1);
+        return 1;
     }
 
     private Set<String> focusedRepairCompetitors(AnalysisRun run) {
+        List<com.aiinsight.model.review.ReviewRepairTask> repairTasks = researcherRepairTasks(run);
         ReviewDecision decision = run.getRepairDecisionFor(AgentName.RESEARCHER);
-        if (decision == null || decision.getRepairTasks().isEmpty()) {
+        if (decision == null || repairTasks.isEmpty()) {
             return Set.of();
         }
         // repairTasks 里可能只记录 claim/category/recommendation，这里用文本回扫竞品名，
         // 把“哪几个竞品需要补证据”从 Reviewer 输出中提取出来。
-        String repairText = decision.getRepairTasks().stream()
+        String repairText = repairTasks.stream()
                 .map(task -> "%s %s %s %s".formatted(
                         task.getInstruction(),
                         task.getAcceptanceCriteria(),
@@ -1014,7 +1030,7 @@ public class SourceCollectionService {
         repairText = repairText + " " + String.join(" ", decision.getRepairInstructions());
         Set<String> focused = new LinkedHashSet<>();
         for (String competitor : run.getRequirement().getCompetitors()) {
-            boolean structuredTarget = decision.getRepairTasks().stream()
+            boolean structuredTarget = repairTasks.stream()
                     .map(task -> task.getCompetitorName())
                     .filter(StringUtils::hasText)
                     .anyMatch(target -> normalizeText(target).equals(normalizeText(competitor)));
@@ -1023,6 +1039,19 @@ public class SourceCollectionService {
             }
         }
         return focused;
+    }
+
+    private List<com.aiinsight.model.review.ReviewRepairTask> researcherRepairTasks(AnalysisRun run) {
+        if (run == null) {
+            return List.of();
+        }
+        ReviewDecision decision = run.getRepairDecisionFor(AgentName.RESEARCHER);
+        if (decision == null || decision.getRepairTasks() == null) {
+            return List.of();
+        }
+        return decision.getRepairTasks().stream()
+                .filter(task -> task != null && task.getTargetAgent() == AgentName.RESEARCHER)
+                .toList();
     }
 
     private SearchBatchResult joinSearchBatch(CompletableFuture<SearchBatchResult> future) {
@@ -1621,6 +1650,7 @@ public class SourceCollectionService {
     private String searchFetchedContentIssue(WebPageFetchService.FetchedPage page) {
         String title = page.getTitle() == null ? "" : page.getTitle().toLowerCase(Locale.ROOT);
         String text = page.getRawText() == null ? "" : page.getRawText().toLowerCase(Locale.ROOT);
+        String url = page.getUrl() == null ? "" : page.getUrl().toLowerCase(Locale.ROOT);
         String searchable = title + " " + text;
         if (containsAny(searchable,
                 "301 moved permanently",
@@ -1633,6 +1663,12 @@ public class SourceCollectionService {
                 "cloudflare ray id",
                 "challenge-platform")) {
             return "anti_bot_or_redirect_page";
+        }
+        if (looksLikeLoginOrTrapPage(url, title, text)) {
+            return "login_or_trap_page";
+        }
+        if (looksLikeSearchResultShell(url, title, text)) {
+            return "search_result_shell";
         }
         if (isUnavailableRegionText(searchable)) {
             return "region_unavailable_page";
@@ -1659,15 +1695,63 @@ public class SourceCollectionService {
         if (shouldSkipOfficialCandidateUrl(page.getUrl())) {
             return "known_bad_locale_or_region_path";
         }
+        if (requiresStrongerSearchArticle(page) && safeText(page.getRawText()).length() < MIN_SEARCH_ARTICLE_TEXT_LENGTH) {
+            return "thin_search_article";
+        }
         return null;
     }
 
     private String blockingFetchedContentIssue(WebPageFetchService.FetchedPage page) {
         String issue = searchFetchedContentIssue(page);
-        if ("anti_bot_or_redirect_page".equals(issue) || "region_unavailable_page".equals(issue)) {
+        if ("anti_bot_or_redirect_page".equals(issue)
+                || "login_or_trap_page".equals(issue)
+                || "search_result_shell".equals(issue)
+                || "region_unavailable_page".equals(issue)) {
             return issue;
         }
         return null;
+    }
+
+    private boolean requiresStrongerSearchArticle(WebPageFetchService.FetchedPage page) {
+        String sourceType = normalizeText(page.getSourceType());
+        String quality = normalizeText(page.getSourceQuality()).toUpperCase(Locale.ROOT);
+        return Set.of("article", "technical_blog", "third_party_docs", "third_party_pricing_reference", "pricing_reference")
+                .contains(sourceType)
+                && !"HIGH".equals(quality);
+    }
+
+    private boolean looksLikeLoginOrTrapPage(String url, String title, String text) {
+        String urlAndTitle = "%s %s".formatted(url, title);
+        if (containsAny(urlAndTitle,
+                "login.feishu.cn",
+                "/accounts/trap",
+                "login_redirect",
+                "sign in",
+                "sign-in",
+                "signin",
+                "log in",
+                "login required",
+                "请登录",
+                "登录",
+                "账号登录",
+                "扫码登录")) {
+            return true;
+        }
+        return text.length() < MIN_SEARCH_ARTICLE_TEXT_LENGTH
+                && containsAny(text, "sign in", "log in", "login required", "请登录", "账号登录", "扫码登录");
+    }
+
+    private boolean looksLikeSearchResultShell(String url, String title, String text) {
+        String searchable = "%s %s %s".formatted(url, title, text);
+        return containsAny(searchable,
+                "douyin.com/search",
+                "google.com/search",
+                "bing.com/search",
+                "baidu.com/s?",
+                "search?q=",
+                "/search?",
+                "搜索结果",
+                "search results");
     }
 
     private boolean isUnavailableRegionText(String searchable) {

@@ -66,6 +66,8 @@ public class ExtractorNode implements AgentNode {
     private static final int RAG_CHUNKS_PER_DIMENSION = 2;
     private static final int MAX_FALLBACK_RAW_TEXT_CHARS = 300;
     private static final int MAX_RAG_CHUNK_TEXT_CHARS = 420;
+    private static final int MAX_JSON_REPAIR_INPUT_CHARS = 9_000;
+    private static final int MAX_EXTRACTOR_REPAIR_TASKS_IN_PROMPT = 6;
     private static final int MAX_PRICING_EVIDENCE_IDS_PER_FACT = 4;
     private static final List<String> STRONG_TEMPLATE_PRICING_MARKERS = List.of(
             "\u5df2\u8865\u5145\u4ef7\u683c\u9875\u8bc1\u636e",
@@ -836,6 +838,11 @@ public class ExtractorNode implements AgentNode {
     }
 
     private List<CompetitorProfile> extractProfilesWithLlm(AnalysisRun run) {
+        if (run.getRequirement() != null
+                && run.getRequirement().getCompetitors() != null
+                && !run.getRequirement().getCompetitors().isEmpty()) {
+            return extractProfilesPerCompetitor(run);
+        }
         String prompt = """
                 你是竞品分析工作流中的结构化抽取 Agent。请只从证据中抽取事实画像，不要做战略分析。
                 输出约束：
@@ -890,7 +897,7 @@ public class ExtractorNode implements AgentNode {
                 ChatOptions.extractor()
         ).tagged(name().name(), "profile-extraction"));
         List<CompetitorProfile> fallbackProfiles = fallbackExtractionFactory.buildProfiles(run);
-        List<CompetitorProfile> llmProfiles = parseProfiles(raw, run, fallbackProfiles);
+        List<CompetitorProfile> llmProfiles = parseProfilesWithRepairRetry(raw, run, fallbackProfiles);
         if (llmProfiles.isEmpty()) {
             throw new IllegalStateException("模型未返回可用 profiles");
         }
@@ -924,6 +931,201 @@ public class ExtractorNode implements AgentNode {
                 instructions,
                 tasks.isBlank() ? "暂无结构化修复任务。" : tasks
         );
+    }
+
+    private String repairPlanBlock(AnalysisRun run, String competitor) {
+        ReviewDecision decision = run.getRepairDecisionFor(AgentName.EXTRACTOR);
+        if (decision == null
+                || decision.getAction() != ReviewAction.REWORK_ANALYSIS
+                || decision.getTargetAgent() != AgentName.EXTRACTOR) {
+            return "当前不是 Extractor 复核修复模式。";
+        }
+        List<ReviewRepairTask> extractorTasks = decision.getRepairTasks().stream()
+                .filter(task -> task.getTargetAgent() == AgentName.EXTRACTOR)
+                .toList();
+        List<ReviewRepairTask> scopedTasks = extractorTasks.stream()
+                .filter(task -> repairTaskMentionsCompetitor(task, competitor))
+                .toList();
+        List<ReviewRepairTask> tasksForPrompt = (scopedTasks.isEmpty() ? extractorTasks : scopedTasks).stream()
+                .limit(MAX_EXTRACTOR_REPAIR_TASKS_IN_PROMPT)
+                .toList();
+        String tasks = tasksForPrompt.stream()
+                .map(this::compactRepairTaskLine)
+                .collect(Collectors.joining("\n"));
+        String instructions = decision.getRepairInstructions().stream()
+                .limit(3)
+                .map(instruction -> "- " + abbreviate(instruction, 180))
+                .collect(Collectors.joining("\n"));
+        return """
+                修复范围：%s
+                修复指令：
+                %s
+                结构化修复任务：
+                %s
+                """.formatted(
+                nullToEmpty(decision.getRepairScopeSummary()),
+                instructions.isBlank() ? "- 暂无具体修复指令。" : instructions,
+                tasks.isBlank() ? "- 暂无结构化修复任务。" : tasks
+        );
+    }
+
+    private boolean repairTaskMentionsCompetitor(ReviewRepairTask task, String competitor) {
+        if (!StringUtils.hasText(competitor)) {
+            return false;
+        }
+        if (StringUtils.hasText(task.getCompetitorName())) {
+            return containsIgnoreCase(task.getCompetitorName(), competitor);
+        }
+        String text = "%s %s %s %s %s".formatted(
+                nullToEmpty(task.getCurrentText()),
+                nullToEmpty(task.getInstruction()),
+                nullToEmpty(task.getExpectedFix()),
+                nullToEmpty(task.getAcceptanceCriteria()),
+                nullToEmpty(task.getExcerpt())
+        );
+        return containsIgnoreCase(text, competitor);
+    }
+
+    private String compactRepairTaskLine(ReviewRepairTask task) {
+        return "- action=%s fact=%s claim=%s citation=%s currentText=%s instruction=%s expectedFix=%s".formatted(
+                nullToEmpty(task.getAction()),
+                nullToEmpty(task.getFactId()),
+                nullToEmpty(task.getClaimId()),
+                nullToEmpty(task.getCitationKey()),
+                abbreviate(nullToEmpty(task.getCurrentText()), 120),
+                abbreviate(nullToEmpty(task.getInstruction()), 160),
+                abbreviate(nullToEmpty(task.getExpectedFix()), 160)
+        );
+    }
+
+    private List<CompetitorProfile> parseProfilesWithRepairRetry(String raw,
+                                                                 AnalysisRun run,
+                                                                 List<CompetitorProfile> fallbackProfiles) {
+        try {
+            return parseProfiles(raw, run, fallbackProfiles);
+        } catch (IllegalStateException firstFailure) {
+            String repairedRaw;
+            try {
+                repairedRaw = repairExtractorJson(raw, run, firstFailure);
+            } catch (RuntimeException repairFailure) {
+                repairFailure.addSuppressed(firstFailure);
+                throw repairFailure;
+            }
+            try {
+                List<CompetitorProfile> profiles = parseProfiles(repairedRaw, run, fallbackProfiles);
+                AgentTraceContext.recordProcessSummary("""
+                        Extractor JSON repair retry succeeded:
+                        initialFailure=%s
+                        repairedOutputChars=%d
+                        """.formatted(
+                        abbreviate(firstFailure.getMessage(), 260),
+                        repairedRaw == null ? 0 : repairedRaw.length()
+                ));
+                return profiles;
+            } catch (IllegalStateException retryFailure) {
+                retryFailure.addSuppressed(firstFailure);
+                throw retryFailure;
+            }
+        }
+    }
+
+    private List<CompetitorProfile> extractProfilesPerCompetitor(AnalysisRun run) {
+        List<CompetitorProfile> fallbackProfiles = fallbackExtractionFactory.buildProfiles(run);
+        List<CompetitorProfile> profiles = new ArrayList<>();
+        for (String competitor : run.getRequirement().getCompetitors()) {
+            if (!StringUtils.hasText(competitor)) {
+                continue;
+            }
+            profiles.add(extractSingleProfileWithLlm(run, competitor.trim(), fallbackFor(fallbackProfiles, competitor)));
+        }
+        return profiles;
+    }
+
+    private CompetitorProfile extractSingleProfileWithLlm(AnalysisRun run,
+                                                          String competitor,
+                                                          CompetitorProfile fallbackProfile) {
+        String raw = llmClient.complete(new ChatRequest(
+                List.of(
+                        ChatMessage.system("你是竞品结构化抽取 Agent。只输出合法 JSON 对象，不要输出 Markdown。只抽取证据支持的事实。"),
+                        ChatMessage.user(singleCompetitorPrompt(run, competitor))
+                ),
+                new ChatOptions(0.1, 1800)
+        ).tagged(name().name(), "profile-extraction:%s".formatted(competitor)));
+        List<CompetitorProfile> parsedProfiles = parseProfilesWithRepairRetry(raw, run, List.of(fallbackProfile));
+        if (parsedProfiles.isEmpty()) {
+            throw new IllegalStateException("模型未返回当前竞品可用 profile: " + competitor);
+        }
+        return parsedProfiles.stream()
+                .filter(profile -> normalizeLower(profile.getProductName()).equals(normalizeLower(competitor)))
+                .findFirst()
+                .orElseGet(() -> parsedProfiles.get(0));
+    }
+
+    private String singleCompetitorPrompt(AnalysisRun run, String competitor) {
+        return """
+                只抽取一个竞品：%s。
+
+                输出要求：
+                1. 只输出可解析 JSON，不要 Markdown、解释或代码块。
+                2. JSON 格式必须是 {"profiles":[profile]}，profiles 数组只能有 1 个对象。
+                3. productName 必须等于 "%s"。
+                4. evidenceIds 只能使用证据包里出现的 S 编号；不要输出 S1-C2 这种 chunkKey 到 evidenceIds。
+                5. 不确定或证据不支持的字段写“待验证”，不要编造。
+                6. features、pricing、personas、strengths、weaknesses 必须来自证据事实，不要写建议、机会、风险、战略判断。
+                7. 尽量紧凑：features 最多 6 个，personas 最多 3 个，pricing.plans 最多 4 个，strengths/weaknesses 各最多 4 条。
+
+                profile schema:
+                {
+                  "productName": "%s",
+                  "companyName": "公司名或待验证",
+                  "positioning": "不超过60字",
+                  "targetUsers": ["目标用户或待验证"],
+                  "features": [{"name":"功能名","description":"不超过60字","evidenceIds":["S1"]}],
+                  "pricing": {"strategySummary":"定价事实或待验证","hasFreePlan":false,"plans":[{"name":"套餐名","priceText":"价格文本或待验证","billingCycle":"monthly|yearly|usage_based|unknown","targetSegment":"目标客群或待验证","includedFeatures":["能力"],"evidenceIds":["S1"]}],"evidenceIds":["S1"]},
+                  "personas": [{"name":"画像名","segment":"细分人群","companySize":"规模或待验证","jobsToBeDone":["任务"],"painPoints":["痛点"],"buyingConcerns":["采购顾虑"],"evidenceIds":["S1"]}],
+                  "strengths": ["证据明确支持的优势事实"],
+                  "weaknesses": ["证据明确支持的限制或待验证"],
+                  "evidenceIds": ["S1"]
+                }
+
+                证据片段索引：
+                %s
+
+                复核修复任务：
+                %s
+                """.formatted(
+                competitor,
+                competitor,
+                competitor,
+                evidenceBlock(run, competitor),
+                repairPlanBlock(run, competitor)
+        );
+    }
+
+    private String repairExtractorJson(String raw, AnalysisRun run, RuntimeException failure) {
+        String prompt = """
+                下面是 Extractor Agent 返回的 JSON，但它无法被解析。请只修复 JSON 语法，不要新增事实、不要改写证据编号、不要输出 Markdown。
+                必须输出一个可被 JSON.parse 解析的对象，格式为 {"profiles":[...]}。
+                只允许保留这些竞品：%s。
+                如果某个字段不确定，保留原值或写“待验证”。不要解释。
+
+                解析错误：
+                %s
+
+                待修复输出：
+                %s
+                """.formatted(
+                run.getRequirement().getCompetitors(),
+                abbreviate(failure.getMessage(), 600),
+                abbreviate(raw, MAX_JSON_REPAIR_INPUT_CHARS)
+        );
+        return llmClient.complete(new ChatRequest(
+                List.of(
+                        ChatMessage.system("你是 JSON 修复器。只输出合法 JSON 对象，不要输出任何解释、Markdown 或代码块。"),
+                        ChatMessage.user(prompt)
+                ),
+                new ChatOptions(0.0, 3200)
+        ).tagged(name().name(), "profile-json-repair"));
     }
 
     private String repairTaskLine(ReviewRepairTask task) {
@@ -1352,11 +1554,46 @@ public class ExtractorNode implements AgentNode {
                 .collect(Collectors.joining("\n"));
     }
 
+    private String evidenceBlock(AnalysisRun run, String competitor) {
+        if (!run.getEvidenceChunks().isEmpty()) {
+            String pack = ragEvidencePack(run, List.of(competitor));
+            AgentTraceContext.recordProcessSummary("Extractor per-competitor RAG evidence pack selected for %s:\n%s".formatted(
+                    competitor,
+                    abbreviate(pack, 3000)
+            ));
+            return pack;
+        }
+        String filtered = run.getEvidenceSources().stream()
+                .filter(source -> evidenceMentionsCompetitor(source, competitor))
+                .limit(MAX_FALLBACK_EVIDENCE_SOURCES_FOR_PROMPT)
+                .map(source -> """
+                        [%s] title=%s | type=%s | quality=%s
+                        snippet=%s
+                        raw=%s
+                        """.formatted(
+                        source.getCitationKey(),
+                        abbreviate(source.getTitle(), 100),
+                        source.getSourceType(),
+                        source.getSourceQuality(),
+                        abbreviate(source.getSnippet(), 320),
+                        abbreviate(source.getRawText(), MAX_FALLBACK_RAW_TEXT_CHARS)
+                ))
+                .collect(Collectors.joining("\n"));
+        if (StringUtils.hasText(filtered)) {
+            return filtered;
+        }
+        return evidenceBlock(run);
+    }
+
     private String ragEvidencePack(AnalysisRun run) {
+        return ragEvidencePack(run, run.getRequirement().getCompetitors());
+    }
+
+    private String ragEvidencePack(AnalysisRun run, List<String> competitors) {
         List<String> dimensions = extractionDimensions(run);
         StringBuilder pack = new StringBuilder();
         int pairCount = 0;
-        for (String competitor : run.getRequirement().getCompetitors()) {
+        for (String competitor : competitors) {
             for (String dimension : dimensions) {
                 List<EvidenceChunk> chunks = evidenceRetrievalService.retrieve(
                         run,
@@ -1389,6 +1626,19 @@ public class ExtractorNode implements AgentNode {
                 .limit(MAX_FALLBACK_EVIDENCE_SOURCES_FOR_PROMPT)
                 .map(this::formatChunk)
                 .collect(Collectors.joining("\n"));
+    }
+
+    private boolean evidenceMentionsCompetitor(EvidenceSource source, String competitor) {
+        if (!StringUtils.hasText(competitor)) {
+            return true;
+        }
+        String text = "%s %s %s %s".formatted(
+                nullToEmpty(source.getTitle()),
+                nullToEmpty(source.getUrl()),
+                nullToEmpty(source.getSnippet()),
+                nullToEmpty(source.getRawText())
+        );
+        return containsIgnoreCase(text, competitor);
     }
 
     private List<String> extractionDimensions(AnalysisRun run) {

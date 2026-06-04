@@ -151,10 +151,12 @@ public class EvidenceSourceLifecycleService {
         BindingRepair repair = new BindingRepair();
         for (String citationKey : new ArrayList<>(evidenceIds)) {
             EvidenceSource oldSource = sourcesByKey.get(citationKey);
-            if (!isReplaceableWeakSource(oldSource)) {
+            EvidenceSource replacement = replacementFor(run, oldSource, sourcesByKey.values().stream().toList(), context);
+            boolean weakSource = isReplaceableWeakSource(oldSource);
+            boolean contextuallyWeak = !weakSource && replacement != null && isContextuallyWeakSource(oldSource, context);
+            if (!weakSource && !contextuallyWeak) {
                 continue;
             }
-            EvidenceSource replacement = replacementFor(run, oldSource, sourcesByKey.values().stream().toList(), context);
             repair.remove(citationKey);
             if (replacement != null) {
                 repair.addReplacement(replacement.getCitationKey());
@@ -219,6 +221,29 @@ public class EvidenceSourceLifecycleService {
                 || "ANTI_BOT_PAGE".equals(failureReason)
                 || "THIN_TEXT".equals(failureReason)
                 || normalizeLower(source.getComplianceNote()).contains("snippet only");
+    }
+
+    private boolean isContextuallyWeakSource(EvidenceSource source, BindingContext context) {
+        if (source == null || context == null) {
+            return false;
+        }
+        String sourceType = normalizeLower(source.getSourceType());
+        String quality = normalizeUpper(source.getSourceQuality());
+        if ("pricing".equals(context.need())) {
+            return Set.of("article", "technical_blog", "third_party_pricing_reference", "pricing_reference",
+                            "authoritative_media")
+                    .contains(sourceType)
+                    && !"HIGH".equals(quality);
+        }
+        if ("security".equals(context.need())) {
+            return !Set.of("security_docs", "docs", "product_docs", "official_site").contains(sourceType)
+                    || !"HIGH".equals(quality);
+        }
+        if ("user_signal".equals(context.need())) {
+            return !Set.of("public_review", "public_reviews", "user_survey", "user_interview",
+                    "authoritative_media").contains(sourceType);
+        }
+        return false;
     }
 
     private boolean isStrongReplacementSource(EvidenceSource source, BindingContext context) {

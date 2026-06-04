@@ -292,6 +292,101 @@ class SourceCollectionServiceTest {
     }
 
     @Test
+    void recollectionDoesNotBackfillUnselectedCandidates() {
+        SourceCollectionService service = new SourceCollectionService(fetchUsefulPages(), new NoopSearchProvider());
+        AnalysisRun run = new AnalysisRun(new AnalysisRequirement(
+                "Analyze Cursor",
+                "AI coding tools",
+                List.of("Cursor"),
+                List.of("user feedback"),
+                List.of("public_reviews"),
+                List.of()
+        ));
+        run.getReviewDecision().setAction(ReviewAction.RECOLLECT_EVIDENCE);
+        run.getReviewDecision().setTargetAgent(AgentName.RESEARCHER);
+        ReviewRepairTask task = new ReviewRepairTask();
+        task.setTargetAgent(AgentName.RESEARCHER);
+        task.setCompetitorName("Cursor");
+        task.setRequiredEvidenceTypes(List.of("public_review"));
+        run.getReviewDecision().getRepairTasks().add(task);
+        List<SourceCollectionService.SearchCandidate> candidateList = java.util.stream.IntStream.rangeClosed(1, 4)
+                .mapToObj(index -> new SourceCollectionService.SearchCandidate(
+                        "C" + index,
+                        "Cursor",
+                        "Cursor user reviews",
+                        index,
+                        "Cursor review page " + index,
+                        "https://repair.example.test/page-" + index,
+                        "Cursor user review evidence.",
+                        "public_review",
+                        index,
+                        4
+                ))
+                .toList();
+        SourceCollectionService.SearchCandidateCollection candidates = new SourceCollectionService.SearchCandidateCollection(
+                List.of(new SearchQueryPlanner.SearchQueryBatch("Cursor", List.of("Cursor user reviews"))),
+                candidateList,
+                List.of(),
+                true,
+                4
+        );
+
+        var sources = service.collectSelectedSearchCandidates(run, true, candidates, List.of("C1"));
+
+        assertThat(sources)
+                .extracting(EvidenceSource::getUrl)
+                .containsExactly("https://repair.example.test/page-1");
+    }
+
+    @Test
+    void recollectionLimitsSelectableSourcesToRepairTasks() {
+        SourceCollectionService service = new SourceCollectionService(fetchUsefulPages(), new SearchProvider() {
+            @Override
+            public boolean isAvailable() {
+                return true;
+            }
+
+            @Override
+            public List<SearchResult> search(String query, int count) {
+                return java.util.stream.IntStream.rangeClosed(1, 5)
+                        .mapToObj(index -> new SearchResult(
+                                "Cursor review " + index,
+                                "https://repair-budget.example.test/page-" + index,
+                                "Cursor review evidence " + index,
+                                query,
+                                index
+                        ))
+                        .toList();
+            }
+        });
+        AnalysisRun run = new AnalysisRun(new AnalysisRequirement(
+                "Analyze Cursor",
+                "AI coding tools",
+                List.of("Cursor"),
+                List.of("user feedback"),
+                List.of("public_reviews"),
+                List.of()
+        ));
+        run.getReviewDecision().setAction(ReviewAction.RECOLLECT_EVIDENCE);
+        run.getReviewDecision().setTargetAgent(AgentName.RESEARCHER);
+        ReviewRepairTask task = new ReviewRepairTask();
+        task.setTargetAgent(AgentName.RESEARCHER);
+        task.setCompetitorName("Cursor");
+        task.setRequiredEvidenceTypes(List.of("public_review"));
+        run.getReviewDecision().getRepairTasks().add(task);
+
+        var candidates = service.searchCandidates(
+                run,
+                true,
+                List.of(new SearchQueryPlanner.SearchQueryBatch("Cursor", List.of("Cursor user reviews")))
+        );
+
+        assertThat(candidates.maxSelectable()).isEqualTo(2);
+        assertThat(run.getResearchPackage().getResearchCollectionPlan().getEvidenceBudgets().get(0).getMaxAcceptedSources())
+                .isEqualTo(2);
+    }
+
+    @Test
     void marksSurveyEvidenceAsFirstPartyResearch() {
         SourceCollectionService service = new SourceCollectionService(fetchAlwaysFails(), new NoopSearchProvider());
         var source = service.fromUserProvidedEvidence("S1", new UserProvidedEvidence(
@@ -1200,6 +1295,78 @@ class SourceCollectionServiceTest {
     }
 
     @Test
+    void dropsLoginRedirectSearchDerivedSources() {
+        WebPageFetchService fetchService = new WebPageFetchService() {
+            @Override
+            public FetchedPage fetch(String url) {
+                return FetchedPage.success(
+                        "https://login.feishu.cn/accounts/trap?app_id=2&login_redirect_times=1",
+                        "login.feishu.cn",
+                        "Sign in required. Please login to continue.",
+                        "robots.txt checked: allowed for public fetch.",
+                        "article",
+                        "MEDIUM",
+                        302,
+                        "text/html"
+                );
+            }
+        };
+        SourceCollectionService service = new SourceCollectionService(fetchService, searchProviderWithSnippet(
+                "Cursor wiki",
+                "https://docs.feishu.cn/v/wiki/example",
+                "Cursor implementation notes"
+        ));
+        AnalysisRun run = new AnalysisRun(new AnalysisRequirement(
+                "Analyze Cursor",
+                "AI coding tools",
+                List.of("Cursor"),
+                List.of("enterprise usage"),
+                List.of("article"),
+                List.of()
+        ));
+
+        var sources = service.collect(run, false);
+
+        assertThat(sources).isEmpty();
+    }
+
+    @Test
+    void dropsThinMediumSearchArticles() {
+        WebPageFetchService fetchService = new WebPageFetchService() {
+            @Override
+            public FetchedPage fetch(String url) {
+                return FetchedPage.success(
+                        url,
+                        "Cursor 2.0 guide",
+                        "Cursor quick guide with a few extracted words only.",
+                        "robots.txt checked: allowed for public fetch.",
+                        "article",
+                        "MEDIUM",
+                        200,
+                        "text/html"
+                );
+            }
+        };
+        SourceCollectionService service = new SourceCollectionService(fetchService, searchProviderWithSnippet(
+                "Cursor 2.0 guide",
+                "https://example.test/cursor-short-guide",
+                "Cursor guide"
+        ));
+        AnalysisRun run = new AnalysisRun(new AnalysisRequirement(
+                "Analyze Cursor",
+                "AI coding tools",
+                List.of("Cursor"),
+                List.of("agent workflow"),
+                List.of("article"),
+                List.of()
+        ));
+
+        var sources = service.collect(run, false);
+
+        assertThat(sources).isEmpty();
+    }
+
+    @Test
     void doesNotDeriveClaudeChineseLocaleOfficialFallbacks() {
         List<String> fetchedUrls = new ArrayList<>();
         WebPageFetchService fetchService = new WebPageFetchService() {
@@ -1237,6 +1404,46 @@ class SourceCollectionServiceTest {
         service.collect(run, false);
 
         assertThat(fetchedUrls).noneMatch(url -> url.contains("https://claude.com/cn/"));
+    }
+
+    @Test
+    void doesNotFetchKnownClaudeAiChallengeFallbacks() {
+        List<String> fetchedUrls = new ArrayList<>();
+        WebPageFetchService fetchService = new WebPageFetchService() {
+            @Override
+            public FetchedPage fetch(String url) {
+                fetchedUrls.add(url);
+                if (url.equals("https://claude.com/product/claude-code")) {
+                    return FetchedPage.success(
+                            url,
+                            "Claude Code",
+                            """
+                                    Claude Code official product page describes agentic coding, terminal workflows,
+                                    enterprise development practices, documentation, security, pricing, and release context.
+                                    """,
+                            "robots.txt checked: allowed for public fetch.",
+                            "official_site",
+                            "HIGH",
+                            200,
+                            "text/html"
+                    );
+                }
+                return FetchedPage.failed(url, "simulated missing official section", "HTTP_4XX");
+            }
+        };
+        SourceCollectionService service = new SourceCollectionService(fetchService, new NoopSearchProvider());
+        AnalysisRun run = new AnalysisRun(new AnalysisRequirement(
+                "Analyze Claude Code",
+                "AI coding tools",
+                List.of("Claude Code"),
+                List.of("docs", "security", "pricing", "release notes"),
+                List.of("official_site", "docs", "security", "pricing_page", "release_notes"),
+                List.of("https://claude.com/product/claude-code")
+        ));
+
+        service.collect(run, false);
+
+        assertThat(fetchedUrls).noneMatch(url -> url.startsWith("https://claude.ai/"));
     }
 
     private WebPageFetchService fetchAlwaysFails() {

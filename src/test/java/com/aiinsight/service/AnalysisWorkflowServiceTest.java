@@ -1651,7 +1651,9 @@ class AnalysisWorkflowServiceTest {
                         """
                                 This page contains enough product, pricing, review, workflow, enterprise, release,
                                 governance, security, and adoption context to become a fetched evidence source.
-                                It is intentionally long enough to pass search-result usefulness filtering.
+                                It is intentionally long enough to pass search-result usefulness filtering, with
+                                details about implementation tradeoffs, team rollout, permission design, customer
+                                feedback, and competitive positioning for the analysis workflow.
                                 """,
                         "robots.txt checked: allowed for public fetch."
                 );
@@ -2632,6 +2634,212 @@ class AnalysisWorkflowServiceTest {
     }
 
     @Test
+    void manualRerunExtractorDoesNotRetargetResearchEvidenceGap() {
+        AnalysisRunRepository repository = new TestAnalysisRunRepository();
+        AnalysisEventBroker eventBroker = new AnalysisEventBroker();
+        WorkflowNodeExecutor nodeExecutor = new WorkflowNodeExecutor(repository, eventBroker);
+        AtomicReference<ReviewDecision> extractorDecision = new AtomicReference<>();
+        AgentNode extractor = new AgentNode() {
+            @Override
+            public AgentName name() {
+                return AgentName.EXTRACTOR;
+            }
+
+            @Override
+            public String title() {
+                return "Extractor";
+            }
+
+            @Override
+            public AnalysisRun execute(AnalysisRun run) {
+                extractorDecision.set(run.getRepairDecisionFor(AgentName.EXTRACTOR));
+                return run;
+            }
+        };
+        AnalysisLangGraphWorkflow workflow = new AnalysisLangGraphWorkflow(
+                List.of(
+                        noopAgentNode(AgentName.RESEARCHER),
+                        extractor,
+                        noopAgentNode(AgentName.ANALYST),
+                        noopAgentNode(AgentName.WRITER),
+                        noopAgentNode(AgentName.REVIEWER)
+                ),
+                nodeExecutor,
+                repository,
+                eventBroker
+        );
+        AnalysisRun run = new AnalysisRun(new AnalysisRequirement(
+                "Analyze Cursor user feedback.",
+                "AI coding tools",
+                List.of("Cursor"),
+                List.of("用户评价"),
+                List.of(),
+                List.of()
+        ));
+        ReviewFinding finding = new ReviewFinding(
+                ReviewSeverity.MEDIUM,
+                "claim_missing_sentiment_source",
+                "User sentiment claim cites evidence [S1] that is not a review source.",
+                "Use public_review/community_discussion/user_interview/user_survey evidence."
+        );
+        finding.setClaimId("C1");
+        finding.setCitationKey("S1");
+        run.getReviewFindings().add(finding);
+        run.getReviewDecision().setAction(ReviewAction.RECOLLECT_EVIDENCE);
+        run.getReviewDecision().setTargetAgent(AgentName.RESEARCHER);
+        run.getReviewDecision().setReason("Need Researcher to collect user review evidence.");
+        repository.save(run);
+
+        workflow.rerunAgent(run.getId(), AgentName.EXTRACTOR);
+
+        assertThat(extractorDecision.get()).isNotNull();
+        assertThat(extractorDecision.get().getTargetAgent()).isEqualTo(AgentName.RESEARCHER);
+        assertThat(extractorDecision.get().getRepairTasks())
+                .filteredOn(task -> task.getTargetAgent() == AgentName.EXTRACTOR)
+                .isEmpty();
+        assertThat(repository.findById(run.getId()).orElseThrow().getManualRerunDecision()).isNull();
+    }
+
+    @Test
+    void manualRerunResearcherInfersPublicReviewRepairEvidenceType() {
+        AnalysisRunRepository repository = new TestAnalysisRunRepository();
+        AnalysisEventBroker eventBroker = new AnalysisEventBroker();
+        WorkflowNodeExecutor nodeExecutor = new WorkflowNodeExecutor(repository, eventBroker);
+        AtomicReference<ReviewDecision> researcherDecision = new AtomicReference<>();
+        AgentNode researcher = new AgentNode() {
+            @Override
+            public AgentName name() {
+                return AgentName.RESEARCHER;
+            }
+
+            @Override
+            public String title() {
+                return "Researcher";
+            }
+
+            @Override
+            public AnalysisRun execute(AnalysisRun run) {
+                researcherDecision.set(run.getRepairDecisionFor(AgentName.RESEARCHER));
+                return run;
+            }
+        };
+        AnalysisLangGraphWorkflow workflow = new AnalysisLangGraphWorkflow(
+                List.of(
+                        researcher,
+                        noopAgentNode(AgentName.EXTRACTOR),
+                        noopAgentNode(AgentName.ANALYST),
+                        noopAgentNode(AgentName.WRITER),
+                        noopAgentNode(AgentName.REVIEWER)
+                ),
+                nodeExecutor,
+                repository,
+                eventBroker
+        );
+        AnalysisRun run = new AnalysisRun(new AnalysisRequirement(
+                "Analyze Cursor user feedback.",
+                "AI coding tools",
+                List.of("Cursor"),
+                List.of("用户评价"),
+                List.of(),
+                List.of()
+        ));
+        ReviewFinding finding = new ReviewFinding(
+                ReviewSeverity.MEDIUM,
+                "claim_missing_sentiment_source",
+                "User sentiment claim cites evidence [S1] that is not a review source.",
+                "Use public_review/community_discussion/user_interview/user_survey evidence."
+        );
+        finding.setClaimId("C1");
+        finding.setCitationKey("S1");
+        run.getReviewFindings().add(finding);
+        run.getReviewDecision().setAction(ReviewAction.PASS);
+        repository.save(run);
+
+        workflow.rerunAgent(run.getId(), AgentName.RESEARCHER);
+
+        assertThat(researcherDecision.get()).isNotNull();
+        assertThat(researcherDecision.get().getTargetAgent()).isEqualTo(AgentName.RESEARCHER);
+        assertThat(researcherDecision.get().getRequiredEvidenceTypes()).contains("public_review");
+        assertThat(researcherDecision.get().getRepairTasks())
+                .singleElement()
+                .satisfies(task -> {
+                    assertThat(task.getTargetAgent()).isEqualTo(AgentName.RESEARCHER);
+                    assertThat(task.getRequiredEvidenceTypes()).contains("public_review");
+                    assertThat(task.getSourcePreferences()).contains("public_review");
+                });
+        assertThat(repository.findById(run.getId()).orElseThrow().getManualRerunDecision()).isNull();
+    }
+
+    @Test
+    void manualRerunResearcherInfersPricingRepairEvidenceType() {
+        AnalysisRunRepository repository = new TestAnalysisRunRepository();
+        AnalysisEventBroker eventBroker = new AnalysisEventBroker();
+        WorkflowNodeExecutor nodeExecutor = new WorkflowNodeExecutor(repository, eventBroker);
+        AtomicReference<ReviewDecision> researcherDecision = new AtomicReference<>();
+        AgentNode researcher = new AgentNode() {
+            @Override
+            public AgentName name() {
+                return AgentName.RESEARCHER;
+            }
+
+            @Override
+            public String title() {
+                return "Researcher";
+            }
+
+            @Override
+            public AnalysisRun execute(AnalysisRun run) {
+                researcherDecision.set(run.getRepairDecisionFor(AgentName.RESEARCHER));
+                return run;
+            }
+        };
+        AnalysisLangGraphWorkflow workflow = new AnalysisLangGraphWorkflow(
+                List.of(
+                        researcher,
+                        noopAgentNode(AgentName.EXTRACTOR),
+                        noopAgentNode(AgentName.ANALYST),
+                        noopAgentNode(AgentName.WRITER),
+                        noopAgentNode(AgentName.REVIEWER)
+                ),
+                nodeExecutor,
+                repository,
+                eventBroker
+        );
+        AnalysisRun run = new AnalysisRun(new AnalysisRequirement(
+                "Analyze Cursor pricing.",
+                "AI coding tools",
+                List.of("Cursor"),
+                List.of("定价"),
+                List.of(),
+                List.of()
+        ));
+        ReviewFinding finding = new ReviewFinding(
+                ReviewSeverity.MEDIUM,
+                "missing_source",
+                "Pricing claim is missing a pricing source.",
+                "Collect an official pricing_page or price source."
+        );
+        finding.setClaimId("C1");
+        run.getReviewFindings().add(finding);
+        run.getReviewDecision().setAction(ReviewAction.PASS);
+        repository.save(run);
+
+        workflow.rerunAgent(run.getId(), AgentName.RESEARCHER);
+
+        assertThat(researcherDecision.get()).isNotNull();
+        assertThat(researcherDecision.get().getTargetAgent()).isEqualTo(AgentName.RESEARCHER);
+        assertThat(researcherDecision.get().getRequiredEvidenceTypes()).contains("pricing_page");
+        assertThat(researcherDecision.get().getRepairTasks())
+                .singleElement()
+                .satisfies(task -> {
+                    assertThat(task.getTargetAgent()).isEqualTo(AgentName.RESEARCHER);
+                    assertThat(task.getRequiredEvidenceTypes()).contains("pricing_page");
+                    assertThat(task.getSourcePreferences()).contains("pricing_page");
+                });
+        assertThat(repository.findById(run.getId()).orElseThrow().getManualRerunDecision()).isNull();
+    }
+
+    @Test
     void rerunAgentIsBlockedWhileWorkflowIsRunning() {
         AnalysisWorkflowService service = newService(new TaskExecutorAdapter(command -> {
         }));
@@ -3174,7 +3382,7 @@ class AnalysisWorkflowServiceTest {
     }
 
     @Test
-    void reviewerKeepsDeterministicNewHighFindingsBlockingDuringRepairVerification() {
+    void reviewerDowngradesDeterministicNewHighFindingsDuringRepairVerification() {
         LlmClient reviewerLlm = new LlmClient() {
             @Override
             public boolean isAvailable() {
@@ -3216,15 +3424,15 @@ class AnalysisWorkflowServiceTest {
 
         new ReviewerNode(new CitationCoverageEvaluator(), reviewerLlm, new FallbackReviewReportFactory()).execute(run);
 
-        assertThat(run.getReviewDecision().getAction()).isEqualTo(ReviewAction.REWORK_ANALYSIS);
+        assertThat(run.getReviewDecision().getAction()).isEqualTo(ReviewAction.PASS);
         assertThat(run.getReviewFindings())
                 .anySatisfy(finding -> {
                     assertThat(finding.getCategory()).isEqualTo("claim_missing_evidence");
-                    assertThat(finding.getSeverity()).isEqualTo(ReviewSeverity.HIGH);
-                    assertThat(finding.getMessage()).doesNotContain("返工验证模式");
+                    assertThat(finding.getSeverity()).isEqualTo(ReviewSeverity.MEDIUM);
+                    assertThat(finding.getMessage()).contains("返工验证模式");
                 });
         assertThat(run.getRecommendedActions())
-                .noneMatch(action -> action.contains("降为质量提醒"));
+                .anyMatch(action -> action.contains("降为质量提醒"));
     }
 
     @Test

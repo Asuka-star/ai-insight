@@ -119,6 +119,55 @@ class EvidenceSourceLifecycleServiceTest {
         assertThat(chunks).extracting(EvidenceChunk::getSourceCitationKey).contains("S1", "S2");
     }
 
+    @Test
+    void replacesMediumThirdPartyPricingBindingWhenOfficialPricingIsAvailable() {
+        AnalysisRun run = new AnalysisRun(new AnalysisRequirement(
+                "Analyze Cursor",
+                "AI coding tools",
+                List.of("Cursor"),
+                List.of("pricing"),
+                List.of(),
+                List.of()
+        ));
+        EvidenceSource mediumThirdParty = source(
+                "S1",
+                "Cursor pricing summary",
+                "https://blog.example.test/cursor-pricing",
+                "article",
+                "MEDIUM",
+                "FETCHED",
+                "Cursor pricing summary from a third-party blog.",
+                "Cursor pricing summary"
+        );
+        EvidenceSource officialPricing = source(
+                "S2",
+                "Cursor pricing",
+                "https://cursor.com/pricing",
+                "pricing_page",
+                "HIGH",
+                "FETCHED",
+                "Cursor official pricing page with pricing plans and billing information.",
+                "Cursor official pricing page"
+        );
+        run.getEvidenceSources().add(mediumThirdParty);
+        AnalysisClaim claim = new AnalysisClaim();
+        claim.setType(ClaimType.COMPARISON);
+        claim.setContent("Cursor pricing is transparent for paid plans.");
+        claim.getEvidenceIds().add("S1");
+        run.getClaims().add(claim);
+
+        List<EvidenceSource> collected = new java.util.ArrayList<>(List.of(officialPricing));
+        EvidenceSourceLifecycleService.EvidenceReplacementResult result = service.reconcileAfterCollection(
+                run,
+                List.of(mediumThirdParty),
+                collected
+        );
+
+        assertThat(result.replacedBindings()).isEqualTo(1);
+        assertThat(claim.getEvidenceIds()).containsExactly("S2");
+        assertThat(mediumThirdParty.getComplianceNote()).contains("更高质量来源 S2");
+    }
+
     private EvidenceSource source(String citationKey,
                                   String title,
                                   String url,
