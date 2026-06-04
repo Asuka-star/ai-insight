@@ -30,6 +30,12 @@ public class EvidenceSource {
     private String snippet;
     private String rawText;
     private String complianceNote;
+    private String ingestionStatus;
+    private String ingestionStage;
+    private String ingestionMessage;
+    private Instant ingestionStartedAt;
+    private Instant ingestionCompletedAt;
+    private boolean globalResource;
     private Instant retrievedAt = Instant.now();
 
     public EvidenceSource(String citationKey, String title, String url, String snippet) {

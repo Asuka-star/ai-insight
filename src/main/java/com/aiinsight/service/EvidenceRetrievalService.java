@@ -3,6 +3,7 @@ package com.aiinsight.service;
 import com.aiinsight.repository.AnalysisRunRepository;
 import com.aiinsight.model.run.AnalysisRun;
 import com.aiinsight.model.run.EvidenceChunk;
+import com.aiinsight.model.run.EvidenceSource;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
@@ -22,6 +23,7 @@ import java.util.Set;
 public class EvidenceRetrievalService {
 
     private static final int DEFAULT_TOP_K = 5;
+    private static final int MAX_GLOBAL_KEYWORD_CANDIDATES = 1_000;
     private static final double SEMANTIC_MATCH_THRESHOLD = 0.35;
     private static final double SEMANTIC_SCORE_WEIGHT = 4.0;
 
@@ -61,12 +63,13 @@ public class EvidenceRetrievalService {
                     .map(this::copy)
                     .toList();
         }
-        return retrievalCandidates(run, queryEmbedding, limit).stream()
+        List<EvidenceChunk> results = retrievalCandidates(run, queryEmbedding, limit).stream()
                 .map(chunk -> scoredCopy(chunk, queryTerms, competitor, dimension, queryEmbedding))
                 .filter(chunk -> chunk.getScore() > 0)
                 .sorted(Comparator.comparingDouble(EvidenceChunk::getScore).reversed())
                 .limit(limit)
                 .toList();
+        return localizeGlobalChunks(run, results);
     }
 
     private EvidenceChunk scoredCopy(EvidenceChunk chunk,
@@ -170,6 +173,8 @@ public class EvidenceRetrievalService {
         for (EvidenceChunk chunk : run.getEvidenceChunks()) {
             candidates.put(chunkIdentity(chunk), chunk);
         }
+        // 检索候选分三层：当前 run 的 chunk、当前 run 的向量投影、全局 RAG。
+        // 全局 RAG 即使没有 pgvector，也会通过 findGlobalEvidenceChunks 进入关键词召回。
         if (repository != null && queryEmbedding != null && !queryEmbedding.isEmpty()) {
             repository.retrieveEvidenceByVector(
                             run.getId(),
@@ -179,8 +184,123 @@ public class EvidenceRetrievalService {
                     )
                     .ifPresent(vectorChunks -> vectorChunks.forEach(chunk ->
                             candidates.put(chunkIdentity(chunk), chunk)));
+            repository.retrieveGlobalEvidenceByVector(
+                            queryEmbedding,
+                            embeddingClient.model(),
+                            Math.max(limit * 4, DEFAULT_TOP_K)
+                    )
+                    .ifPresent(vectorChunks -> vectorChunks.forEach(chunk ->
+                            addGlobalCandidate(candidates, run, chunk)));
+        }
+        if (repository != null) {
+            repository.findGlobalEvidenceChunks(MAX_GLOBAL_KEYWORD_CANDIDATES)
+                    .forEach(chunk -> addGlobalCandidate(candidates, run, chunk));
         }
         return new ArrayList<>(candidates.values());
+    }
+
+    private void addGlobalCandidate(Map<String, EvidenceChunk> candidates, AnalysisRun run, EvidenceChunk chunk) {
+        if (!isGlobalChunk(chunk) || duplicatesRunChunk(run, chunk)) {
+            return;
+        }
+        // 加 global: 前缀，避免全局 chunk 的 id/chunkKey 与当前 run 内 chunk 冲突。
+        candidates.put("global:" + chunkIdentity(chunk), chunk);
+    }
+
+    private boolean duplicatesRunChunk(AnalysisRun run, EvidenceChunk chunk) {
+        if (!StringUtils.hasText(chunk.getTextHash())) {
+            return false;
+        }
+        return run.getEvidenceChunks().stream()
+                .anyMatch(existing -> chunk.getTextHash().equals(existing.getTextHash()));
+    }
+
+    private List<EvidenceChunk> localizeGlobalChunks(AnalysisRun run, List<EvidenceChunk> chunks) {
+        List<EvidenceChunk> localized = new ArrayList<>();
+        for (EvidenceChunk chunk : chunks) {
+            localized.add(isGlobalChunk(chunk) ? localizeGlobalChunk(run, chunk) : chunk);
+        }
+        if (!localized.isEmpty()) {
+            run.getResearchPackage().setSources(new ArrayList<>(run.getEvidenceSources()));
+        }
+        return localized;
+    }
+
+    private EvidenceChunk localizeGlobalChunk(AnalysisRun run, EvidenceChunk chunk) {
+        // 检索结果不能直接暴露全局库里的 S 编号；挂载到当前 run 后重写为本 run 的 citation。
+        EvidenceSource source = globalSourceFor(run, chunk);
+        EvidenceChunk copy = copy(chunk);
+        copy.setSourceCitationKey(source.getCitationKey());
+        copy.setChunkKey(source.getCitationKey() + "-C" + Math.max(1, chunk.getChunkIndex()));
+        copy.setTitle(source.getTitle());
+        copy.setUrl(source.getUrl());
+        return copy;
+    }
+
+    private EvidenceSource globalSourceFor(AnalysisRun run, EvidenceChunk chunk) {
+        String url = chunk.getUrl();
+        return run.getEvidenceSources().stream()
+                .filter(source -> url.equals(source.getUrl()))
+                .findFirst()
+                .orElseGet(() -> attachGlobalSource(run, chunk));
+    }
+
+    private EvidenceSource attachGlobalSource(AnalysisRun run, EvidenceChunk chunk) {
+        EvidenceSource source = new EvidenceSource(
+                nextCitationKey(run),
+                StringUtils.hasText(chunk.getTitle()) ? chunk.getTitle() : "全局用户资源",
+                chunk.getUrl(),
+                StringUtils.hasText(chunk.getSourceType()) ? chunk.getSourceType() : "global_user_document",
+                "READY",
+                "GLOBAL_RAG",
+                StringUtils.hasText(chunk.getSourceQuality()) ? chunk.getSourceQuality() : "USER_PROVIDED",
+                "NONE",
+                abbreviate(chunk.getText(), 220),
+                chunk.getText(),
+                "来自全局 RAG 资源库，已挂载到当前分析任务用于证据引用。"
+        );
+        source.setSourceAuthority(StringUtils.hasText(chunk.getSourceAuthority()) ? chunk.getSourceAuthority() : "USER_PROVIDED");
+        source.setCanonicalHost("global-document");
+        source.setPublisherName("全局用户资源");
+        source.setGlobalResource(true);
+        run.getEvidenceSources().add(source);
+        return source;
+    }
+
+    private String nextCitationKey(AnalysisRun run) {
+        int next = run.getEvidenceSources().stream()
+                .map(EvidenceSource::getCitationKey)
+                .filter(StringUtils::hasText)
+                .mapToInt(this::citationNumber)
+                .max()
+                .orElse(0) + 1;
+        return "S" + next;
+    }
+
+    private int citationNumber(String citationKey) {
+        if (citationKey == null || !citationKey.startsWith("S")) {
+            return 0;
+        }
+        try {
+            return Integer.parseInt(citationKey.substring(1));
+        } catch (NumberFormatException ex) {
+            return 0;
+        }
+    }
+
+    private boolean isGlobalChunk(EvidenceChunk chunk) {
+        return chunk != null && chunk.getUrl() != null && chunk.getUrl().startsWith("global-document://");
+    }
+
+    private String abbreviate(String value, int maxLength) {
+        if (!StringUtils.hasText(value)) {
+            return "";
+        }
+        String normalized = value.replaceAll("\\s+", " ").trim();
+        if (normalized.length() <= maxLength) {
+            return normalized;
+        }
+        return normalized.substring(0, Math.max(0, maxLength - 3)).trim() + "...";
     }
 
     private String chunkIdentity(EvidenceChunk chunk) {

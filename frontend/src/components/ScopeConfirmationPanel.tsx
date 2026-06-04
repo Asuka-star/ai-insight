@@ -24,6 +24,7 @@ interface ScopeConfirmationPanelProps {
   onReclarify: () => void;
   onConfirm: () => void;
   onStart: () => void;
+  processingResourceCount?: number;
   creating: boolean;
   busy: boolean;
   collapsed?: boolean;
@@ -50,6 +51,7 @@ export function ScopeConfirmationPanel({
   onReclarify,
   onConfirm,
   onStart,
+  processingResourceCount = 0,
   creating,
   busy,
   collapsed = false,
@@ -78,9 +80,11 @@ export function ScopeConfirmationPanel({
   const canCreate = !run && !busy && !creating && hasScopeInput;
   const canConfirm = Boolean(run) && hasClarificationRequests && !busy && !agentRunning && ["DRAFT", "AWAITING_CONFIRMATION", "PENDING"].includes(phaseText);
   const canReclarify = Boolean(run) && !busy && !agentRunning && ["DRAFT", "AWAITING_CONFIRMATION", "PENDING"].includes(phaseText);
+  // 用户资源还在解析时不能开始主流程，避免 Agent 读取到空文本的 PROCESSING 占位来源。
   const canStart = Boolean(run)
     && !busy
     && !agentRunning
+    && processingResourceCount === 0
     && !mainAnalysisStarted
     && (isConfirmed || canStartWithoutConfirm)
     && ["AWAITING_CONFIRMATION", "PENDING", "NEEDS_USER_INPUT"].includes(phaseText);
@@ -224,6 +228,8 @@ export function ScopeConfirmationPanel({
 
       {!run ? (
         <p className="scope-hint"><ClipboardCheck size={14} /> 直接填写范围信息，生成确认内容后再启动分析。</p>
+      ) : processingResourceCount > 0 ? (
+        <p className="scope-hint"><ClipboardCheck size={14} /> {processingResourceCount} 个用户资源正在处理，完成后即可开始 Agent 分析。</p>
       ) : !scopeEditable ? (
         <p className="scope-hint"><ClipboardCheck size={14} /> 分析开始后范围已锁定，避免执行产物与分析范围不一致。</p>
       ) : null}

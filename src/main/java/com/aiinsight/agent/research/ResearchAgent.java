@@ -15,15 +15,19 @@ import com.aiinsight.service.LlmSearchQueryPlanner;
 import com.aiinsight.service.SearchQueryPlanner;
 import com.aiinsight.service.SourceCollectionService;
 import com.aiinsight.service.SourceCollectionService.SearchCandidateCollection;
+import com.aiinsight.repository.AnalysisRunRepository;
 import com.aiinsight.util.AgentUtils;
 import lombok.RequiredArgsConstructor;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 import org.springframework.util.StringUtils;
 
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Set;
 import java.util.stream.Collectors;
 
@@ -31,16 +35,27 @@ import java.util.stream.Collectors;
 @RequiredArgsConstructor
 public class ResearchAgent {
 
+    private static final int MAX_GLOBAL_RAG_CHUNKS_FOR_RESEARCHER = 80;
+
     private final SourceCollectionService sourceCollectionService;
     private final EvidenceChunkService evidenceChunkService;
     private final EvidenceEmbeddingService evidenceEmbeddingService;
     private final LlmSearchQueryPlanner llmSearchQueryPlanner;
     private final LlmSearchCandidateSelector llmSearchCandidateSelector;
     private final EvidenceSourceLifecycleService evidenceSourceLifecycleService;
+    private AnalysisRunRepository repository;
+
+    @Autowired(required = false)
+    public void setRepository(AnalysisRunRepository repository) {
+        this.repository = repository;
+    }
 
     public ResearchAgentResult run(AnalysisRun run) {
         boolean recollecting = isRecollectionMode(run);
         List<EvidenceSource> beforeSources = new ArrayList<>(run.getEvidenceSources());
+        // 全局资源要在用户指定 URL、手动证据和公开搜索之前挂载，
+        // 这样 query planner/候选选择器都能把用户资源当作已知背景，而不是盲搜。
+        attachGlobalEvidence(run);
         // First observe user-controlled inputs. The LLM query planner sees these fetched sources
         // before deciding what to search next, so search becomes evidence-aware instead of blind.
         List<EvidenceSource> userObservedSources = sourceCollectionService.collectUserDirectedSources(run);
@@ -165,6 +180,107 @@ public class ResearchAgent {
 
     private boolean hasAction(ResearchAgentPlan plan, String toolName) {
         return plan.actions().stream().anyMatch(action -> toolName.equals(action.toolName()));
+    }
+
+    private void attachGlobalEvidence(AnalysisRun run) {
+        if (repository == null) {
+            return;
+        }
+        // Researcher 主流程需要看到全局用户资源；这里先把全局 chunk 汇总成当前 run 的
+        // EvidenceSource，后续 collect/replaceRunSources 会统一切片并生成本 run 的 S 编号。
+        List<EvidenceChunk> chunks = repository.findGlobalEvidenceChunks(MAX_GLOBAL_RAG_CHUNKS_FOR_RESEARCHER);
+        if (chunks.isEmpty()) {
+            return;
+        }
+        Set<String> existingUrls = run.getEvidenceSources().stream()
+                .map(EvidenceSource::getUrl)
+                .filter(StringUtils::hasText)
+                .collect(Collectors.toCollection(LinkedHashSet::new));
+        Set<String> existingTextHashes = run.getEvidenceChunks().stream()
+                .map(EvidenceChunk::getTextHash)
+                .filter(StringUtils::hasText)
+                .collect(Collectors.toCollection(LinkedHashSet::new));
+        Map<String, List<EvidenceChunk>> chunksByUrl = chunks.stream()
+                .filter(this::isGlobalChunk)
+                // 同一份文档可能已在当前 run 中作为局部资源存在；用 textHash 避免重复挂载。
+                .filter(chunk -> !StringUtils.hasText(chunk.getTextHash()) || !existingTextHashes.contains(chunk.getTextHash()))
+                .collect(Collectors.groupingBy(
+                        EvidenceChunk::getUrl,
+                        LinkedHashMap::new,
+                        Collectors.toList()
+                ));
+        int next = maxCitationNumber(run.getEvidenceSources()) + 1;
+        for (Map.Entry<String, List<EvidenceChunk>> entry : chunksByUrl.entrySet()) {
+            if (!existingUrls.add(entry.getKey())) {
+                continue;
+            }
+            EvidenceSource source = globalSource("S" + next, entry.getKey(), entry.getValue());
+            run.getEvidenceSources().add(source);
+            next++;
+        }
+        if (!chunksByUrl.isEmpty()) {
+            run.getResearchPackage().setSources(new ArrayList<>(run.getEvidenceSources()));
+        }
+    }
+
+    private EvidenceSource globalSource(String citationKey, String url, List<EvidenceChunk> chunks) {
+        EvidenceChunk first = chunks.get(0);
+        String rawText = chunks.stream()
+                .map(EvidenceChunk::getText)
+                .filter(StringUtils::hasText)
+                .collect(Collectors.joining("\n\n"));
+        EvidenceSource source = new EvidenceSource(
+                citationKey,
+                StringUtils.hasText(first.getTitle()) ? first.getTitle() : "全局用户资源",
+                url,
+                StringUtils.hasText(first.getSourceType()) ? first.getSourceType() : "global_user_document",
+                "READY",
+                "GLOBAL_RAG",
+                StringUtils.hasText(first.getSourceQuality()) ? first.getSourceQuality() : "USER_PROVIDED",
+                "NONE",
+                abbreviate(rawText, 220),
+                rawText,
+                "来自全局 RAG 资源库，已挂载到当前分析任务用于证据引用。"
+        );
+        source.setSourceAuthority(StringUtils.hasText(first.getSourceAuthority()) ? first.getSourceAuthority() : "USER_PROVIDED");
+        source.setCanonicalHost("global-document");
+        source.setPublisherName("全局用户资源");
+        return source;
+    }
+
+    private boolean isGlobalChunk(EvidenceChunk chunk) {
+        return chunk != null && chunk.getUrl() != null && chunk.getUrl().startsWith("global-document://");
+    }
+
+    private int maxCitationNumber(List<EvidenceSource> sources) {
+        return sources.stream()
+                .map(EvidenceSource::getCitationKey)
+                .filter(StringUtils::hasText)
+                .mapToInt(this::citationNumber)
+                .max()
+                .orElse(0);
+    }
+
+    private int citationNumber(String citationKey) {
+        if (citationKey == null || !citationKey.startsWith("S")) {
+            return 0;
+        }
+        try {
+            return Integer.parseInt(citationKey.substring(1));
+        } catch (NumberFormatException ex) {
+            return 0;
+        }
+    }
+
+    private String abbreviate(String value, int maxLength) {
+        if (!StringUtils.hasText(value)) {
+            return "";
+        }
+        String normalized = value.replaceAll("\\s+", " ").trim();
+        if (normalized.length() <= maxLength) {
+            return normalized;
+        }
+        return normalized.substring(0, Math.max(0, maxLength - 3)).trim() + "...";
     }
 
     private List<EvidenceSource> collectWithCandidateSelection(AnalysisRun run,

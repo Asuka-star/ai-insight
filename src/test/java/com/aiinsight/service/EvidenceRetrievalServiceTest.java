@@ -136,6 +136,33 @@ class EvidenceRetrievalServiceTest {
         assertThat(repository.requestedTopK).isGreaterThanOrEqualTo(4);
     }
 
+    @Test
+    void retrievalAttachesGlobalRagChunksAsLocalCitationSources() {
+        AnalysisRun run = new AnalysisRun();
+        EvidenceChunk globalChunk = new EvidenceChunk(
+                "S1-C1",
+                "S1",
+                1,
+                "Uploaded workspace note",
+                "global-document://workspace-note",
+                "Enterprise buyers care about permission governance, SAML SSO, SCIM, and audit logs."
+        );
+        globalChunk.setSourceType("user_document_markdown");
+        globalChunk.setSourceAuthority("USER_PROVIDED");
+        globalChunk.setSourceQuality("MEDIUM");
+        FakeVectorRepository repository = new FakeVectorRepository(List.of(), List.of(globalChunk));
+
+        var results = new EvidenceRetrievalService(new NoopEmbeddingClient(), repository)
+                .retrieve(run, "permission governance SAML", 1);
+
+        assertThat(results).hasSize(1);
+        assertThat(results.get(0).getSourceCitationKey()).isEqualTo("S1");
+        assertThat(results.get(0).getChunkKey()).isEqualTo("S1-C1");
+        assertThat(run.getEvidenceSources()).hasSize(1);
+        assertThat(run.getEvidenceSources().get(0).getUrl()).isEqualTo("global-document://workspace-note");
+        assertThat(run.getResearchPackage().getSources()).hasSize(1);
+    }
+
     private static class FakeEmbeddingClient implements EmbeddingClient {
 
         @Override
@@ -157,11 +184,17 @@ class EvidenceRetrievalServiceTest {
     private static class FakeVectorRepository implements AnalysisRunRepository {
 
         private final List<EvidenceChunk> chunks;
+        private final List<EvidenceChunk> globalChunks;
         private String requestedModel;
         private int requestedTopK;
 
         private FakeVectorRepository(List<EvidenceChunk> chunks) {
+            this(chunks, List.of());
+        }
+
+        private FakeVectorRepository(List<EvidenceChunk> chunks, List<EvidenceChunk> globalChunks) {
             this.chunks = chunks;
+            this.globalChunks = globalChunks;
         }
 
         @Override
@@ -197,6 +230,11 @@ class EvidenceRetrievalServiceTest {
             requestedModel = embeddingModel;
             requestedTopK = topK;
             return Optional.of(chunks);
+        }
+
+        @Override
+        public List<EvidenceChunk> findGlobalEvidenceChunks(int limit) {
+            return globalChunks.stream().limit(limit).toList();
         }
 
         @Override

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { FileText, RefreshCw, Trash2, UploadCloud, X } from "lucide-react";
+import { AlertTriangle, CheckCircle2, Clock3, FileText, RefreshCw, Trash2, UploadCloud, X } from "lucide-react";
 import type { EvidenceSource } from "../types";
 
 interface ResourcePackDrawerProps {
@@ -7,6 +7,7 @@ interface ResourcePackDrawerProps {
   sources: EvidenceSource[];
   disabled: boolean;
   uploading: boolean;
+  processingCount: number;
   deletingCitationKey?: string;
   file: File | null;
   inputKey: number;
@@ -30,6 +31,7 @@ export function ResourcePackDrawer({
   sources,
   disabled,
   uploading,
+  processingCount,
   deletingCitationKey,
   file,
   inputKey,
@@ -140,8 +142,14 @@ export function ResourcePackDrawer({
             />
           </label>
           <button className="primary-button" type="button" onClick={onUpload} disabled={disabled || uploading || !file}>
-            <UploadCloud size={15} /> {uploading ? "上传中..." : "加入资源包"}
+            <UploadCloud size={15} /> {uploading ? "提交中..." : "加入资源包"}
           </button>
+          {processingCount ? (
+            // 上传请求返回只代表文件已进入后台队列；真正可被 Agent 使用，要等解析/切片/向量化完成。
+            <p className="resource-processing-note">
+              <Clock3 size={14} /> {processingCount} 个文件正在解析、切片或向量化，完成后才能重跑 Agent。
+            </p>
+          ) : null}
         </section>
 
         <section className="resource-library">
@@ -165,7 +173,10 @@ export function ResourcePackDrawer({
                     <FileText size={16} />
                     <span>
                       <strong>{source.title || source.citationKey}</strong>
-                      <small>{source.citationKey} · {sourceTypeLabel(source.sourceType)} · {resourceVisibility(source)}</small>
+                      <small>
+                        {source.citationKey} · {sourceTypeLabel(source.sourceType)} · {resourceVisibility(source)}
+                      </small>
+                      <ResourceStatus source={source} />
                     </span>
                   </button>
                 ))}
@@ -202,8 +213,13 @@ export function ResourcePackDrawer({
                         <dt>质量</dt>
                         <dd>{sourceQualityLabel(activeSource.sourceQuality)}</dd>
                       </div>
+                      <div>
+                        <dt>状态</dt>
+                        <dd>{resourceStatusLabel(activeSource)}</dd>
+                      </div>
                     </dl>
                     <p className="resource-snippet">{activeSource.snippet || "暂无可预览摘要"}</p>
+                    {activeSource.ingestionMessage ? <p className="resource-note">{activeSource.ingestionMessage}</p> : null}
                     {activeSource.complianceNote ? <p className="resource-note">{activeSource.complianceNote}</p> : null}
                   </>
                 ) : null}
@@ -219,6 +235,59 @@ export function ResourcePackDrawer({
       </aside>
     </div>
   );
+}
+
+function ResourceStatus({ source }: { source: EvidenceSource }) {
+  const status = source.ingestionStatus;
+  // ingestionStatus 是后端异步文档管线的权威状态；不要用 collectionStatus 推断资源包进度。
+  if (status === "PROCESSING") {
+    return (
+      <span className="resource-status processing">
+        <Clock3 size={12} /> {stageLabel(source.ingestionStage)}
+      </span>
+    );
+  }
+  if (status === "FAILED") {
+    return (
+      <span className="resource-status failed">
+        <AlertTriangle size={12} /> 处理失败
+      </span>
+    );
+  }
+  if (status === "READY") {
+    return (
+      <span className="resource-status ready">
+        <CheckCircle2 size={12} /> 已就绪
+      </span>
+    );
+  }
+  return null;
+}
+
+function resourceStatusLabel(source: EvidenceSource) {
+  if (source.ingestionStatus === "PROCESSING") return stageLabel(source.ingestionStage);
+  if (source.ingestionStatus === "FAILED") return "处理失败";
+  if (source.ingestionStatus === "READY") return "已就绪";
+  return "已加入";
+}
+
+function stageLabel(stage?: string) {
+  switch (stage) {
+    case "QUEUED":
+      return "排队中";
+    case "PARSING":
+      return "解析中";
+    case "CHUNKING":
+      return "切片中";
+    case "EMBEDDING":
+      return "向量化中";
+    case "READY":
+      return "已就绪";
+    case "FAILED":
+      return "处理失败";
+    default:
+      return "处理中";
+  }
 }
 
 function sourceTypeLabel(value?: string) {

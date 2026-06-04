@@ -323,6 +323,11 @@ export function App() {
       "context_added",
       "evidence_added",
       "document_added",
+      // 文档解析是后台异步流程，必须监听这些事件才能及时解除“处理中”禁用态。
+      "document_ingestion_started",
+      "document_ingestion_progress",
+      "document_ingestion_completed",
+      "document_ingestion_failed",
       "document_deleted",
       "agent_started",
       "agent_succeeded",
@@ -877,7 +882,8 @@ export function App() {
         title: documentTitle.trim() || undefined,
         sourceType: documentSourceType,
         sensitive: documentSensitive,
-        notes: documentNotes.trim() || undefined
+        notes: documentNotes.trim() || undefined,
+        global: true
       });
       if (!isCurrentWorkspaceRun(runId)) return;
       setRun(nextRun);
@@ -982,13 +988,18 @@ export function App() {
     lowFindingCount: run?.reviewFindings.filter((finding) => finding.severity === "LOW").length ?? 0
   };
   const phase = String(resolveRunPhase(run));
-  const runMutationDisabled = !run || Boolean(rerunningAgent) || ["RUNNING", "REVIEWING", "REVISING", "CANCELLED"].includes(phase);
-  const pendingClarification = isCreating
-    || Boolean(run?.id && pendingClarificationRunId === run.id && !isClarificationSettled(run));
   const userResourceSources = useMemo(
     () => (run?.evidenceSources ?? []).filter(isUserResourceSource),
     [run?.evidenceSources]
   );
+  const processingResourceCount = userResourceSources.filter(isProcessingUserResource).length;
+  // 资源包文件完成解析前，不允许启动/重跑/继续修改会触发 Agent 的入口。
+  const runMutationDisabled = !run
+    || Boolean(rerunningAgent)
+    || processingResourceCount > 0
+    || ["RUNNING", "REVIEWING", "REVISING", "CANCELLED"].includes(phase);
+  const pendingClarification = isCreating
+    || Boolean(run?.id && pendingClarificationRunId === run.id && !isClarificationSettled(run));
   const metricCards = [
     { label: "Agent 步骤", value: runMetrics.agentStepCount, icon: Activity },
     { label: "证据来源", value: runMetrics.evidenceCount, icon: Search },
@@ -1022,7 +1033,7 @@ export function App() {
         </div>
         <div className="header-actions">
           <button className="toolbar-button" type="button" onClick={() => setResourcePackOpen(true)}>
-            <FolderOpen size={16} /> 用户资源包 · {userResourceSources.length}
+            <FolderOpen size={16} /> 用户资源包 · {userResourceSources.length}{processingResourceCount ? ` · 处理中 ${processingResourceCount}` : ""}
           </button>
           <button className="toolbar-button" type="button" onClick={() => setHistoryOpen(true)}>
             <History size={16} /> 历史会话
@@ -1060,6 +1071,7 @@ export function App() {
             onReclarify={handleReclarifyScope}
             onConfirm={handleConfirmRequirement}
             onStart={handleStartAnalysis}
+            processingResourceCount={processingResourceCount}
             creating={pendingClarification}
             busy={isScopeBusy}
             collapsed={collapsedLeftPanels.scope}
@@ -1345,6 +1357,7 @@ export function App() {
         sources={userResourceSources}
         disabled={runMutationDisabled}
         uploading={isUploadingDocument}
+        processingCount={processingResourceCount}
         deletingCitationKey={deletingResourceKey}
         file={documentFile}
         inputKey={documentInputKey}
@@ -1519,6 +1532,10 @@ function summaryFromRun(run: AnalysisRun): AnalysisRunSummary {
 function isUserResourceSource(source: { url?: string }) {
   const url = source.url ?? "";
   return url.startsWith("user-document://");
+}
+
+function isProcessingUserResource(source: { url?: string; ingestionStatus?: string }) {
+  return isUserResourceSource(source) && source.ingestionStatus === "PROCESSING";
 }
 
 function timestampValue(value?: string) {

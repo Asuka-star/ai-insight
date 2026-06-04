@@ -26,6 +26,8 @@ export function isActiveRun(run?: AnalysisRun | null): boolean {
     || run?.status === "RUNNING"
     || run?.status === "REVIEWING"
     || run?.status === "REVISING"
+    // AWAITING_CONFIRMATION 下也可能有后台文档解析；纳入轮询，防止资源包状态卡住。
+    || Boolean(run?.evidenceSources?.some((source) => source.ingestionStatus === "PROCESSING"))
     || Boolean(run?.steps?.some((step) => step.status === "RUNNING"));
 }
 

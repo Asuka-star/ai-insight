@@ -81,6 +81,7 @@ export async function uploadDocument(runId: string, payload: UploadDocumentReque
   if (payload.sourceType) body.append("sourceType", payload.sourceType);
   body.append("sensitive", String(Boolean(payload.sensitive)));
   if (payload.notes) body.append("notes", payload.notes);
+  body.append("global", String(Boolean(payload.global)));
   return requestJson(`/api/analysis-runs/${runId}/documents`, {
     method: "POST",
     body

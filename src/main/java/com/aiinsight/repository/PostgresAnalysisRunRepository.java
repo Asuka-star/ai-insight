@@ -159,6 +159,43 @@ public class PostgresAnalysisRunRepository implements AnalysisRunRepository {
                 create index if not exists idx_evidence_chunk_run_source
                 on evidence_chunk (run_id, source_citation_key, chunk_index)
                 """);
+        // 全局 RAG 与单个 analysis_run 解耦：顶部用户资源包写入这里，
+        // 新任务或旧任务重跑时都可以从 global_evidence_* 读取同一份证据。
+        jdbcTemplate.execute("""
+                create table if not exists global_evidence_source (
+                    id uuid primary key,
+                    global_url text not null unique,
+                    citation_key varchar(32),
+                    title text,
+                    source_type varchar(64),
+                    source_authority varchar(64),
+                    source_quality varchar(64),
+                    created_at timestamptz not null,
+                    updated_at timestamptz not null,
+                    source_payload jsonb not null
+                )
+                """);
+        jdbcTemplate.execute("""
+                create index if not exists idx_global_evidence_source_updated
+                on global_evidence_source (updated_at desc)
+                """);
+        jdbcTemplate.execute("""
+                create table if not exists global_evidence_chunk (
+                    id uuid primary key,
+                    global_url text not null references global_evidence_source(global_url) on delete cascade,
+                    chunk_key varchar(128),
+                    source_citation_key varchar(32),
+                    chunk_index integer not null,
+                    title text,
+                    url text,
+                    created_at timestamptz,
+                    chunk_payload jsonb not null
+                )
+                """);
+        jdbcTemplate.execute("""
+                create index if not exists idx_global_evidence_chunk_url
+                on global_evidence_chunk (global_url, chunk_index)
+                """);
         jdbcTemplate.execute("""
                 create table if not exists embedding_cache (
                     input_hash varchar(128) not null,
@@ -224,6 +261,21 @@ public class PostgresAnalysisRunRepository implements AnalysisRunRepository {
             jdbcTemplate.execute("""
                     create index if not exists idx_evidence_chunk_embedding_run
                     on evidence_chunk_embedding (run_id)
+                    """);
+            jdbcTemplate.execute("""
+                    create table if not exists global_evidence_chunk_embedding (
+                        chunk_id uuid primary key references global_evidence_chunk(id) on delete cascade,
+                        global_url text not null,
+                        chunk_key varchar(128),
+                        embedding vector,
+                        embedding_model varchar(128),
+                        embedding_text_hash varchar(128),
+                        embedded_at timestamptz
+                    )
+                    """);
+            jdbcTemplate.execute("""
+                    create index if not exists idx_global_evidence_chunk_embedding_url
+                    on global_evidence_chunk_embedding (global_url)
                     """);
             vectorSchemaAvailable = true;
         } catch (RuntimeException ex) {
@@ -359,6 +411,142 @@ public class PostgresAnalysisRunRepository implements AnalysisRunRepository {
             disableVectorSchema();
             log.warn("pgvector evidence retrieval failed; in-memory retrieval fallback remains available: runId={}, exceptionType={}, message={}",
                     runId,
+                    ex.getClass().getName(),
+                    ex.getMessage());
+            return Optional.empty();
+        }
+    }
+
+    @Override
+    @Transactional
+    public void saveGlobalEvidence(EvidenceSource source, List<EvidenceChunk> chunks) {
+        if (source == null || source.getUrl() == null || source.getUrl().isBlank()
+                || chunks == null || chunks.isEmpty()) {
+            return;
+        }
+        String globalUrl = source.getUrl();
+        Instant now = Instant.now();
+        Instant createdAt = source.getRetrievedAt() == null ? now : source.getRetrievedAt();
+        jdbcTemplate.update("""
+                        insert into global_evidence_source
+                            (id, global_url, citation_key, title, source_type, source_authority,
+                             source_quality, created_at, updated_at, source_payload)
+                        values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?::jsonb)
+                        on conflict (global_url) do update set
+                            citation_key = excluded.citation_key,
+                            title = excluded.title,
+                            source_type = excluded.source_type,
+                            source_authority = excluded.source_authority,
+                            source_quality = excluded.source_quality,
+                            updated_at = excluded.updated_at,
+                            source_payload = excluded.source_payload
+                        """,
+                source.getId(),
+                globalUrl,
+                varchar(source.getCitationKey(), 32),
+                source.getTitle(),
+                varchar(source.getSourceType(), 64),
+                varchar(source.getSourceAuthority(), 64),
+                varchar(source.getSourceQuality(), 64),
+                Timestamp.from(createdAt),
+                Timestamp.from(now),
+                toJson(source)
+        );
+        // global_evidence_chunk 的 JSON payload 是权威数据；pgvector 表只是检索投影，
+        // 写入失败时可以降级到关键词检索，不影响全局资源继续可用。
+        deleteGlobalChunks(globalUrl);
+        insertGlobalEvidenceChunks(globalUrl, chunks);
+        insertGlobalEvidenceChunkEmbeddings(globalUrl, chunks);
+    }
+
+    @Override
+    @Transactional
+    public void deleteGlobalEvidence(String globalUrl) {
+        if (globalUrl == null || globalUrl.isBlank()) {
+            return;
+        }
+        // chunk 和 embedding 都通过外键 on delete cascade 挂在 source 上，
+        // 删除 source 即可让全局检索彻底看不到这个文件。
+        jdbcTemplate.update("delete from global_evidence_source where global_url = ?", globalUrl);
+    }
+
+    @Override
+    public boolean globalEvidenceExists(String globalUrl) {
+        if (globalUrl == null || globalUrl.isBlank()) {
+            return false;
+        }
+        try {
+            Boolean exists = jdbcTemplate.queryForObject(
+                    "select exists(select 1 from global_evidence_source where global_url = ?)",
+                    Boolean.class,
+                    globalUrl
+            );
+            return Boolean.TRUE.equals(exists);
+        } catch (RuntimeException ex) {
+            log.warn("Global evidence existence check failed; treating resource as available to avoid accidental cleanup: globalUrl={}, exceptionType={}, message={}",
+                    globalUrl,
+                    ex.getClass().getName(),
+                    ex.getMessage());
+            return true;
+        }
+    }
+
+    @Override
+    public List<EvidenceChunk> findGlobalEvidenceChunks(int limit) {
+        int effectiveLimit = Math.max(1, Math.min(limit, 2_000));
+        try {
+            return jdbcTemplate.query("""
+                            select chunk_payload
+                            from global_evidence_chunk
+                            order by created_at desc nulls last, chunk_index asc
+                            limit ?
+                            """,
+                    (rs, rowNum) -> toChunk(rs.getString("chunk_payload")),
+                    effectiveLimit
+            );
+        } catch (RuntimeException ex) {
+            log.warn("Global evidence chunk lookup failed; continuing without global RAG candidates: exceptionType={}, message={}",
+                    ex.getClass().getName(),
+                    ex.getMessage());
+            return List.of();
+        }
+    }
+
+    @Override
+    public Optional<List<EvidenceChunk>> retrieveGlobalEvidenceByVector(List<Double> queryEmbedding,
+                                                                        String embeddingModel,
+                                                                        int topK) {
+        if (!isVectorSchemaAvailable() || queryEmbedding == null || queryEmbedding.isEmpty()
+                || embeddingModel == null || embeddingModel.isBlank()) {
+            return Optional.empty();
+        }
+        // 只返回全局 chunk 的 JSON payload；调用方负责把 global citation 本地化到当前 run。
+        int limit = Math.max(1, Math.min(topK, 100));
+        String queryVector = embeddingLiteral(queryEmbedding);
+        try {
+            List<EvidenceChunk> chunks = jdbcTemplate.query("""
+                            select
+                                gec.chunk_payload,
+                                gece.embedding::text as embedding_text,
+                                1 - (gece.embedding <=> ?::vector) as semantic_score
+                            from global_evidence_chunk_embedding gece
+                            join global_evidence_chunk gec on gec.id = gece.chunk_id
+                            where gece.embedding_model = ?
+                              and vector_dims(gece.embedding) = ?
+                            order by gece.embedding <=> ?::vector
+                            limit ?
+                            """,
+                    (rs, rowNum) -> toVectorChunk(rs, embeddingModel),
+                    queryVector,
+                    embeddingModel,
+                    queryEmbedding.size(),
+                    queryVector,
+                    limit
+            );
+            return Optional.of(chunks);
+        } catch (RuntimeException ex) {
+            disableVectorSchema();
+            log.warn("pgvector global evidence retrieval failed; keyword fallback remains available: exceptionType={}, message={}",
                     ex.getClass().getName(),
                     ex.getMessage());
             return Optional.empty();
@@ -722,6 +910,79 @@ public class PostgresAnalysisRunRepository implements AnalysisRunRepository {
         }
     }
 
+    private void deleteGlobalChunks(String globalUrl) {
+        if (isVectorSchemaAvailable()) {
+            try {
+                jdbcTemplate.update("delete from global_evidence_chunk_embedding where global_url = ?", globalUrl);
+            } catch (RuntimeException ex) {
+                disableVectorSchema();
+                log.warn("Failed to delete global pgvector evidence projection; continuing with JSON refresh: globalUrl={}, exceptionType={}, message={}",
+                        globalUrl,
+                        ex.getClass().getName(),
+                        ex.getMessage());
+            }
+        }
+        jdbcTemplate.update("delete from global_evidence_chunk where global_url = ?", globalUrl);
+    }
+
+    private void insertGlobalEvidenceChunks(String globalUrl, List<EvidenceChunk> chunks) {
+        for (var chunk : chunks) {
+            jdbcTemplate.update("""
+                            insert into global_evidence_chunk
+                                (id, global_url, chunk_key, source_citation_key, chunk_index, title, url,
+                                 created_at, chunk_payload)
+                            values (?, ?, ?, ?, ?, ?, ?, ?, ?::jsonb)
+                    """,
+                    chunk.getId(),
+                    globalUrl,
+                    varchar(chunk.getChunkKey(), 128),
+                    varchar(chunk.getSourceCitationKey(), 32),
+                    chunk.getChunkIndex(),
+                    chunk.getTitle(),
+                    chunk.getUrl(),
+                    timestamp(chunk.getCreatedAt()),
+                    toJson(chunk)
+            );
+        }
+    }
+
+    private void insertGlobalEvidenceChunkEmbeddings(String globalUrl, List<EvidenceChunk> chunks) {
+        if (!isVectorSchemaAvailable()) {
+            return;
+        }
+        TransactionStatus transactionStatus = currentTransactionStatus();
+        Object savepoint = createSavepoint(transactionStatus);
+        try {
+            for (var chunk : chunks) {
+                if (chunk.getEmbedding() == null || chunk.getEmbedding().isEmpty()) {
+                    continue;
+                }
+                jdbcTemplate.update("""
+                                insert into global_evidence_chunk_embedding
+                                    (chunk_id, global_url, chunk_key, embedding,
+                                     embedding_model, embedding_text_hash, embedded_at)
+                                values (?, ?, ?, ?::vector, ?, ?, ?)
+                        """,
+                        chunk.getId(),
+                        globalUrl,
+                        varchar(chunk.getChunkKey(), 128),
+                        embeddingLiteral(chunk.getEmbedding()),
+                        varchar(chunk.getEmbeddingModel(), 128),
+                        chunk.getTextHash(),
+                        timestamp(chunk.getEmbeddedAt())
+                );
+            }
+            releaseSavepoint(transactionStatus, savepoint);
+        } catch (RuntimeException ex) {
+            rollbackToSavepoint(transactionStatus, savepoint);
+            disableVectorSchema();
+            log.warn("Failed to write global pgvector evidence projection; JSON payload remains authoritative: globalUrl={}, exceptionType={}, message={}",
+                    globalUrl,
+                    ex.getClass().getName(),
+                    ex.getMessage());
+        }
+    }
+
     private void insertReviewFindings(AnalysisRun run) {
         for (var finding : run.getReviewFindings()) {
             jdbcTemplate.update("""
@@ -829,6 +1090,14 @@ public class PostgresAnalysisRunRepository implements AnalysisRunRepository {
             return chunk;
         } catch (JsonProcessingException ex) {
             throw new IllegalStateException("Failed to deserialize vector evidence chunk payload", ex);
+        }
+    }
+
+    private EvidenceChunk toChunk(String payload) {
+        try {
+            return objectMapper.readValue(payload, EvidenceChunk.class);
+        } catch (JsonProcessingException ex) {
+            throw new IllegalStateException("Failed to deserialize evidence chunk payload", ex);
         }
     }
 

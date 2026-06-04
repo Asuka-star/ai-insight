@@ -58,6 +58,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.core.task.support.TaskExecutorAdapter;
 import org.springframework.mock.web.MockMultipartFile;
 
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
 import java.util.Map;
@@ -381,6 +382,9 @@ class AnalysisWorkflowServiceTest {
         assertThat(source.getSourceQuality()).isEqualTo("INTERNAL_ONLY");
         assertThat(source.getComplianceNote()).contains("internal-only", "internal-research.md");
         assertThat(updated.getEvidenceChunks()).isNotEmpty();
+        assertThat(updated.getUserProvidedEvidence()).hasSize(1);
+        assertThat(updated.getUserProvidedEvidence().get(0).getUrl()).startsWith("user-document://");
+        assertThat(updated.getUserProvidedEvidence().get(0).getContent()).contains("permission governance");
         assertThat(updated.getResearchPackage().getSources()).hasSize(1);
         assertThat(updated.getRecommendedActions()).anyMatch(action -> action.contains("S1"));
 
@@ -438,6 +442,154 @@ class AnalysisWorkflowServiceTest {
                 .isInstanceOf(InvalidRunStateException.class)
                 .hasMessageContaining("only uploaded documents");
         assertThat(service.get(updated.getId()).getEvidenceSources()).hasSize(1);
+    }
+
+    @Test
+    void rerunAgentIsBlockedWhileUploadedDocumentIsProcessing() {
+        AnalysisRunRepository repository = new TestAnalysisRunRepository();
+        AnalysisEventBroker eventBroker = new AnalysisEventBroker();
+        AtomicReference<Runnable> queuedIngestion = new AtomicReference<>();
+        DocumentIngestionService documentIngestionService = new DocumentIngestionService(
+                new DocumentTextExtractor(),
+                new EvidenceChunkService(),
+                EvidenceEmbeddingService.disabled(),
+                repository,
+                eventBroker,
+                queuedIngestion::set
+        );
+        AnalysisWorkflowService service = newService(
+                repository,
+                eventBroker,
+                new TaskExecutorAdapter(Runnable::run),
+                documentIngestionService
+        );
+        CreateAnalysisRunRequest request = new CreateAnalysisRunRequest();
+        request.setPrompt("Analyze Notion and Confluence for AI document collaboration.");
+        var run = service.createDraft(request);
+        MockMultipartFile file = new MockMultipartFile(
+                "file",
+                "resource-pack.md",
+                "text/markdown",
+                """
+                        Enterprise buyers care about permission governance, audit trails, SSO administration,
+                        and reliable citations back to trusted workspace documents. The same uploaded resource
+                        says buyers want AI search results to clearly explain which internal source supports
+                        each answer before teams use it in procurement or compliance review.
+                        """.getBytes(java.nio.charset.StandardCharsets.UTF_8)
+        );
+
+        var processing = service.addDocument(run.getId(), file, "Resource pack note", "document", false, "", true);
+
+        assertThat(processing.getEvidenceSources().get(0).getIngestionStatus())
+                .isEqualTo(DocumentIngestionService.STATUS_PROCESSING);
+        assertThat(queuedIngestion.get()).isNotNull();
+        assertThatThrownBy(() -> service.rerunAgent(run.getId(), AgentName.RESEARCHER))
+                .isInstanceOf(InvalidRunStateException.class)
+                .hasMessageContaining("document ingestion is still processing");
+        assertThatThrownBy(() -> service.startExecution(run.getId()))
+                .isInstanceOf(InvalidRunStateException.class)
+                .hasMessageContaining("document ingestion is still processing");
+
+        queuedIngestion.get().run();
+
+        var ready = service.get(run.getId());
+        assertThat(ready.getEvidenceSources().get(0).getIngestionStatus())
+                .isEqualTo(DocumentIngestionService.STATUS_READY);
+        assertThat(ready.getUserProvidedEvidence()).hasSize(1);
+        assertThat(repository.findGlobalEvidenceChunks(10))
+                .extracting(EvidenceChunk::getUrl)
+                .allMatch(url -> url.startsWith("global-document://"));
+    }
+
+    @Test
+    void localUploadedDocumentDoesNotPersistToGlobalRagByDefault() {
+        TestAnalysisRunRepository repository = new TestAnalysisRunRepository();
+        AnalysisEventBroker eventBroker = new AnalysisEventBroker();
+        DocumentIngestionService documentIngestionService = new DocumentIngestionService(
+                new DocumentTextExtractor(),
+                new EvidenceChunkService(),
+                EvidenceEmbeddingService.disabled(),
+                repository,
+                eventBroker,
+                Runnable::run
+        );
+        AnalysisWorkflowService service = newService(
+                repository,
+                eventBroker,
+                new TaskExecutorAdapter(Runnable::run),
+                documentIngestionService
+        );
+        CreateAnalysisRunRequest request = new CreateAnalysisRunRequest();
+        request.setPrompt("Analyze Notion and Confluence for AI document collaboration.");
+        var run = service.createDraft(request);
+        MockMultipartFile file = new MockMultipartFile(
+                "file",
+                "local-context.md",
+                "text/markdown",
+                """
+                        Local analysis context says buyers care about permission governance, audit trails,
+                        and reliable citations back to trusted workspace documents for this specific task.
+                        """.getBytes(java.nio.charset.StandardCharsets.UTF_8)
+        );
+
+        var updated = service.addDocument(run.getId(), file, "Local context note", "document", false, "");
+
+        assertThat(updated.getEvidenceSources()).hasSize(1);
+        assertThat(updated.getEvidenceSources().get(0).getUrl()).startsWith("user-document://");
+        assertThat(repository.findGlobalEvidenceChunks(10)).isEmpty();
+    }
+
+    @Test
+    void deletingGlobalUploadedDocumentRemovesGlobalRagAndPrunesOldRunsOnRerun() {
+        TestAnalysisRunRepository repository = new TestAnalysisRunRepository();
+        AnalysisEventBroker eventBroker = new AnalysisEventBroker();
+        DocumentIngestionService documentIngestionService = new DocumentIngestionService(
+                new DocumentTextExtractor(),
+                new EvidenceChunkService(),
+                EvidenceEmbeddingService.disabled(),
+                repository,
+                eventBroker,
+                Runnable::run
+        );
+        AnalysisWorkflowService service = newService(
+                repository,
+                eventBroker,
+                new TaskExecutorAdapter(Runnable::run),
+                documentIngestionService
+        );
+        CreateAnalysisRunRequest request = new CreateAnalysisRunRequest();
+        request.setPrompt("Analyze Notion and Confluence for AI document collaboration.");
+        var ownerRun = service.createDraft(request);
+        MockMultipartFile file = new MockMultipartFile(
+                "file",
+                "global-resource.md",
+                "text/markdown",
+                """
+                        Global workspace evidence says enterprise buyers care about permission governance,
+                        SAML SSO, SCIM provisioning, audit logs, and evidence-backed AI search answers.
+                        """.getBytes(java.nio.charset.StandardCharsets.UTF_8)
+        );
+
+        service.addDocument(ownerRun.getId(), file, "Global resource note", "document", false, "", true);
+        assertThat(repository.findGlobalEvidenceChunks(10)).isNotEmpty();
+
+        var oldRun = service.createDraft(request);
+        assertThat(service.retrieveEvidence(oldRun.getId(), "permission governance SAML", 1)).hasSize(1);
+        assertThat(service.get(oldRun.getId()).getEvidenceSources())
+                .anySatisfy(source -> {
+                    assertThat(source.getUrl()).startsWith("global-document://");
+                    assertThat(source.isGlobalResource()).isTrue();
+                });
+
+        service.deleteUserResource(ownerRun.getId(), "S1");
+
+        assertThat(repository.findGlobalEvidenceChunks(10)).isEmpty();
+        var newRun = service.createDraft(request);
+        assertThat(service.retrieveEvidence(newRun.getId(), "permission governance SAML", 1)).isEmpty();
+
+        service.rerunAgent(oldRun.getId(), AgentName.EXTRACTOR);
+        assertThat(service.get(oldRun.getId()).getEvidenceSources())
+                .noneMatch(source -> source.getUrl() != null && source.getUrl().startsWith("global-document://"));
     }
 
     @Test
@@ -4062,6 +4214,13 @@ class AnalysisWorkflowServiceTest {
     }
 
     private AnalysisWorkflowService newService(TaskExecutorAdapter taskExecutor) {
+        return newService(new TestAnalysisRunRepository(), new AnalysisEventBroker(), taskExecutor, null);
+    }
+
+    private AnalysisWorkflowService newService(AnalysisRunRepository repository,
+                                               AnalysisEventBroker eventBroker,
+                                               TaskExecutorAdapter taskExecutor,
+                                               DocumentIngestionService documentIngestionService) {
         LlmClient noopLlmClient = new LlmClient() {
             @Override
             public boolean isAvailable() {
@@ -4073,8 +4232,6 @@ class AnalysisWorkflowServiceTest {
                 throw new IllegalStateException("LLM is not configured");
             }
         };
-        AnalysisRunRepository repository = new TestAnalysisRunRepository();
-        AnalysisEventBroker eventBroker = new AnalysisEventBroker();
         WorkflowNodeExecutor nodeExecutor = new WorkflowNodeExecutor(repository, eventBroker);
         SourceCollectionService sourceCollectionService = new SourceCollectionService(fetchUsefulPages(), fakeSearchProvider());
         FallbackClarificationDraftFactory fallbackClarificationDraftFactory = new FallbackClarificationDraftFactory();
@@ -4101,10 +4258,11 @@ class AnalysisWorkflowServiceTest {
                 nodeExecutor,
                 clarifierNode,
                 fallbackClarificationDraftFactory,
-                new EvidenceRetrievalService(),
+                new EvidenceRetrievalService(new NoopEmbeddingClient(), repository),
                 sourceCollectionService,
                 new EvidenceChunkService(),
-                EvidenceEmbeddingService.disabled()
+                EvidenceEmbeddingService.disabled(),
+                documentIngestionService
         );
     }
 
@@ -4246,6 +4404,7 @@ class AnalysisWorkflowServiceTest {
     private static class TestAnalysisRunRepository implements AnalysisRunRepository {
 
         private final ConcurrentMap<UUID, AnalysisRun> runs = new ConcurrentHashMap<>();
+        private final ConcurrentMap<String, List<EvidenceChunk>> globalChunks = new ConcurrentHashMap<>();
 
         @Override
         public AnalysisRun save(AnalysisRun run) {
@@ -4272,6 +4431,29 @@ class AnalysisWorkflowServiceTest {
         @Override
         public Collection<AnalysisRunSummary> findSummaries() {
             return runs.values().stream().map(AnalysisWorkflowServiceTest::summaryOf).toList();
+        }
+
+        @Override
+        public void saveGlobalEvidence(EvidenceSource source, List<EvidenceChunk> chunks) {
+            globalChunks.put(source.getUrl(), new ArrayList<>(chunks));
+        }
+
+        @Override
+        public void deleteGlobalEvidence(String globalUrl) {
+            globalChunks.remove(globalUrl);
+        }
+
+        @Override
+        public boolean globalEvidenceExists(String globalUrl) {
+            return globalChunks.containsKey(globalUrl);
+        }
+
+        @Override
+        public List<EvidenceChunk> findGlobalEvidenceChunks(int limit) {
+            return globalChunks.values().stream()
+                    .flatMap(List::stream)
+                    .limit(limit)
+                    .toList();
         }
 
         @Override

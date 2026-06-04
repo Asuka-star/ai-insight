@@ -10,6 +10,7 @@ import org.springframework.util.StringUtils;
 import org.springframework.web.multipart.MultipartFile;
 
 import java.io.IOException;
+import java.io.ByteArrayInputStream;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.Locale;
@@ -24,12 +25,19 @@ public class DocumentTextExtractor {
         if (file == null || file.isEmpty()) {
             throw new DocumentIngestionException("上传文件为空。");
         }
-        String filename = filename(file);
+        return extract(filename(file), file.getContentType(), bytes(file));
+    }
+
+    public ExtractedDocumentText extract(String originalFilename, String contentType, byte[] bytes) {
+        if (bytes == null || bytes.length == 0) {
+            throw new DocumentIngestionException("上传文件为空。");
+        }
+        String filename = filename(originalFilename);
         String extension = extension(filename);
         String text = switch (extension) {
-            case "txt", "md", "markdown" -> readUtf8(file);
-            case "pdf" -> readPdf(file);
-            case "docx" -> readDocx(file);
+            case "txt", "md", "markdown" -> readUtf8(bytes);
+            case "pdf" -> readPdf(bytes);
+            case "docx" -> readDocx(bytes);
             default -> throw new DocumentIngestionException(
                     "不支持的文档类型：" + extension + "。当前支持 txt、md、pdf、docx。");
         };
@@ -39,23 +47,19 @@ public class DocumentTextExtractor {
         }
         return new ExtractedDocumentText(
                 titleFromFilename(filename),
-                mediaType(file.getContentType()),
+                mediaType(contentType),
                 filename,
                 text,
                 Map.of("extension", extension)
         );
     }
 
-    private String readUtf8(MultipartFile file) {
-        try {
-            return new String(file.getBytes(), StandardCharsets.UTF_8);
-        } catch (IOException ex) {
-            throw new DocumentIngestionException("读取上传文件失败。", ex);
-        }
+    private String readUtf8(byte[] bytes) {
+        return new String(bytes, StandardCharsets.UTF_8);
     }
 
-    private String readPdf(MultipartFile file) {
-        try (InputStream input = file.getInputStream();
+    private String readPdf(byte[] bytes) {
+        try (InputStream input = new ByteArrayInputStream(bytes);
             PDDocument document = PDDocument.load(input)) {
             if (document.isEncrypted()) {
                 throw new DocumentIngestionException("暂不支持加密 PDF 文件。");
@@ -68,8 +72,8 @@ public class DocumentTextExtractor {
         }
     }
 
-    private String readDocx(MultipartFile file) {
-        try (InputStream input = file.getInputStream();
+    private String readDocx(byte[] bytes) {
+        try (InputStream input = new ByteArrayInputStream(bytes);
              XWPFDocument document = new XWPFDocument(input);
             XWPFWordExtractor extractor = new XWPFWordExtractor(document)) {
             return extractor.getText();
@@ -90,11 +94,23 @@ public class DocumentTextExtractor {
     }
 
     private String filename(MultipartFile file) {
-        String filename = file.getOriginalFilename();
+        return filename(file.getOriginalFilename());
+    }
+
+    private String filename(String originalFilename) {
+        String filename = originalFilename;
         if (!StringUtils.hasText(filename)) {
             return "uploaded-document.txt";
         }
         return filename.replace('\\', '/').replaceAll("^.*/", "").trim();
+    }
+
+    private byte[] bytes(MultipartFile file) {
+        try {
+            return file.getBytes();
+        } catch (IOException ex) {
+            throw new DocumentIngestionException("读取上传文件失败。", ex);
+        }
     }
 
     private String extension(String filename) {

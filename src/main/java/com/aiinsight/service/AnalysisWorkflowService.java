@@ -40,10 +40,16 @@ import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 import org.springframework.web.multipart.MultipartFile;
 
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.ConcurrentHashMap;
@@ -278,7 +284,15 @@ public class AnalysisWorkflowService {
     }
 
     public Collection<EvidenceChunk> retrieveEvidence(UUID runId, String query, Integer topK) {
-        return evidenceRetrievalService.retrieve(get(runId), query, topK);
+        AnalysisRun run = get(runId);
+        int sourceCount = run.getEvidenceSources().size();
+        Collection<EvidenceChunk> chunks = evidenceRetrievalService.retrieve(run, query, topK);
+        if (run.getEvidenceSources().size() != sourceCount) {
+            // 检索全局 RAG 时可能会把 global-document 来源挂载到当前 run，
+            // 这里保存一次，让后续 Extractor/Analyst/前端证据面板都能看到本地 citation。
+            repository.save(run);
+        }
+        return chunks;
     }
 
     public ResearchCollectionPlan researchCollectionPlan(UUID runId) {
@@ -438,12 +452,24 @@ public class AnalysisWorkflowService {
                                    String sourceType,
                                    boolean sensitive,
                                    String notes) {
+        return addDocument(runId, file, title, sourceType, sensitive, notes, false);
+    }
+
+    public AnalysisRun addDocument(UUID runId,
+                                   MultipartFile file,
+                                   String title,
+                                   String sourceType,
+                                   boolean sensitive,
+                                   String notes,
+                                   boolean globalResource) {
         AnalysisRun run = get(runId);
         ensureEvidenceAcceptable(run);
         String citationKey = nextCitationKey(run);
-        documentIngestionService.ingest(run, file, citationKey, title, sourceType, sensitive, notes);
-        repository.save(run);
-        eventBroker.publish(run, "document_added", "文件已加入用户资源包：" + citationKey);
+        documentIngestionService.ingest(run, file, citationKey, title, sourceType, sensitive, notes, globalResource);
+        if (!documentIngestionService.managesPersistence()) {
+            repository.save(run);
+        }
+        eventBroker.publish(run, "document_added", (globalResource ? "文件已加入全局用户资源包：" : "文件已加入当前任务资源：") + citationKey);
         return run;
     }
 
@@ -457,8 +483,19 @@ public class AnalysisWorkflowService {
         if (!isUserDocumentResource(source)) {
             throw new InvalidRunStateException(runId, "only uploaded documents can be deleted: " + citationKey);
         }
+        if (isProcessingDocument(source)) {
+            // 删除后台仍在处理的文档会让异步线程找不到占位 source，容易留下半成品进度；
+            // 等 READY/FAILED 后再删，路径更可预期。
+            throw new InvalidRunStateException(runId, "document ingestion is still processing: " + citationKey);
+        }
+        // 只有顶部“用户资源包”的文档会带 globalResource；局部补充资料删除时不能误删全局 RAG。
+        if (source.isGlobalResource()) {
+            repository.deleteGlobalEvidence(globalDocumentUrl(source));
+        }
         run.getEvidenceSources().removeIf(item -> citationKey.equals(item.getCitationKey()));
         run.getEvidenceChunks().removeIf(chunk -> citationKey.equals(chunk.getSourceCitationKey()));
+        String documentUrl = "user-document://" + citationKey.toLowerCase(Locale.ROOT);
+        run.getUserProvidedEvidence().removeIf(evidence -> documentUrl.equals(evidence.getUrl()));
         run.getResearchPackage().getSources().removeIf(item -> citationKey.equals(item.getCitationKey()));
         run.getResearchPackage().setCollectedAt(Instant.now());
         run.getRecommendedActions().add("用户资源 " + citationKey + " 已移除。建议重跑 EXTRACTOR、ANALYST 或 WRITER 刷新后续产物。");
@@ -485,7 +522,8 @@ public class AnalysisWorkflowService {
         if (activeAgent != null) {
             throw new InvalidRunStateException(runId, "agent rerun already in progress: " + activeAgent);
         }
-        AnalysisRun current = get(runId);
+        // 重跑前先移除已从全局资源库删除的来源，防止旧任务继续引用失效文件。
+        AnalysisRun current = pruneUnavailableGlobalEvidence(get(runId));
         AnalysisStatus previousStatus = current.getStatus();
         try {
             ensureAgentRerunnable(current);
@@ -650,6 +688,10 @@ public class AnalysisWorkflowService {
         if (run.getStatus() == AnalysisStatus.SUCCEEDED || run.getStatus() == AnalysisStatus.CANCELLED) {
             throw new InvalidRunStateException(run.getId(), "workflow cannot be started from " + run.getStatus());
         }
+        // 首次启动也必须等待上传文档完成解析；否则 Researcher/Extractor 会读到空的占位 source。
+        if (hasProcessingDocuments(run)) {
+            throw new InvalidRunStateException(run.getId(), "document ingestion is still processing; start after uploaded documents are ready");
+        }
     }
 
     private void ensureContextAcceptable(AnalysisRun run) {
@@ -674,6 +716,21 @@ public class AnalysisWorkflowService {
         if (run.getStatus() == AnalysisStatus.CANCELLED) {
             throw new InvalidRunStateException(run.getId(), "cancelled run cannot rerun agents");
         }
+        if (hasProcessingDocuments(run)) {
+            throw new InvalidRunStateException(run.getId(), "document ingestion is still processing; rerun after uploaded documents are ready");
+        }
+    }
+
+    private boolean hasProcessingDocuments(AnalysisRun run) {
+        return run.getEvidenceSources().stream()
+                .anyMatch(this::isProcessingDocument);
+    }
+
+    private boolean isProcessingDocument(EvidenceSource source) {
+        return source != null
+                && source.getUrl() != null
+                && source.getUrl().startsWith("user-document://")
+                && DocumentIngestionService.STATUS_PROCESSING.equals(source.getIngestionStatus());
     }
 
     private boolean isTerminal(AnalysisStatus status) {
@@ -755,6 +812,86 @@ public class AnalysisWorkflowService {
     private boolean isUserDocumentResource(EvidenceSource source) {
         String url = source.getUrl() == null ? "" : source.getUrl();
         return url.startsWith("user-document://");
+    }
+
+    private AnalysisRun pruneUnavailableGlobalEvidence(AnalysisRun run) {
+        Set<String> removedCitationKeys = new LinkedHashSet<>();
+        Set<String> removedUrls = new LinkedHashSet<>();
+        // 旧 run 中的全局资源可能是 global-document://，也可能是带 globalResource 标记的
+        // user-document://；统一映射到 global URL 后再查全局库是否仍存在。
+        run.getEvidenceSources().removeIf(source -> {
+            if (!isGlobalScopedSource(source)) {
+                return false;
+            }
+            String globalUrl = globalDocumentUrl(source);
+            if (repository.globalEvidenceExists(globalUrl)) {
+                return false;
+            }
+            if (StringUtils.hasText(source.getCitationKey())) {
+                removedCitationKeys.add(source.getCitationKey());
+            }
+            if (StringUtils.hasText(source.getUrl())) {
+                removedUrls.add(source.getUrl());
+            }
+            removedUrls.add(globalUrl);
+            return true;
+        });
+        if (removedCitationKeys.isEmpty() && removedUrls.isEmpty()) {
+            return run;
+        }
+        // 清理不只删 EvidenceSource。run 内还有 chunk、researchPackage.sources、
+        // userProvidedEvidence 等多处引用，必须一起收口，避免旧 citation 在重跑后继续漏出来。
+        run.getEvidenceChunks().removeIf(chunk ->
+                removedCitationKeys.contains(chunk.getSourceCitationKey()) || removedUrls.contains(chunk.getUrl()));
+        run.getResearchPackage().getSources().removeIf(source ->
+                removedCitationKeys.contains(source.getCitationKey())
+                        || removedUrls.contains(source.getUrl())
+                        || removedUrls.contains(globalDocumentUrl(source)));
+        run.getUserProvidedEvidence().removeIf(evidence -> removedUrls.contains(evidence.getUrl()));
+        run.getResearchPackage().setSources(new ArrayList<>(run.getEvidenceSources()));
+        run.getResearchPackage().setCollectedAt(Instant.now());
+        run.getRecommendedActions().add("已移除全局资源库中已删除的来源：" + String.join("、", removedCitationKeys));
+        repository.save(run);
+        return run;
+    }
+
+    private boolean isGlobalScopedSource(EvidenceSource source) {
+        return source != null
+                && (source.isGlobalResource() || isGlobalDocumentUrl(source.getUrl()));
+    }
+
+    private boolean isGlobalDocumentUrl(String url) {
+        return url != null && url.startsWith("global-document://");
+    }
+
+    private String globalDocumentUrl(EvidenceSource source) {
+        if (source == null) {
+            return "";
+        }
+        if (isGlobalDocumentUrl(source.getUrl())) {
+            return source.getUrl();
+        }
+        // 对 user-document://Sx 这种当前任务内资源，用标题 + 原文重新计算全局 URL。
+        // 这个算法和 DocumentIngestionService 中的保存路径是一组契约，改一处必须改另一处。
+        String hashInput = String.join("\n",
+                source.getTitle() == null ? "" : source.getTitle(),
+                source.getRawText() == null ? "" : source.getRawText()
+        );
+        return "global-document://" + sha256(hashInput);
+    }
+
+    private String sha256(String value) {
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            byte[] hash = digest.digest((value == null ? "" : value).getBytes(StandardCharsets.UTF_8));
+            StringBuilder hex = new StringBuilder(hash.length * 2);
+            for (byte b : hash) {
+                hex.append("%02x".formatted(b));
+            }
+            return hex.toString();
+        } catch (NoSuchAlgorithmException ex) {
+            throw new IllegalStateException("SHA-256 is not available", ex);
+        }
     }
 
     private void applyScopeHints(AnalysisRequirement requirement, String content) {

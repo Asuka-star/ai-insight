@@ -153,6 +153,7 @@ export interface UploadDocumentRequest {
   sourceType?: string;
   sensitive?: boolean;
   notes?: string;
+  global?: boolean;
 }
 
 export interface AgentStep {
@@ -182,6 +183,12 @@ export interface EvidenceSource {
   cacheHit?: boolean;
   snippet: string;
   complianceNote?: string;
+  ingestionStatus?: "PROCESSING" | "READY" | "FAILED" | string;
+  ingestionStage?: string;
+  ingestionMessage?: string;
+  ingestionStartedAt?: string;
+  ingestionCompletedAt?: string;
+  globalResource?: boolean;
   retrievedAt?: string;
 }
 

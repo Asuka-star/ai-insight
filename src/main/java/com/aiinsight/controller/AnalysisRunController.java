@@ -111,8 +111,9 @@ public class AnalysisRunController {
                                    @RequestParam(required = false) String title,
                                    @RequestParam(required = false) String sourceType,
                                    @RequestParam(defaultValue = "false") boolean sensitive,
-                                   @RequestParam(required = false) String notes) {
-        return workflowService.addDocument(runId, file, title, sourceType, sensitive, notes);
+                                   @RequestParam(required = false) String notes,
+                                   @RequestParam(defaultValue = "false") boolean global) {
+        return workflowService.addDocument(runId, file, title, sourceType, sensitive, notes, global);
     }
 
     @DeleteMapping("/{runId}/documents/{citationKey}")
