@@ -44,6 +44,7 @@ import { DeleteHistoryDialog } from "./components/DeleteHistoryDialog";
 import { ResourcePackDrawer } from "./components/ResourcePackDrawer";
 
 type MainView = "dag" | "report" | "schema" | "matrix" | "versions";
+type LeftPanelId = "scope" | "context" | "evidence";
 type RightPanelId = "timeline" | "collection" | "evidence" | "review" | "metrics";
 
 const MIN_LEFT_RAIL_WIDTH = 240;
@@ -69,6 +70,8 @@ interface ScopeDraft {
 
 export function App() {
   const initialScopeDraftRef = useRef(readScopeDraft());
+  const workspaceRef = useRef<HTMLElement>(null);
+  const leftRailRef = useRef<HTMLElement>(null);
   const [run, setRun] = useState<AnalysisRun | null>(null);
   const [serverRunMetrics, setServerRunMetrics] = useState<AnalysisRunMetrics | null>(null);
   const [historyRuns, setHistoryRuns] = useState<AnalysisRunSummary[]>([]);
@@ -103,6 +106,11 @@ export function App() {
   const [documentInputKey, setDocumentInputKey] = useState(0);
   const [localContextMessages, setLocalContextMessages] = useState<AnalysisContextMessage[]>([]);
   const [mainView, setMainView] = useState<MainView>("dag");
+  const [collapsedLeftPanels, setCollapsedLeftPanels] = useState<Record<LeftPanelId, boolean>>({
+    scope: false,
+    context: false,
+    evidence: false
+  });
   const [collapsedRightPanels, setCollapsedRightPanels] = useState<Record<RightPanelId, boolean>>({
     timeline: true,
     collection: false,
@@ -461,6 +469,37 @@ export function App() {
     }));
   }, []);
 
+  const resetLeftRailHorizontalScroll = useCallback(() => {
+    const reset = (element: HTMLElement | null) => {
+      if (element) element.scrollLeft = 0;
+    };
+    reset(workspaceRef.current);
+    reset(leftRailRef.current);
+    window.requestAnimationFrame(() => {
+      reset(workspaceRef.current);
+      reset(leftRailRef.current);
+    });
+  }, []);
+
+  const toggleLeftPanel = useCallback((panel: LeftPanelId) => {
+    resetLeftRailHorizontalScroll();
+    setCollapsedLeftPanels((current) => ({
+      ...current,
+      [panel]: !current[panel]
+    }));
+  }, [resetLeftRailHorizontalScroll]);
+
+  useEffect(() => {
+    resetLeftRailHorizontalScroll();
+  }, [collapsedLeftPanels, resetLeftRailHorizontalScroll]);
+
+  useEffect(() => {
+    if (contextIntent === "ADD_EVIDENCE") {
+      setContextIntent("ADJUST_SCOPE");
+      setContextText("");
+    }
+  }, [contextIntent]);
+
   const handleSelectCitation = useCallback((citationKey: string) => {
     setSelectedCitationKey(citationKey);
     setSelectedCitationRequestId((requestId) => requestId + 1);
@@ -749,8 +788,19 @@ export function App() {
   async function handleSubmitContext() {
     if (!run) return;
     const trimmedContextText = contextText.trim();
-    const rerunTargetAgent = contextIntent === "REQUEST_RERUN" ? contextTargetAgent : undefined;
-    if (contextIntent === "REQUEST_RERUN" && !rerunTargetAgent) return;
+    const rerunTargetAgent = contextIntent === "REQUEST_RERUN" && contextTargetAgent !== "CLARIFIER"
+      ? contextTargetAgent
+      : undefined;
+    if (contextIntent === "REQUEST_RERUN" && contextTargetAgent === "CLARIFIER") {
+      setContextTargetAgent(undefined);
+      return;
+    }
+    if (contextIntent === "REQUEST_RERUN") {
+      if (!rerunTargetAgent) return;
+      setContextText("");
+      await handleRerun(rerunTargetAgent);
+      return;
+    }
     if (!rerunTargetAgent && !trimmedContextText) return;
     const runId = run.id;
     if (!trimmedContextText) {
@@ -988,8 +1038,8 @@ export function App() {
         </div>
       </header>
 
-      <main className="workspace" style={workspaceStyle}>
-        <aside className="left-rail">
+      <main className="workspace" style={workspaceStyle} ref={workspaceRef}>
+        <aside className="left-rail" ref={leftRailRef}>
           <ScopeConfirmationPanel
             run={run}
             localConfirmed={localScopeConfirmed}
@@ -1012,6 +1062,8 @@ export function App() {
             onStart={handleStartAnalysis}
             creating={pendingClarification}
             busy={isScopeBusy}
+            collapsed={collapsedLeftPanels.scope}
+            onToggle={() => toggleLeftPanel("scope")}
           />
 
           <ContextPanel
@@ -1024,16 +1076,19 @@ export function App() {
             onIntentChange={setContextIntent}
             onTargetAgentChange={setContextTargetAgent}
             onSubmit={handleSubmitContext}
+            collapsed={collapsedLeftPanels.context}
+            onToggle={() => toggleLeftPanel("context")}
           />
 
-          <section className="panel evidence-input-panel">
-            <div className="section-title">
-              <div>
-                <p className="eyebrow">资料</p>
-                <h2>补充资料</h2>
-              </div>
-              <UploadCloud size={18} />
-            </div>
+          <CollapsiblePanel
+            eyebrow="资料"
+            title="补充资料"
+            icon={<UploadCloud size={18} />}
+            summary={run ? `${run.evidenceSources.length} 个来源` : "等待创建任务"}
+            collapsed={collapsedLeftPanels.evidence}
+            onToggle={() => toggleLeftPanel("evidence")}
+            className="evidence-input-panel"
+          >
             <label>
               标题
               <input value={evidenceTitle} onChange={(event) => setEvidenceTitle(event.target.value)} placeholder="例如：内部访谈摘要" />
@@ -1069,7 +1124,7 @@ export function App() {
             <button className="primary-button" type="button" onClick={handleAddEvidence} disabled={runMutationDisabled || !evidenceTitle.trim() || !evidenceContent.trim()}>
               <UploadCloud size={15} /> 加入证据链
             </button>
-          </section>
+          </CollapsiblePanel>
 
         </aside>
 

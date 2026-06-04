@@ -31,12 +31,15 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Component;
 
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.Executor;
+import java.util.concurrent.ForkJoinPool;
 import java.util.stream.Collectors;
 
 @Component
@@ -52,11 +55,19 @@ public class ResearcherNode implements AgentNode {
     private final FallbackResearchPlanFactory fallbackResearchPlanFactory;
     private final InterviewInsightExtractor interviewInsightExtractor;
     private ResearchCoverageService researchCoverageService = new ResearchCoverageService();
+    private Executor researcherLlmExecutor = ForkJoinPool.commonPool();
 
     @Autowired(required = false)
     public void setResearchCoverageService(ResearchCoverageService researchCoverageService) {
         if (researchCoverageService != null) {
             this.researchCoverageService = researchCoverageService;
+        }
+    }
+
+    @Autowired(required = false)
+    public void setResearcherLlmExecutor(@Qualifier("researcherLlmTaskExecutor") Executor researcherLlmExecutor) {
+        if (researcherLlmExecutor != null) {
+            this.researcherLlmExecutor = researcherLlmExecutor;
         }
     }
 
@@ -179,13 +190,16 @@ public class ResearcherNode implements AgentNode {
 
     private ResearchPlan generateResearchPlanWithLlm(AnalysisRun run, ResearchPlan fallback) {
         CompletableFuture<LlmSubtaskResult<ResearchPlan>> strategyTask = CompletableFuture.supplyAsync(
-                AgentTraceContext.wrap(() -> LlmSubtaskSupport.runSubtask("Researcher", "research-strategy", () -> generateResearchStrategyWithLlm(run)))
+                AgentTraceContext.wrap(() -> LlmSubtaskSupport.runSubtask("Researcher", "research-strategy", () -> generateResearchStrategyWithLlm(run))),
+                researcherLlmExecutor
         );
         CompletableFuture<LlmSubtaskResult<Questionnaire>> questionnaireTask = CompletableFuture.supplyAsync(
-                AgentTraceContext.wrap(() -> LlmSubtaskSupport.runSubtask("Researcher", "questionnaire", () -> generateQuestionnaireWithLlm(run)))
+                AgentTraceContext.wrap(() -> LlmSubtaskSupport.runSubtask("Researcher", "questionnaire", () -> generateQuestionnaireWithLlm(run))),
+                researcherLlmExecutor
         );
         CompletableFuture<LlmSubtaskResult<InterviewGuide>> interviewTask = CompletableFuture.supplyAsync(
-                AgentTraceContext.wrap(() -> LlmSubtaskSupport.runSubtask("Researcher", "interview-guide", () -> generateInterviewGuideWithLlm(run)))
+                AgentTraceContext.wrap(() -> LlmSubtaskSupport.runSubtask("Researcher", "interview-guide", () -> generateInterviewGuideWithLlm(run))),
+                researcherLlmExecutor
         );
         CompletableFuture.allOf(strategyTask, questionnaireTask, interviewTask).join();
 

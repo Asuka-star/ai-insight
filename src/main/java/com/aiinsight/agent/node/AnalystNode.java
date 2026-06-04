@@ -83,6 +83,13 @@ public class AnalystNode implements AgentNode {
             "sso", "scim", "saml", "soc", "soc2", "soc 2", "rbac", "iso", "hipaa", "gdpr",
             "bedrock", "slack", "terminal", "ide", "vscode", "github", "gitlab"
     );
+    private static final String SUPPORT_STATUS_SUPPORTED = "SUPPORTED";
+    private static final String SUPPORT_STATUS_PARTIAL = "PARTIAL";
+    private static final String SUPPORT_STATUS_UNVERIFIED = "UNVERIFIED";
+    private static final String PLACEMENT_MATRIX = "MATRIX";
+    private static final String PLACEMENT_SWOT = "SWOT";
+    private static final String PLACEMENT_VALIDATION_BACKLOG = "VALIDATION_BACKLOG";
+    private static final String PLACEMENT_NONE = "NONE";
 
     @Override
     public AgentName name() {
@@ -110,7 +117,6 @@ public class AnalystNode implements AgentNode {
             AgentTraceContext.recordFallback("deterministic-analyst-fallback", draft.traceOutput());
         }
         draft = sanitizeDraft(run, draft);
-        List<String> citationKeys = artifactCitationKeys(run, draft);
         List<AnalysisClaim> previousClaims = new ArrayList<>(run.getClaims());
 
         run.getClaims().clear();
@@ -120,17 +126,19 @@ public class AnalystNode implements AgentNode {
                 : draft.claims().subList(0, MAX_CLAIMS);
         boundedClaims = stabilizeClaimIds(previousClaims, boundedClaims);
         boundedClaims = applyAnalystRepairGuard(run, boundedClaims);
+        AnalysisDraft finalDraft = renderDraftFromClaims(run, boundedClaims);
+        List<String> citationKeys = artifactCitationKeys(run, finalDraft);
         run.getClaims().addAll(boundedClaims);
         run.addArtifact(new AnalysisArtifact(
                 ArtifactType.COMPETITIVE_MATRIX,
                 "竞品横向矩阵",
-                draft.matrixMarkdown(),
+                finalDraft.matrixMarkdown(),
                 citationKeys
         ));
         run.addArtifact(new AnalysisArtifact(
                 ArtifactType.SWOT_ANALYSIS,
                 "SWOT 分析",
-                draft.swotMarkdown(),
+                finalDraft.swotMarkdown(),
                 citationKeys
         ));
         return run;
@@ -175,19 +183,21 @@ public class AnalystNode implements AgentNode {
 
                 输出约束：
                 1. 只输出 JSON，不要 Markdown 代码块。
-                2. claims 必须是数组，最多 8 条；每条 claim 包含 type、content、confidence、competitorNames、factIds、evidenceIds、chunkKeys。
+                2. claims 必须是数组，最多 8 条；每条 claim 包含 type、content、confidence、dimension、supportStatus、recommendedPlacement、competitorNames、factIds、evidenceIds、chunkKeys。
                 3. type 只能取 FACT、COMPARISON、STRENGTH、WEAKNESS、OPPORTUNITY、RISK、RECOMMENDATION。
                 4. confidence 只能取 LOW、MEDIUM、HIGH。
                 5. content 不超过 120 字，必须围绕用户关注维度、业务目标或已采集证据生成。
                 6. evidenceIds 只能使用已知证据编号；证据不足时可以为空，但 content 必须明确写“待验证”或“证据不足”。
-                7. 不要输出矩阵、SWOT、报告正文或其他展示型字段。
-                8. 不要编造价格、营收、客户案例、市场份额或证据中没有的信息。
-                9. 不要把“证据不足”本身当成主要洞察；RISK 类型最多 1 条，其余优先产出有证据支撑的差异、取舍和建议。
-                10. 对已有 strong/medium 证据覆盖的维度，不要写“待验证”；应给出保守但可行动的判断。
-                11. 如果 Reviewer 修复计划包含结构化修复任务，必须逐条处理 task；不要原样保留 task.currentText 中被点名的问题结论。
-                12. 无法找到更强证据时，不要继续维护原 claim 的强判断；必须降为 LOW，并在 content 写明“证据不足/待验证”。
-                13. 如果 task 指出 citation mismatch，不要继续把同一个 citationKey 绑定到相同判断；改用更相关证据，或清空 evidenceIds 并降级。
-                14. 返工输出必须相对原 affected claim 有可见变化：改证据、改置信度、改措辞或删除/替换该 claim。
+                7. supportStatus 只能取 SUPPORTED、PARTIAL、UNVERIFIED；recommendedPlacement 只能取 MATRIX、SWOT、VALIDATION_BACKLOG、NONE。
+                8. MATRIX/SWOT 只给有 evidenceIds 且 confidence 为 MEDIUM/HIGH 的结论；LOW、UNVERIFIED 或无 evidenceIds 的结论必须放 VALIDATION_BACKLOG 或 NONE。
+                9. 不要输出矩阵、SWOT、报告正文或其他展示型字段。
+                10. 不要编造价格、营收、客户案例、市场份额或证据中没有的信息。
+                11. 不要把“证据不足”本身当成主要洞察；RISK 类型最多 1 条，其余优先产出有证据支撑的差异、取舍和建议。
+                12. 对已有 strong/medium 证据覆盖的维度，不要写“待验证”；应给出保守但可行动的判断。
+                13. 如果 Reviewer 修复计划包含结构化修复任务，必须逐条处理 task；不要原样保留 task.currentText 中被点名的问题结论。
+                14. 无法找到更强证据时，不要继续维护原 claim 的强判断；必须降为 LOW，并在 content 写明“证据不足/待验证”。
+                15. 如果 task 指出 citation mismatch，不要继续把同一个 citationKey 绑定到相同判断；改用更相关证据，或清空 evidenceIds 并降级。
+                16. 返工输出必须相对原 affected claim 有可见变化：改证据、改置信度、改措辞或删除/替换该 claim。
 
                 JSON 结构：
                 {
@@ -196,6 +206,9 @@ public class AnalystNode implements AgentNode {
                       "type": "OPPORTUNITY",
                       "content": "结论正文",
                       "confidence": "MEDIUM",
+                      "dimension": "用户关注维度",
+                      "supportStatus": "SUPPORTED",
+                      "recommendedPlacement": "MATRIX",
                       "competitorNames": ["竞品名"],
                       "factIds": ["F1"],
                       "evidenceIds": ["S1"],
@@ -271,6 +284,9 @@ public class AnalystNode implements AgentNode {
         claim.setType(parseClaimType(draft.type));
         claim.setContent(draft.content.trim());
         claim.setConfidence(parseConfidence(draft.confidence, draft.evidenceIds));
+        claim.setDimension(normalizeClaimDimension(run, draft.dimension, draft.content));
+        claim.setSupportStatus(normalizeSupportStatus(draft.supportStatus));
+        claim.setRecommendedPlacement(normalizeRecommendedPlacement(draft.recommendedPlacement, claim.getType()));
         claim.setCompetitorNames(normalizeCompetitorNames(run, draft.competitorNames));
         // evidenceIds 是 claim 进入 Writer/Reviewer 的硬约束，只允许已知 citation；
         // 模型编造的 [S404] 会被过滤，避免后续报告携带不可追溯引用。
@@ -283,6 +299,7 @@ public class AnalystNode implements AgentNode {
         if (claim.getEvidenceIds().isEmpty() && !containsUncertaintyMarker(claim.getContent())) {
             claim.setContent(claim.getContent() + "（证据不足，待验证）");
         }
+        refreshClaimAssessment(claim);
         return claim;
     }
 
@@ -298,10 +315,22 @@ public class AnalystNode implements AgentNode {
         );
     }
 
+    private AnalysisDraft renderDraftFromClaims(AnalysisRun run, List<AnalysisClaim> claims) {
+        AnalystContext context = analystContext(run);
+        return new AnalysisDraft(
+                claims,
+                sanitizeCitationText(run, renderMatrixFromClaims(context, claims)),
+                sanitizeCitationText(run, renderSwotFromClaims(claims))
+        );
+    }
+
     private AnalysisClaim sanitizeClaim(AnalysisRun run, AnalysisClaim claim) {
         claim.setEvidenceIds(distinctKnownEvidenceIds(run, claim.getEvidenceIds()));
         claim.setFactIds(distinctKnownFactIds(run, claim.getFactIds()));
         claim.setChunkKeys(distinctKnownChunkKeys(run, claim.getChunkKeys()));
+        claim.setDimension(normalizeClaimDimension(run, claim.getDimension(), claim.getContent()));
+        claim.setSupportStatus(normalizeSupportStatus(claim.getSupportStatus()));
+        claim.setRecommendedPlacement(normalizeRecommendedPlacement(claim.getRecommendedPlacement(), claim.getType()));
         bindClaimFacts(run, claim);
         pruneUnsupportedClaimEvidence(run, claim);
         if (claim.getEvidenceIds().isEmpty()) {
@@ -309,9 +338,11 @@ public class AnalystNode implements AgentNode {
             if (!containsUncertaintyMarker(claim.getContent())) {
                 claim.setContent(claim.getContent() + "（证据不足，待验证）");
             }
+            refreshClaimAssessment(claim);
             return claim;
         }
         adjustClaimConfidence(run, claim);
+        refreshClaimAssessment(claim);
         return claim;
     }
 
@@ -433,6 +464,7 @@ public class AnalystNode implements AgentNode {
         if (!containsUncertaintyMarker(claim.getContent())) {
             claim.setContent(claim.getContent() + "（证据不足，待验证）");
         }
+        refreshClaimAssessment(claim);
     }
 
     private boolean isRiskyRepairCategory(String category) {
@@ -835,6 +867,125 @@ public class AnalystNode implements AgentNode {
             return evidenceIds == null || evidenceIds.isEmpty() ? ConfidenceLevel.LOW : ConfidenceLevel.MEDIUM;
         }
     }
+
+    private String normalizeClaimDimension(AnalysisRun run, String value, String claimContent) {
+        if (hasText(value)) {
+            return value.trim();
+        }
+        List<String> dimensions = run.getRequirement() == null
+                ? List.of()
+                : safeList(run.getRequirement().getDimensions()).stream()
+                .filter(AgentUtils::hasText)
+                .toList();
+        String text = normalizeLower(claimContent);
+        return dimensions.stream()
+                .filter(dimension -> containsIgnoreCase(text, dimension)
+                        || dimensionKeywords(dimension).stream().anyMatch(keyword -> containsIgnoreCase(text, keyword)))
+                .findFirst()
+                .orElse("综合判断");
+    }
+
+    private String normalizeSupportStatus(String value) {
+        String normalized = normalizeUpper(value);
+        if (SUPPORT_STATUS_SUPPORTED.equals(normalized)
+                || SUPPORT_STATUS_PARTIAL.equals(normalized)
+                || SUPPORT_STATUS_UNVERIFIED.equals(normalized)) {
+            return normalized;
+        }
+        return SUPPORT_STATUS_PARTIAL;
+    }
+
+    private String normalizeRecommendedPlacement(String value, ClaimType type) {
+        String normalized = normalizeUpper(value);
+        if (PLACEMENT_MATRIX.equals(normalized)
+                || PLACEMENT_SWOT.equals(normalized)
+                || PLACEMENT_VALIDATION_BACKLOG.equals(normalized)
+                || PLACEMENT_NONE.equals(normalized)) {
+            return normalized;
+        }
+        return defaultPlacementFor(type);
+    }
+
+    private String defaultPlacementFor(ClaimType type) {
+        if (type == ClaimType.STRENGTH
+                || type == ClaimType.WEAKNESS
+                || type == ClaimType.OPPORTUNITY
+                || type == ClaimType.RISK) {
+            return PLACEMENT_SWOT;
+        }
+        return PLACEMENT_MATRIX;
+    }
+
+    private void refreshClaimAssessment(AnalysisClaim claim) {
+        boolean lacksEvidence = claim.getEvidenceIds() == null || claim.getEvidenceIds().isEmpty();
+        boolean uncertain = containsUncertaintyMarker(claim.getContent());
+        if (lacksEvidence || uncertain || claim.getConfidence() == ConfidenceLevel.LOW) {
+            claim.setSupportStatus(SUPPORT_STATUS_UNVERIFIED);
+            if (!PLACEMENT_NONE.equals(claim.getRecommendedPlacement())) {
+                claim.setRecommendedPlacement(PLACEMENT_VALIDATION_BACKLOG);
+            }
+            return;
+        }
+        claim.setSupportStatus(claim.getConfidence() == ConfidenceLevel.HIGH
+                ? SUPPORT_STATUS_SUPPORTED
+                : SUPPORT_STATUS_PARTIAL);
+        if (!PLACEMENT_MATRIX.equals(claim.getRecommendedPlacement())
+                && !PLACEMENT_SWOT.equals(claim.getRecommendedPlacement())
+                && !PLACEMENT_NONE.equals(claim.getRecommendedPlacement())) {
+            claim.setRecommendedPlacement(defaultPlacementFor(claim.getType()));
+        }
+    }
+
+    private boolean displayableClaim(AnalysisClaim claim) {
+        return claim != null
+                && claim.getConfidence() != ConfidenceLevel.LOW
+                && !SUPPORT_STATUS_UNVERIFIED.equals(normalizeSupportStatus(claim.getSupportStatus()))
+                && claim.getEvidenceIds() != null
+                && !claim.getEvidenceIds().isEmpty()
+                && !containsUncertaintyMarker(claim.getContent());
+    }
+
+    private boolean matrixClaim(AnalysisClaim claim) {
+        return displayableClaim(claim) && PLACEMENT_MATRIX.equals(normalizeRecommendedPlacement(
+                claim.getRecommendedPlacement(),
+                claim.getType()
+        ));
+    }
+
+    private boolean swotClaim(AnalysisClaim claim) {
+        return displayableClaim(claim) && PLACEMENT_SWOT.equals(normalizeRecommendedPlacement(
+                claim.getRecommendedPlacement(),
+                claim.getType()
+        ));
+    }
+
+    private List<String> dimensionKeywords(String dimension) {
+        LinkedHashSet<String> keywords = new LinkedHashSet<>();
+        if (hasText(dimension)) {
+            keywords.add(dimension);
+        }
+        String normalized = normalizeLower(dimension);
+        if (containsAny(normalized, "价格", "定价", "pricing", "套餐", "商业模式")) {
+            keywords.addAll(List.of("价格", "定价", "pricing", "price", "plan", "套餐", "billing"));
+        }
+        if (containsAny(normalized, "上下文", "context")) {
+            keywords.addAll(List.of("上下文", "context", "代码库", "仓库", "repository", "repo"));
+        }
+        if (containsAny(normalized, "团队", "协作", "collaboration", "team")) {
+            keywords.addAll(List.of("团队", "协作", "team", "collaboration", "共享", "技能"));
+        }
+        if (containsAny(normalized, "权限", "治理", "安全", "合规", "审计", "security")) {
+            keywords.addAll(List.of("权限", "安全", "security", "permission", "governance", "合规", "审计", "sso", "scim"));
+        }
+        if (containsAny(normalized, "ide", "终端", "集成", "integration")) {
+            keywords.addAll(List.of("ide", "终端", "terminal", "集成", "integration", "vscode", "jetbrains"));
+        }
+        if (containsAny(normalized, "代码", "生成", "理解", "agent", "工作流")) {
+            keywords.addAll(List.of("代码", "生成", "理解", "agent", "workflow", "工作流", "构建", "调试"));
+        }
+        return new ArrayList<>(keywords);
+    }
+
     private String requirementSummary(AnalysisRun run) {
         AnalysisRequirement requirement = run.getRequirement();
         if (requirement == null) {
@@ -874,10 +1025,13 @@ public class AnalystNode implements AgentNode {
             return "暂无结构化 Claims。";
         }
         return claims.stream()
-                .map(claim -> "- id=%s type=%s confidence=%s competitors=%s evidence=%s content=%s".formatted(
+                .map(claim -> "- id=%s type=%s confidence=%s status=%s placement=%s dimension=%s competitors=%s evidence=%s content=%s".formatted(
                         claim.getId(),
                         claim.getType(),
                         claim.getConfidence(),
+                        textOrDash(claim.getSupportStatus()),
+                        textOrDash(claim.getRecommendedPlacement()),
+                        textOrDash(claim.getDimension()),
                         claim.getCompetitorNames(),
                         claim.getEvidenceIds(),
                         claim.getContent()
@@ -892,14 +1046,19 @@ public class AnalystNode implements AgentNode {
                 .map(competitor -> matrixRowForCompetitor(run, competitor, claims))
                 .collect(Collectors.joining("\n"));
         String claimRows = claims.stream()
-                .map(claim -> "| %s | %s | %s | %s | %s |".formatted(
+                .map(claim -> "| %s | %s | %s | %s | %s | %s | %s | %s |".formatted(
                         claim.getType(),
                         claim.getConfidence(),
+                        textOrDash(claim.getSupportStatus()),
+                        textOrDash(claim.getRecommendedPlacement()),
+                        textOrDash(claim.getDimension()),
                         competitorText(claim.getCompetitorNames()),
                         escapeCell(claim.getContent()),
                         citationText(claim.getEvidenceIds())
                 ))
                 .collect(Collectors.joining("\n"));
+        String dimensionRows = dimensionCoverageRows(run, claims);
+        String backlogRows = validationBacklogRows(claims);
         return """
                 ## 基于结构化结论的竞品矩阵
 
@@ -907,22 +1066,37 @@ public class AnalystNode implements AgentNode {
                 | --- | --- | --- | --- |
                 %s
 
-                ## 结构化结论明细
+                ## 用户指定维度覆盖
 
-                | 类型 | 置信度 | 竞品 | 结论 | 证据 |
-                | --- | --- | --- | --- | --- |
+                | 维度 | 判断 | 置信度 | 证据 |
+                | --- | --- | --- | --- |
                 %s
 
-                说明：该矩阵仅由结构化结论渲染，不引入结论之外的新事实或新判断。
+                ## 结构化结论明细
+
+                | 类型 | 置信度 | 支撑状态 | 放置建议 | 维度 | 竞品 | 结论 | 证据 |
+                | --- | --- | --- | --- | --- | --- | --- | --- |
+                %s
+
+                ## 待验证结论
+
+                | 维度 | 结论 | 原因 |
+                | --- | --- | --- |
+                %s
+
+                说明：主矩阵仅使用 MEDIUM/HIGH、已绑定证据且 recommendedPlacement=MATRIX 的结构化结论；LOW、无证据或 UNVERIFIED 结论只进入待验证区域。
                 """.formatted(
                 rows.isBlank() ? "| - | 暂无结构化结论。 | LOW | 证据不足 |" : rows,
-                claimRows.isBlank() ? "| - | LOW | - | 暂无结构化结论。 | 证据不足 |" : claimRows
+                dimensionRows,
+                claimRows.isBlank() ? "| - | LOW | UNVERIFIED | VALIDATION_BACKLOG | 综合判断 | - | 暂无结构化结论。 | 证据不足 |" : claimRows,
+                backlogRows
         );
     }
 
     private String matrixRowForCompetitor(AnalysisRun run, String competitor, List<AnalysisClaim> claims) {
         Map<String, EvidenceSource> sourceByCitationKey = sourceByCitationKey(run);
         List<AnalysisClaim> relatedClaims = claims.stream()
+                .filter(this::matrixClaim)
                 .filter(claim -> claimAppliesToCompetitor(claim, competitor))
                 .sorted((left, right) -> Integer.compare(claimDisplayScore(right, sourceByCitationKey),
                         claimDisplayScore(left, sourceByCitationKey)))
@@ -950,6 +1124,96 @@ public class AnalystNode implements AgentNode {
         );
     }
 
+    private String dimensionCoverageRows(AnalysisRun run, List<AnalysisClaim> claims) {
+        List<String> dimensions = run.getRequirement() == null
+                ? List.of()
+                : safeList(run.getRequirement().getDimensions()).stream()
+                .filter(AgentUtils::hasText)
+                .toList();
+        if (dimensions.isEmpty()) {
+            dimensions = List.of("综合判断");
+        }
+        return dimensions.stream()
+                .map(dimension -> dimensionCoverageRow(dimension, claims))
+                .collect(Collectors.joining("\n"));
+    }
+
+    private String dimensionCoverageRow(String dimension, List<AnalysisClaim> claims) {
+        List<AnalysisClaim> relatedClaims = claims.stream()
+                .filter(this::matrixClaim)
+                .filter(claim -> claimMatchesDimension(claim, dimension))
+                .limit(2)
+                .toList();
+        if (relatedClaims.isEmpty()) {
+            return "| %s | 证据不足，待验证。 | LOW | 证据不足 |".formatted(escapeCell(dimension));
+        }
+        String summary = relatedClaims.stream()
+                .map(AnalysisClaim::getContent)
+                .collect(Collectors.joining("<br>"));
+        String confidence = relatedClaims.stream()
+                .map(claim -> String.valueOf(claim.getConfidence()))
+                .distinct()
+                .collect(Collectors.joining("/"));
+        List<String> evidenceIds = relatedClaims.stream()
+                .flatMap(claim -> claim.getEvidenceIds().stream())
+                .distinct()
+                .toList();
+        return "| %s | %s | %s | %s |".formatted(
+                escapeCell(dimension),
+                escapeCell(summary),
+                confidence,
+                citationText(evidenceIds)
+        );
+    }
+
+    private boolean claimMatchesDimension(AnalysisClaim claim, String dimension) {
+        if (containsIgnoreCase(textOrDash(claim.getDimension()), dimension)) {
+            return true;
+        }
+        String content = textOrDash(claim.getContent());
+        if (containsIgnoreCase(content, dimension)) {
+            return true;
+        }
+        return dimensionKeywords(dimension).stream().anyMatch(keyword -> containsIgnoreCase(content, keyword));
+    }
+
+    private String validationBacklogRows(List<AnalysisClaim> claims) {
+        String rows = claims.stream()
+                .filter(claim -> !displayableClaim(claim)
+                        || PLACEMENT_VALIDATION_BACKLOG.equals(normalizeRecommendedPlacement(
+                        claim.getRecommendedPlacement(),
+                        claim.getType()
+                ))
+                        || PLACEMENT_NONE.equals(normalizeRecommendedPlacement(
+                        claim.getRecommendedPlacement(),
+                        claim.getType()
+                )))
+                .limit(6)
+                .map(claim -> "| %s | %s | %s |".formatted(
+                        escapeCell(textOrDash(claim.getDimension())),
+                        escapeCell(claim.getContent()),
+                        validationReason(claim)
+                ))
+                .collect(Collectors.joining("\n"));
+        return rows.isBlank() ? "| - | 暂无待验证结论。 | - |" : rows;
+    }
+
+    private String validationReason(AnalysisClaim claim) {
+        if (claim.getEvidenceIds() == null || claim.getEvidenceIds().isEmpty()) {
+            return "缺少可用证据绑定";
+        }
+        if (claim.getConfidence() == ConfidenceLevel.LOW) {
+            return "LOW 置信度";
+        }
+        if (SUPPORT_STATUS_UNVERIFIED.equals(normalizeSupportStatus(claim.getSupportStatus()))) {
+            return "支撑状态为 UNVERIFIED";
+        }
+        if (PLACEMENT_NONE.equals(normalizeRecommendedPlacement(claim.getRecommendedPlacement(), claim.getType()))) {
+            return "放置建议为不展示";
+        }
+        return "放置建议为待验证";
+    }
+
     private String renderSwotFromClaims(List<AnalysisClaim> claims) {
         return """
                 | 维度 | 基于结构化结论的判断 | 证据 |
@@ -975,6 +1239,7 @@ public class AnalystNode implements AgentNode {
     private String swotText(List<AnalysisClaim> claims, ClaimType... types) {
         Set<ClaimType> accepted = Set.of(types);
         String text = claims.stream()
+                .filter(this::swotClaim)
                 .filter(claim -> accepted.contains(claim.getType()))
                 .map(AnalysisClaim::getContent)
                 .filter(AgentUtils::hasText)
@@ -1081,6 +1346,7 @@ public class AnalystNode implements AgentNode {
     private List<String> evidenceIdsForClaimType(List<AnalysisClaim> claims, ClaimType... types) {
         Set<ClaimType> accepted = Set.of(types);
         return claims.stream()
+                .filter(this::swotClaim)
                 .filter(claim -> accepted.contains(claim.getType()))
                 .flatMap(claim -> claim.getEvidenceIds().stream())
                 .distinct()
@@ -1423,6 +1689,9 @@ public class AnalystNode implements AgentNode {
         public String type;
         public String content;
         public String confidence;
+        public String dimension;
+        public String supportStatus;
+        public String recommendedPlacement;
         public List<String> competitorNames = List.of();
         public List<String> factIds = List.of();
         public List<String> evidenceIds = List.of();

@@ -23,6 +23,13 @@ import java.util.stream.Collectors;
 @Component
 public class FallbackAnalysisDraftFactory {
 
+    private static final String SUPPORT_STATUS_SUPPORTED = "SUPPORTED";
+    private static final String SUPPORT_STATUS_PARTIAL = "PARTIAL";
+    private static final String SUPPORT_STATUS_UNVERIFIED = "UNVERIFIED";
+    private static final String PLACEMENT_MATRIX = "MATRIX";
+    private static final String PLACEMENT_SWOT = "SWOT";
+    private static final String PLACEMENT_VALIDATION_BACKLOG = "VALIDATION_BACKLOG";
+
     public AnalysisDraft build(AnalysisRun run) {
         List<AnalysisClaim> claims = new ArrayList<>();
         for (String dimension : requestedDimensions(run)) {
@@ -69,6 +76,7 @@ public class FallbackAnalysisDraftFactory {
         claim.setType(type);
         claim.setContent(template.formatted(dimension));
         claim.setConfidence(evidenceIds.isEmpty() ? ConfidenceLevel.LOW : ConfidenceLevel.MEDIUM);
+        applyClaimMetadata(claim, dimension, PLACEMENT_MATRIX);
         return claim;
     }
 
@@ -81,6 +89,7 @@ public class FallbackAnalysisDraftFactory {
                 ? "围绕%s，已抽取到可追溯的价格或套餐事实，可保守比较定价策略；未抽取到的具体金额不作结论。".formatted(dimension)
                 : "围绕%s，当前结构化事实层没有可发布的价格或套餐事实，定价和商业模式判断需标注待验证。".formatted(dimension));
         claim.setConfidence(pricingEvidencePresent ? ConfidenceLevel.MEDIUM : ConfidenceLevel.LOW);
+        applyClaimMetadata(claim, dimension, pricingEvidencePresent ? PLACEMENT_MATRIX : PLACEMENT_VALIDATION_BACKLOG);
         return claim;
     }
 
@@ -120,6 +129,7 @@ public class FallbackAnalysisDraftFactory {
                 ? "围绕%s，用户访谈资料已经暴露出痛点、采购顾虑或落地阻力，应作为机会判断的重要输入。".formatted(dimension)
                 : "围绕%s，当前用户评价、访谈或问卷证据不足，不能直接推断真实满意度。".formatted(dimension));
         claim.setConfidence(hasInterview ? ConfidenceLevel.MEDIUM : ConfidenceLevel.LOW);
+        applyClaimMetadata(claim, dimension, hasInterview ? PLACEMENT_SWOT : PLACEMENT_VALIDATION_BACKLOG);
         return claim;
     }
 
@@ -133,6 +143,7 @@ public class FallbackAnalysisDraftFactory {
         claim.setType(ClaimType.OPPORTUNITY);
         claim.setContent("面向%s，建议把%s作为当前决策主线：已被证据支持的差异进入建议，证据薄弱的判断进入补证清单。".formatted(goal, dimensionFocus));
         claim.setConfidence(evidenceIds.isEmpty() ? ConfidenceLevel.LOW : ConfidenceLevel.MEDIUM);
+        applyClaimMetadata(claim, dimensionFocus, evidenceIds.isEmpty() ? PLACEMENT_VALIDATION_BACKLOG : PLACEMENT_SWOT);
         return claim;
     }
 
@@ -142,6 +153,7 @@ public class FallbackAnalysisDraftFactory {
         claim.setType(ClaimType.RISK);
         claim.setContent("当前仍存在证据缺口：%s；相关强结论应降级为假设，并在发布前补充公开来源或一手用户资料。".formatted(String.join("、", gaps)));
         claim.setConfidence(ConfidenceLevel.LOW);
+        applyClaimMetadata(claim, "证据缺口", PLACEMENT_VALIDATION_BACKLOG);
         return claim;
     }
 
@@ -159,6 +171,19 @@ public class FallbackAnalysisDraftFactory {
         claim.setCompetitorNames(run.getRequirement().getCompetitors());
         claim.setEvidenceIds(evidenceIds == null ? List.of() : distinctKnownEvidenceIds(run, evidenceIds));
         return claim;
+    }
+
+    private void applyClaimMetadata(AnalysisClaim claim, String dimension, String preferredPlacement) {
+        claim.setDimension(hasText(dimension) ? dimension : "综合判断");
+        if (claim.getEvidenceIds().isEmpty() || claim.getConfidence() == ConfidenceLevel.LOW) {
+            claim.setSupportStatus(SUPPORT_STATUS_UNVERIFIED);
+            claim.setRecommendedPlacement(PLACEMENT_VALIDATION_BACKLOG);
+            return;
+        }
+        claim.setSupportStatus(claim.getConfidence() == ConfidenceLevel.HIGH
+                ? SUPPORT_STATUS_SUPPORTED
+                : SUPPORT_STATUS_PARTIAL);
+        claim.setRecommendedPlacement(preferredPlacement);
     }
 
     private List<AnalysisClaim> deduplicateClaims(List<AnalysisClaim> claims) {

@@ -12,6 +12,8 @@ import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.Executor;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -36,8 +38,8 @@ class SourceCollectionServiceTest {
                 "分析 Notion",
                 "AI 协作文档",
                 List.of("Notion"),
-                List.of("核心功能"),
-                List.of("official_site"),
+                List.of(),
+                List.of(),
                 List.of("https://www.notion.so/product")
         );
         AnalysisRun run = new AnalysisRun(requirement);
@@ -51,6 +53,110 @@ class SourceCollectionServiceTest {
         assertThat(sources.get(0).getFreshness()).isEqualTo("LIVE_FETCHED");
         assertThat(sources.get(0).getRawText()).contains("AI collaboration");
         assertThat(sources.get(0).getComplianceNote()).contains("robots.txt checked");
+    }
+
+    @Test
+    void fetchesUserProvidedPublicUrlsInParallel() {
+        AtomicInteger inFlight = new AtomicInteger();
+        AtomicInteger maxInFlight = new AtomicInteger();
+        SourceCollectionProperties properties = new SourceCollectionProperties();
+        properties.setMaxParallelFetches(4);
+        SourceCollectionService service = new SourceCollectionService(
+                parallelRecordingFetchService(inFlight, maxInFlight),
+                new NoopSearchProvider(),
+                new SearchQueryPlanner(),
+                properties
+        );
+        AnalysisRun run = new AnalysisRun(new AnalysisRequirement(
+                "Analyze user supplied URLs",
+                "AI coding tools",
+                List.of("Cursor"),
+                List.of(),
+                List.of(),
+                List.of(
+                        "https://user-source.example.test/page-1",
+                        "https://user-source.example.test/page-2",
+                        "https://user-source.example.test/page-3",
+                        "https://user-source.example.test/page-4"
+                )
+        ));
+
+        var sources = service.collect(run, false);
+
+        assertThat(sources).hasSize(4);
+        assertThat(maxInFlight.get()).isGreaterThan(1);
+        assertThat(sources)
+                .extracting(EvidenceSource::getCitationKey)
+                .containsExactly("S1", "S2", "S3", "S4");
+    }
+
+    @Test
+    void fetchesOfficialReferenceCandidatesInParallel() {
+        AtomicInteger inFlight = new AtomicInteger();
+        AtomicInteger maxInFlight = new AtomicInteger();
+        SourceCollectionProperties properties = new SourceCollectionProperties();
+        properties.setMaxParallelFetches(4);
+        SourceCollectionService service = new SourceCollectionService(
+                parallelRecordingFetchService(inFlight, maxInFlight),
+                new NoopSearchProvider(),
+                new SearchQueryPlanner(),
+                properties
+        );
+        AnalysisRun run = new AnalysisRun(new AnalysisRequirement(
+                "Analyze Cursor",
+                "AI coding tools",
+                List.of("Cursor"),
+                List.of("core features", "pricing", "security"),
+                List.of("official_site", "pricing_page"),
+                List.of("https://www.cursor.com")
+        ));
+
+        var sources = service.collect(run, false);
+
+        assertThat(maxInFlight.get()).isGreaterThan(1);
+        assertThat(sources).hasSizeGreaterThan(1);
+        assertThat(sources)
+                .extracting(EvidenceSource::getUrl)
+                .contains("https://www.cursor.com/pricing")
+                .anyMatch(url -> url.equals("https://www.cursor.com/security"));
+    }
+
+    @Test
+    void asyncFetchWindowTimesOutOnceForTheWholeWindow() {
+        SourceCollectionProperties properties = new SourceCollectionProperties();
+        properties.setMaxParallelFetches(4);
+        properties.setAsyncTaskTimeoutSeconds(3);
+        Executor stalledExecutor = command -> {
+        };
+        SourceCollectionService service = new SourceCollectionService(
+                fetchUsefulPages(),
+                new NoopSearchProvider(),
+                new SearchQueryPlanner(),
+                new SourceTypeClassifier(),
+                properties,
+                new LeadResearchPlanner(),
+                stalledExecutor
+        );
+        AnalysisRun run = new AnalysisRun(new AnalysisRequirement(
+                "Analyze stalled fetches",
+                "AI coding tools",
+                List.of("Cursor"),
+                List.of(),
+                List.of(),
+                List.of(
+                        "https://stalled.example.test/page-1",
+                        "https://stalled.example.test/page-2",
+                        "https://stalled.example.test/page-3",
+                        "https://stalled.example.test/page-4"
+                )
+        ));
+
+        long started = System.nanoTime();
+        var sources = service.collect(run, false);
+        long elapsedMillis = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started);
+
+        assertThat(sources).isEmpty();
+        assertThat(elapsedMillis).isLessThan(7_000);
     }
 
     @Test
@@ -398,7 +504,7 @@ class SourceCollectionServiceTest {
         ));
 
         assertThat(source.getSourceType()).isEqualTo("user_survey");
-        assertThat(source.getComplianceNote()).contains("一手问卷证据");
+        assertThat(source.getComplianceNote()).contains("First-party survey evidence");
         assertThat(source.getFreshness()).isEqualTo("USER_PROVIDED");
     }
 
@@ -889,7 +995,7 @@ class SourceCollectionServiceTest {
         run.getReviewDecision().setTargetAgent(AgentName.RESEARCHER);
         ReviewRepairTask task = new ReviewRepairTask();
         task.setTargetAgent(AgentName.RESEARCHER);
-        task.setInstruction("补充 Alpha 官方定价证据。");
+        task.setInstruction("Recollect Alpha official pricing evidence.");
         run.getReviewDecision().getRepairTasks().add(task);
         List<SearchQueryPlanner.SearchQueryBatch> plannedBatches = List.of(
                 new SearchQueryPlanner.SearchQueryBatch("Alpha", List.of("Alpha pricing official docs", "Alpha plans official docs")),
@@ -919,7 +1025,7 @@ class SourceCollectionServiceTest {
         run.getReviewDecision().setTargetAgent(AgentName.RESEARCHER);
         ReviewRepairTask task = new ReviewRepairTask();
         task.setTargetAgent(AgentName.RESEARCHER);
-        task.setInstruction("补充 Alpha 官方定价证据。");
+        task.setInstruction("Recollect Alpha official pricing evidence.");
         run.getReviewDecision().getRepairTasks().add(task);
         List<SearchQueryPlanner.SearchQueryBatch> plannedBatches = List.of(
                 new SearchQueryPlanner.SearchQueryBatch("Alpha", List.of("Alpha pricing official docs")),
@@ -948,7 +1054,7 @@ class SourceCollectionServiceTest {
         run.getReviewDecision().setRequiredEvidenceTypes(List.of("pricing_page"));
         ReviewRepairTask task = new ReviewRepairTask();
         task.setTargetAgent(AgentName.RESEARCHER);
-        task.setInstruction("补充 Alpha 官方定价证据。");
+        task.setInstruction("Recollect Alpha official pricing evidence.");
         run.getReviewDecision().getRepairTasks().add(task);
 
         service.collect(run, true);
@@ -963,10 +1069,10 @@ class SourceCollectionServiceTest {
         List<String> queries = new ArrayList<>();
         SourceCollectionService service = new SourceCollectionService(fetchAlwaysFails(), recordingSearchProvider(queries));
         AnalysisRequirement requirement = new AnalysisRequirement(
-                "分析 Salesforce 和 HubSpot 的销售自动化、价格策略和客户支持体验。",
-                "企业服务 CRM",
+                "Analyze Salesforce and HubSpot sales automation, pricing strategy, and customer support experience",
+                "Enterprise service CRM",
                 List.of("Salesforce", "HubSpot"),
-                List.of("销售自动化", "价格策略", "客户支持体验"),
+                List.of("sales automation", "pricing strategy", "customer support experience"),
                 List.of("official_site", "pricing_page", "public_reviews"),
                 List.of()
         );
@@ -976,8 +1082,8 @@ class SourceCollectionServiceTest {
 
         assertThat(queries).isNotEmpty();
         assertThat(queries).allMatch(query -> !query.contains("AI collaboration"));
-        assertThat(queries).anyMatch(query -> query.contains("企业服务 CRM"));
-        assertThat(queries).anyMatch(query -> query.contains("销售自动化"));
+        assertThat(queries).anyMatch(query -> query.contains("Enterprise service CRM"));
+        assertThat(queries).anyMatch(query -> query.contains("sales automation"));
         assertThat(queries).anyMatch(query -> query.contains("pricing"));
         assertThat(queries).anyMatch(query -> query.contains("reviews"));
     }
@@ -1098,7 +1204,7 @@ class SourceCollectionServiceTest {
                 "Analyze Cursor official capabilities",
                 "AI coding tools",
                 List.of("Cursor"),
-                List.of("代码理解与生成能力", "IDE/终端集成", "企业安全与权限"),
+                List.of("code understanding and generation", "IDE terminal integration", "enterprise security and permissions"),
                 List.of("official_site", "product_docs", "security"),
                 List.of("https://cursor.com")
         ));
@@ -1171,7 +1277,7 @@ class SourceCollectionServiceTest {
                 "Analyze Cursor docs and security",
                 "AI coding tools",
                 List.of("Cursor"),
-                List.of("上下文管理", "企业安全与权限"),
+                List.of("context management", "enterprise security and permissions"),
                 List.of("official_site", "product_docs", "security"),
                 List.of("https://cursor.com")
         ));

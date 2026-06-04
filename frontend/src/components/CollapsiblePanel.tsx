@@ -36,7 +36,7 @@ export function CollapsiblePanel({
             className="collapse-toggle"
             type="button"
             aria-expanded={!collapsed}
-            aria-label={collapsed ? `Expand ${title}` : `Collapse ${title}`}
+            aria-label={collapsed ? `展开${title}` : `折叠${title}`}
             onClick={onToggle}
           >
             <ChevronDown size={16} />

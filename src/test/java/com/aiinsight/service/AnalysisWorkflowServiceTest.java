@@ -173,6 +173,21 @@ class AnalysisWorkflowServiceTest {
     }
 
     @Test
+    void rejectsContextWithoutIntent() {
+        AnalysisWorkflowService service = newService();
+        CreateAnalysisRunRequest request = new CreateAnalysisRunRequest();
+        request.setPrompt("Analyze Notion.");
+        var draft = service.createDraft(request);
+
+        AddAnalysisContextRequest context = new AddAnalysisContextRequest();
+        context.setContent("缺少意图的上下文不再被接受。");
+
+        assertThatThrownBy(() -> service.addContext(draft.getId(), context))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("context intent is required");
+    }
+
+    @Test
     void persistsFrontendControlledReviewReworkAttempts() {
         AnalysisWorkflowService service = newService();
         CreateAnalysisRunRequest request = new CreateAnalysisRunRequest();
@@ -1280,7 +1295,7 @@ class AnalysisWorkflowServiceTest {
                 .filteredOn(artifact -> artifact.getType() == ArtifactType.SWOT_ANALYSIS)
                 .last()
                 .satisfies(artifact -> {
-                    assertThat(artifact.getContent()).contains("[S1]", "SWOT 仅由结构化结论渲染");
+                    assertThat(artifact.getContent()).contains("证据不足", "SWOT 仅由结构化结论渲染");
                     assertThat(artifact.getContent()).doesNotContain("[S404]");
                     assertThat(artifact.getCitationKeys()).containsExactly("S1");
                 });

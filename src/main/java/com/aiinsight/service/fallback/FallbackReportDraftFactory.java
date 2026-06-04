@@ -1,6 +1,7 @@
 package com.aiinsight.service.fallback;
 
 import com.aiinsight.model.enums.ArtifactType;
+import com.aiinsight.model.enums.ConfidenceLevel;
 import com.aiinsight.model.run.AnalysisArtifact;
 import com.aiinsight.model.run.AnalysisRun;
 import com.aiinsight.model.schema.AnalysisClaim;
@@ -25,9 +26,15 @@ public class FallbackReportDraftFactory {
         String priorityTable = run.getClaims().isEmpty()
                 ? "| 建议 | 理由 | 证据 | 置信度 | 下一步 |\n| --- | --- | --- | --- | --- |\n| 先补齐结构化结论 | 当前缺少可直接发布的分析判断 | [%s] | 低 | 补充可引用证据并重新生成分析 |".formatted(firstCitation)
                 : run.getClaims().stream()
+                .filter(this::publishableClaim)
                 .limit(5)
                 .map(this::priorityLine)
-                .collect(Collectors.joining("\n", "| 建议 | 理由 | 证据 | 置信度 | 下一步 |\n| --- | --- | --- | --- | --- |\n", ""));
+                .collect(Collectors.collectingAndThen(
+                        Collectors.joining("\n"),
+                        rows -> rows.isBlank()
+                                ? "| 建议 | 理由 | 证据 | 置信度 | 下一步 |\n| --- | --- | --- | --- | --- |\n| 先补齐可发布证据 | 当前结构化结论多为待验证或缺证据，不适合直接形成行动建议 | 待补证 | 低 | 优先补采官方/高质量来源后重跑分析 |"
+                                : "| 建议 | 理由 | 证据 | 置信度 | 下一步 |\n| --- | --- | --- | --- | --- |\n" + rows
+                ));
         return """
                 # 竞品分析报告
 
@@ -92,6 +99,19 @@ public class FallbackReportDraftFactory {
                 claim.getConfidence(),
                 nextStep
         );
+    }
+
+    private boolean publishableClaim(AnalysisClaim claim) {
+        return claim.getConfidence() != ConfidenceLevel.LOW
+                && claim.getEvidenceIds() != null
+                && !claim.getEvidenceIds().isEmpty()
+                && !"UNVERIFIED".equalsIgnoreCase(nullToEmpty(claim.getSupportStatus()))
+                && !"VALIDATION_BACKLOG".equalsIgnoreCase(nullToEmpty(claim.getRecommendedPlacement()))
+                && !"NONE".equalsIgnoreCase(nullToEmpty(claim.getRecommendedPlacement()));
+    }
+
+    private String nullToEmpty(String value) {
+        return value == null ? "" : value;
     }
 
     private String abbreviate(String value, int maxChars) {

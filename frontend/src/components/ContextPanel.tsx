@@ -1,15 +1,15 @@
-import { MessageSquareText, SendHorizontal } from "lucide-react";
+import { ChevronDown, MessageSquareText, SendHorizontal } from "lucide-react";
 import type { AgentName, AnalysisContextMessage, ContextIntent } from "../types";
 import { AGENTS, AGENT_LABELS } from "../constants";
 import { formatTime } from "../utils";
 
 const intentOptions: Array<{ label: string; value: ContextIntent }> = [
   { label: "调整范围", value: "ADJUST_SCOPE" },
-  { label: "补充资料", value: "ADD_EVIDENCE" },
   { label: "指定重跑", value: "REQUEST_RERUN" },
-  { label: "修订报告", value: "REVISE_REPORT" },
-  { label: "人工备注", value: "COMMENT" }
+  { label: "修订报告", value: "REVISE_REPORT" }
 ];
+
+const rerunnableAgents = AGENTS.filter((agent) => agent !== "CLARIFIER");
 
 interface ContextPanelProps {
   messages: AnalysisContextMessage[];
@@ -21,6 +21,8 @@ interface ContextPanelProps {
   onIntentChange: (intent: ContextIntent) => void;
   onTargetAgentChange: (agent?: AgentName) => void;
   onSubmit: () => void;
+  collapsed?: boolean;
+  onToggle?: () => void;
 }
 
 export function ContextPanel({
@@ -32,48 +34,74 @@ export function ContextPanel({
   onValueChange,
   onIntentChange,
   onTargetAgentChange,
-  onSubmit
+  onSubmit,
+  collapsed = false,
+  onToggle
 }: ContextPanelProps) {
+  const effectiveTargetAgent = targetAgent === "CLARIFIER" ? undefined : targetAgent;
   const submitDisabled = intent === "REQUEST_RERUN"
-    ? !targetAgent
+    ? !effectiveTargetAgent
     : !value.trim();
 
   return (
-    <section className="panel context-panel">
-      <div className="section-title">
+    <section className={`panel context-panel collapsible-panel ${collapsed ? "collapsed" : ""}`}>
+      <div className="section-title collapsible-title">
         <div>
           <p className="eyebrow">上下文</p>
           <h2>补充上下文</h2>
+          {collapsed ? <small className="collapse-summary">{messages.length ? `${messages.length} 条补充` : "暂无上下文补充"}</small> : null}
         </div>
-        <MessageSquareText size={18} />
+        <div className="collapse-actions">
+          <MessageSquareText size={18} />
+          {onToggle ? (
+            <button
+              className="collapse-toggle"
+              type="button"
+              aria-expanded={!collapsed}
+              aria-label={collapsed ? "展开补充上下文" : "折叠补充上下文"}
+              onClick={onToggle}
+            >
+              <ChevronDown size={16} />
+            </button>
+          ) : null}
+        </div>
       </div>
 
+      {collapsed ? null : (
+        <>
       <div className="intent-tabs">
         {intentOptions.map((option) => (
           <button
             key={option.value}
             type="button"
             className={intent === option.value ? "selected" : ""}
-            onClick={() => onIntentChange(option.value)}
+            onClick={() => {
+              onIntentChange(option.value);
+              if (option.value === "REQUEST_RERUN") {
+                onValueChange("");
+              }
+            }}
           >
             {option.label}
           </button>
         ))}
       </div>
 
-      <textarea
-        value={value}
-        onChange={(event) => onValueChange(event.target.value)}
-        placeholder={intent === "REQUEST_RERUN" ? "可选：补充这次重跑需要注意的调整说明" : "请输入补充背景、范围调整、证据材料或报告修订要求"}
-        rows={4}
-      />
+      {intent === "REQUEST_RERUN" ? null : (
+        <textarea
+          value={value}
+          onChange={(event) => onValueChange(event.target.value)}
+          placeholder="请输入补充背景、范围调整、证据材料或报告修订要求"
+          rows={4}
+        />
+      )}
 
       {intent === "REQUEST_RERUN" ? (
         <label className="context-target">
           目标 Agent
-          <select value={targetAgent ?? ""} onChange={(event) => onTargetAgentChange(event.target.value as AgentName || undefined)}>
+          <select value={effectiveTargetAgent ?? ""} onChange={(event) => onTargetAgentChange(event.target.value as AgentName || undefined)}>
             <option value="">请选择要重跑的 Agent</option>
-            {AGENTS.map((agent) => (
+            {rerunnableAgents.map((agent) => (
               <option key={agent} value={agent}>
                 {AGENT_LABELS[agent]}
               </option>
@@ -99,6 +127,8 @@ export function ContextPanel({
           <p className="muted-text">暂无上下文补充。后端接口接入后，用户的调整范围、补资料和重跑指令会沉淀在这里。</p>
         )}
       </div>
+        </>
+      )}
     </section>
   );
 }

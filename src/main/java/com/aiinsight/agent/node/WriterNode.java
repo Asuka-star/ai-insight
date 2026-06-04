@@ -124,6 +124,8 @@ public class WriterNode implements AgentNode {
                 18. 如果证据 authority/quality 为 USER_PROVIDED 或 INTERNAL_ONLY，只能写成“用户提供资料/内部资料显示”；不要写成“公开资料显示”“市场证据显示”或“外部验证显示”，除非同一结论还绑定了公开/官方来源。
                 19. 被 Reviewer 点名的 excerpt/currentText 不能原样保留；必须补 citation、降级措辞、删除无证据表述，或明确移动到风险与证据缺口。
                 20. 返工输出必须相对上一版报告有可见变化；不要只调整标题、顺序或措辞而保留同一个阻塞问题。
+                21. 结构化结论中的 supportStatus=UNVERIFIED、recommendedPlacement=VALIDATION_BACKLOG/NONE、confidence=LOW 或 evidence=[] 的内容，只能放入风险与证据缺口/下一步补证清单，不能写入主结论、建议优先级或 SWOT 正向判断。
+                22. 矩阵和 SWOT 已由 Analyst 按证据边界过滤；报告主判断必须优先使用矩阵/SWOT 中的 MEDIUM/HIGH 结论，不能把“待验证结论”改写成确定判断。
 
                 用户需求:
                 %s
@@ -228,10 +230,13 @@ public class WriterNode implements AgentNode {
             return "暂无结构化结论。";
         }
         return run.getClaims().stream()
-                .map(claim -> "- id=%s type=%s confidence=%s competitors=%s evidence=%s content=%s".formatted(
+                .map(claim -> "- id=%s type=%s confidence=%s status=%s placement=%s dimension=%s competitors=%s evidence=%s content=%s".formatted(
                         claim.getId(),
                         claim.getType(),
                         claim.getConfidence(),
+                        textOrDefault(claim.getSupportStatus(), "-"),
+                        textOrDefault(claim.getRecommendedPlacement(), "-"),
+                        textOrDefault(claim.getDimension(), "-"),
                         claim.getCompetitorNames(),
                         claim.getEvidenceIds(),
                         claim.getContent()

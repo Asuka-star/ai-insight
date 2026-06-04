@@ -121,7 +121,7 @@ export interface ClarificationDraft {
   confirmed: boolean;
 }
 
-export type ContextIntent = "ADJUST_SCOPE" | "ADD_EVIDENCE" | "REQUEST_RERUN" | "REVISE_REPORT" | "COMMENT";
+export type ContextIntent = "ADJUST_SCOPE" | "ADD_EVIDENCE" | "REQUEST_RERUN" | "REVISE_REPORT";
 export type ContextRole = "USER" | "SYSTEM" | "AGENT";
 
 export interface AnalysisContextMessage {

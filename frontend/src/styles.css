@@ -247,6 +247,16 @@ h3 {
   scrollbar-gutter: stable;
 }
 
+.left-rail {
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+
+.left-rail > .panel {
+  width: 100%;
+  max-width: 100%;
+}
+
 .right-rail {
   overflow-x: hidden;
   overflow-y: auto;
@@ -346,12 +356,24 @@ h3 {
   margin-bottom: 0;
 }
 
+.collapsible-panel.collapsed .collapsible-title {
+  align-items: center;
+}
+
 .collapsible-title {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 52px;
   align-items: flex-start;
+  column-gap: 12px;
+  width: 100%;
+  max-width: 100%;
 }
 
 .collapsible-title > div:first-child {
+  width: 100%;
+  max-width: 100%;
   min-width: 0;
+  overflow: hidden;
 }
 
 .collapse-summary {
@@ -368,7 +390,9 @@ h3 {
 .collapse-actions {
   display: inline-flex;
   align-items: center;
+  justify-self: end;
   gap: 6px;
+  width: 52px;
   color: var(--muted);
 }
 
@@ -2211,7 +2235,11 @@ h3 {
 
 .version-panel {
   display: grid;
+  align-content: start;
   gap: 12px;
+  min-height: 0;
+  overflow: auto;
+  padding-right: 2px;
 }
 
 .version-group {
@@ -2224,20 +2252,41 @@ h3 {
 }
 
 .version-heading {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto 28px;
   align-items: center;
-  justify-content: space-between;
-  gap: 12px;
+  gap: 10px;
+  width: 100%;
+  min-height: 32px;
+  border: 0;
+  background: transparent;
+  padding: 0;
+  text-align: left;
 }
 
 .version-heading strong {
+  min-width: 0;
+  overflow: hidden;
   color: var(--text);
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .version-heading span {
   color: var(--faint);
   font-size: 12px;
   font-weight: 760;
+  white-space: nowrap;
+}
+
+.version-heading svg {
+  justify-self: center;
+  color: var(--muted);
+  transition: transform 0.16s ease;
+}
+
+.version-group.collapsed .version-heading svg {
+  transform: rotate(-90deg);
 }
 
 .version-item {
@@ -3017,7 +3066,8 @@ h3 {
   .workspace {
     grid-template-columns: 292px minmax(500px, 1fr);
     gap: 14px;
-    overflow: auto;
+    overflow-x: hidden;
+    overflow-y: auto;
   }
 
   .rail-resize-handle {

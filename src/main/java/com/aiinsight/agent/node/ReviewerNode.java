@@ -320,8 +320,8 @@ public class ReviewerNode implements AgentNode {
     private List<String> repairInstructions(ReviewDecision decision, List<ReviewFinding> blockingFindings) {
         List<String> instructions = new java.util.ArrayList<>();
         if (isExtractorFactRepair(decision)) {
-            instructions.add("Extractor should repair only affected extracted facts and fact-to-evidence bindings.");
-            instructions.add("Unsupported values must be corrected, rebound to supporting chunks, or moved to unknowns.");
+            instructions.add("Extractor 只修复受影响的抽取事实，以及事实到证据的绑定关系。");
+            instructions.add("无法被证据支撑的值必须修正、重新绑定到可支撑切片，或移动到未知事实列表。");
         } else if (decision.getAction() == ReviewAction.RECOLLECT_EVIDENCE) {
             String evidenceTypes = decision.getRequiredEvidenceTypes().isEmpty()
                     ? "Reviewer 指出的缺口类型"
@@ -412,7 +412,7 @@ public class ReviewerNode implements AgentNode {
 
     private String targetedRepairTaskInstruction(ReviewDecision decision, ReviewFinding finding) {
         if (isExtractorFactRepair(decision)) {
-            return "Fix " + repairLocation(finding) + " in extracted facts or fact-to-evidence bindings: "
+            return "修复抽取事实或事实到证据绑定中的 " + repairLocation(finding) + "："
                     + finding.getRecommendation();
         }
         return repairTaskInstruction(decision, finding);
@@ -420,14 +420,14 @@ public class ReviewerNode implements AgentNode {
 
     private String targetedRepairExpectedFix(ReviewDecision decision, ReviewFinding finding) {
         if (isExtractorFactRepair(decision)) {
-            return "Regenerate only the affected facts with valid evidenceIds/chunkKeys; unsupported values should be corrected or moved to unknowns.";
+            return "只重新生成受影响事实，并绑定有效 evidenceIds/chunkKeys；无法被证据支撑的值应修正或移动到未知事实列表。";
         }
         return repairExpectedFix(decision, finding);
     }
 
     private String targetedRepairAcceptanceCriteria(ReviewDecision decision, ReviewFinding finding) {
         if (isExtractorFactRepair(decision)) {
-            return "Affected facts must either cite existing evidence/chunks that support the value, or be removed from facts and recorded as unknowns.";
+            return "受影响事实必须引用能支撑该值的现有证据/切片；否则应从 facts 中移除，并记录到未知事实列表。";
         }
         return repairAcceptanceCriteria(decision, finding);
     }
@@ -453,7 +453,7 @@ public class ReviewerNode implements AgentNode {
         if (finding.getParagraphIndex() != null) {
             return "paragraph=" + finding.getParagraphIndex();
         }
-        return "unscoped finding";
+        return "未定位问题";
     }
 
     private String repairCurrentText(AnalysisRun run, ReviewFinding finding) {
@@ -577,14 +577,14 @@ public class ReviewerNode implements AgentNode {
         if (shouldEscalateExtractorRepairToResearcher(run, blockingFindings)) {
             decision.setAction(ReviewAction.RECOLLECT_EVIDENCE);
             decision.setTargetAgent(AgentName.RESEARCHER);
-            decision.setReason("Previous Extractor repair did not reduce blocking findings and evidence did not change; rerun Researcher to refresh upstream evidence before extracting facts again.");
+            decision.setReason("上一轮 Extractor 返工没有减少阻断问题，且证据没有变化；需要先重跑 Researcher 刷新上游证据，再重新抽取事实。");
             decision.setRequiredEvidenceTypes(repairEvidenceTypesForEscalation(run));
             return;
         }
         if (blockingFindings.stream().anyMatch(this::needsExtractionRework)) {
             decision.setAction(ReviewAction.REWORK_ANALYSIS);
             decision.setTargetAgent(AgentName.EXTRACTOR);
-            decision.setReason("Review found high-risk extracted fact issues (%s); rerun Extractor to repair fact values, evidenceIds, or chunk bindings.".formatted(
+            decision.setReason("质检发现高风险抽取事实问题（%s）；需要重跑 Extractor 修复事实值、evidenceIds 或 chunk 绑定。".formatted(
                     categorySummary(blockingFindings)
             ));
             return;
@@ -592,7 +592,7 @@ public class ReviewerNode implements AgentNode {
         if (shouldEscalateAnalystRepairToExtractor(run, blockingFindings)) {
             decision.setAction(ReviewAction.REWORK_ANALYSIS);
             decision.setTargetAgent(AgentName.EXTRACTOR);
-            decision.setReason("Previous Analyst repair changed claims but did not reduce blocking findings while evidence, profiles, and facts stayed unchanged; rerun Extractor to rebuild upstream fact/evidence bindings before analyzing again.");
+            decision.setReason("上一轮 Analyst 返工虽然改动了 claims，但阻断问题没有减少，且证据、画像和事实层没有变化；需要先重跑 Extractor 重建上游事实/证据绑定，再继续分析。");
             return;
         }
         if (blockingFindings.stream().anyMatch(this::needsAnalysisRework)) {
@@ -818,6 +818,7 @@ public class ReviewerNode implements AgentNode {
                 5. severity 只能是 HIGH、MEDIUM、LOW；证据完全不支撑高置信 claim 时用 HIGH。
                 6. 必须尽量填写 claimId 和 citationKey；message 和 recommendation 各不超过 80 字。
                 7. 不要复述规则引擎已有问题，只补充语义层面的不一致。
+                8. supportStatus=UNVERIFIED 或 recommendedPlacement=VALIDATION_BACKLOG/NONE 的 claim 是已降级待验证项，不要因为缺证据或弱证据再报 claim_evidence_mismatch；只有它被写入报告主结论、矩阵或 SWOT 时才报告。
 
                 Claim 与证据:
                 %s
@@ -870,6 +871,7 @@ public class ReviewerNode implements AgentNode {
                 4. category 优先使用 schema_consistency、matrix_claim_conflict、swot_claim_conflict。
                 5. 如果定位到结构化结论，请填写 claimId；如果定位到文本，请填写 excerpt。
                 6. 只指出会影响竞品分析可信度的问题。
+                7. supportStatus=UNVERIFIED 或 recommendedPlacement=VALIDATION_BACKLOG/NONE 的 claim 出现在“待验证结论”区域是正确行为，不要因此报错；只有它进入主矩阵行、SWOT 或报告确定性结论才算冲突。
 
                 竞品画像摘要:
                 %s
@@ -925,6 +927,7 @@ public class ReviewerNode implements AgentNode {
                 6. 如果只是措辞可优化或局部不够丰满，请给 MEDIUM/LOW。
                 7. HIGH finding 必须填写 paragraphIndex 或 excerpt，方便 Writer 定向修订。
                 8. 不要要求补充真实问卷或访谈；公开资料无法补齐的一手洞察只列为人工补充建议。
+                9. 当结构化 Claims 全部是 UNVERIFIED/VALIDATION_BACKLOG 时，报告说明“证据不足、建议先补证”属于合格的保守结论；不要因为缺少强行选型结论而报 report_actionability_gap。
 
                 用户需求:
                 %s
@@ -1070,10 +1073,13 @@ public class ReviewerNode implements AgentNode {
             return "暂无结构化 claim。";
         }
         return run.getClaims().stream()
-                .map(claim -> "- id=%s type=%s confidence=%s evidence=%s content=%s".formatted(
+                .map(claim -> "- id=%s type=%s confidence=%s status=%s placement=%s dimension=%s evidence=%s content=%s".formatted(
                         claim.getId(),
                         claim.getType(),
                         claim.getConfidence(),
+                        textOrDash(claim.getSupportStatus()),
+                        textOrDash(claim.getRecommendedPlacement()),
+                        textOrDash(claim.getDimension()),
                         claim.getEvidenceIds(),
                         claim.getContent()
                 ))
@@ -1099,10 +1105,13 @@ public class ReviewerNode implements AgentNode {
         }
         return run.getClaims().stream()
                 .limit(10)
-                .map(claim -> "- id=%s type=%s confidence=%s evidence=%s facts=%s chunks=%s content=%s".formatted(
+                .map(claim -> "- id=%s type=%s confidence=%s status=%s placement=%s dimension=%s evidence=%s facts=%s chunks=%s content=%s".formatted(
                         claim.getId(),
                         claim.getType(),
                         claim.getConfidence(),
+                        textOrDash(claim.getSupportStatus()),
+                        textOrDash(claim.getRecommendedPlacement()),
+                        textOrDash(claim.getDimension()),
                         claim.getEvidenceIds(),
                         claim.getFactIds(),
                         claim.getChunkKeys(),
@@ -1136,13 +1145,16 @@ public class ReviewerNode implements AgentNode {
         return run.getClaims().stream()
                 .limit(8)
                 .map(claim -> """
-                        - claimId=%s type=%s confidence=%s competitors=%s factIds=%s chunkKeys=%s
+                        - claimId=%s type=%s confidence=%s status=%s placement=%s dimension=%s competitors=%s factIds=%s chunkKeys=%s
                           content=%s
                           evidence=%s
                         """.formatted(
                         claim.getId(),
                         claim.getType(),
                         claim.getConfidence(),
+                        textOrDash(claim.getSupportStatus()),
+                        textOrDash(claim.getRecommendedPlacement()),
+                        textOrDash(claim.getDimension()),
                         claim.getCompetitorNames(),
                         claim.getFactIds(),
                         claim.getChunkKeys(),

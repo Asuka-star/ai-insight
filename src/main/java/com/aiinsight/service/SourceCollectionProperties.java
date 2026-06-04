@@ -21,6 +21,7 @@ public class SourceCollectionProperties {
     private int maxParallelBatches = 8;
     private int maxParallelSearches = 4;
     private int maxParallelFetches = 8;
+    private int asyncTaskTimeoutSeconds = 30;
 
     int maxResultsPerQuery() {
         return clamp(maxResultsPerQuery, 1, 5);
@@ -56,6 +57,10 @@ public class SourceCollectionProperties {
 
     int maxParallelFetches() {
         return clamp(maxParallelFetches, 1, 16);
+    }
+
+    int asyncTaskTimeoutSeconds() {
+        return clamp(asyncTaskTimeoutSeconds, 3, 120);
     }
 
     private int clamp(int value, int min, int max) {

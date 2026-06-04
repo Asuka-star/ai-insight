@@ -115,6 +115,19 @@ class CitationCoverageEvaluatorTest {
     }
 
     @Test
+    void allowsEvidenceGapParagraphsWithoutCitation() {
+        var findings = evaluator.evaluate("""
+                # Report
+
+                本次分析面临的最大风险是证据严重不足，所有结构化结论均应视为待验证假设。
+
+                为弥补上述缺口，建议立即启动补证行动。
+                """);
+
+        assertThat(findings).isEmpty();
+    }
+
+    @Test
     void keepsTentativeStructuredClaimAsLowRiskReminder() {
         AnalysisRun run = runWithEvidence();
         AnalysisClaim claim = claim("Notion 在企业权限治理上可能有机会（证据不足，待验证）。", ConfidenceLevel.LOW, List.of());
@@ -128,6 +141,21 @@ class CitationCoverageEvaluatorTest {
                     assertThat(finding.getCategory()).isEqualTo("claim_missing_evidence");
                     assertThat(finding.getClaimId()).isEqualTo(claim.getId());
                 });
+    }
+
+    @Test
+    void skipsStructuredClaimAlreadyIsolatedInValidationBacklog() {
+        AnalysisRun run = runWithEvidence();
+        AnalysisClaim claim = claim("Notion 在企业权限治理上可能有机会（证据不足，待验证）。", ConfidenceLevel.LOW, List.of());
+        claim.setSupportStatus("UNVERIFIED");
+        claim.setRecommendedPlacement("VALIDATION_BACKLOG");
+        run.getClaims().add(claim);
+
+        var findings = evaluator.evaluate("## Report\n\n结论段落 [S1]。", run);
+
+        assertThat(findings)
+                .noneMatch(finding -> "claim_missing_evidence".equals(finding.getCategory())
+                        && claim.getId().equals(finding.getClaimId()));
     }
 
     @Test

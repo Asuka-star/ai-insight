@@ -13,6 +13,7 @@ import com.aiinsight.model.schema.ResearchCollectionPlan;
 import com.aiinsight.model.schema.ResearchSubtask;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 
@@ -28,8 +29,11 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
+import java.util.concurrent.Executor;
+import java.util.concurrent.ForkJoinPool;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
+import java.util.function.BiFunction;
 
 @Service
 @Slf4j
@@ -47,6 +51,7 @@ public class SourceCollectionService {
     private final SourceTypeClassifier sourceTypeClassifier;
     private final SourceCollectionProperties properties;
     private final LeadResearchPlanner leadResearchPlanner;
+    private final Executor sourceCollectionExecutor;
 
     public SourceCollectionService(WebPageFetchService webPageFetchService,
                                    SearchProvider searchProvider,
@@ -55,13 +60,22 @@ public class SourceCollectionService {
         this(webPageFetchService, searchProvider, searchQueryPlanner, properties, new LeadResearchPlanner());
     }
 
-    @Autowired
     public SourceCollectionService(WebPageFetchService webPageFetchService,
                                    SearchProvider searchProvider,
                                    SearchQueryPlanner searchQueryPlanner,
                                    SourceCollectionProperties properties,
                                    LeadResearchPlanner leadResearchPlanner) {
-        this(webPageFetchService, searchProvider, searchQueryPlanner, new SourceTypeClassifier(), properties, leadResearchPlanner);
+        this(webPageFetchService, searchProvider, searchQueryPlanner, new SourceTypeClassifier(), properties, leadResearchPlanner, ForkJoinPool.commonPool());
+    }
+
+    @Autowired
+    public SourceCollectionService(WebPageFetchService webPageFetchService,
+                                   SearchProvider searchProvider,
+                                   SearchQueryPlanner searchQueryPlanner,
+                                   SourceCollectionProperties properties,
+                                   LeadResearchPlanner leadResearchPlanner,
+                                   @Qualifier("sourceCollectionTaskExecutor") Executor sourceCollectionExecutor) {
+        this(webPageFetchService, searchProvider, searchQueryPlanner, new SourceTypeClassifier(), properties, leadResearchPlanner, sourceCollectionExecutor);
     }
 
     SourceCollectionService(WebPageFetchService webPageFetchService,
@@ -78,12 +92,23 @@ public class SourceCollectionService {
                             SourceTypeClassifier sourceTypeClassifier,
                             SourceCollectionProperties properties,
                             LeadResearchPlanner leadResearchPlanner) {
+        this(webPageFetchService, searchProvider, searchQueryPlanner, sourceTypeClassifier, properties, leadResearchPlanner, ForkJoinPool.commonPool());
+    }
+
+    SourceCollectionService(WebPageFetchService webPageFetchService,
+                            SearchProvider searchProvider,
+                            SearchQueryPlanner searchQueryPlanner,
+                            SourceTypeClassifier sourceTypeClassifier,
+                            SourceCollectionProperties properties,
+                            LeadResearchPlanner leadResearchPlanner,
+                            Executor sourceCollectionExecutor) {
         this.webPageFetchService = webPageFetchService;
         this.searchProvider = searchProvider;
         this.searchQueryPlanner = searchQueryPlanner;
         this.sourceTypeClassifier = sourceTypeClassifier;
         this.properties = properties == null ? new SourceCollectionProperties() : properties;
         this.leadResearchPlanner = leadResearchPlanner == null ? new LeadResearchPlanner() : leadResearchPlanner;
+        this.sourceCollectionExecutor = sourceCollectionExecutor == null ? ForkJoinPool.commonPool() : sourceCollectionExecutor;
     }
 
     public SourceCollectionService(WebPageFetchService webPageFetchService, SearchProvider searchProvider) {
@@ -131,7 +156,7 @@ public class SourceCollectionService {
                 .map(this::normalizeUrl)
                 .forEach(seenUrls::add);
         long started = System.nanoTime();
-        List<SearchCandidateBatchResult> batchResults = collectSearchCandidateBatches(
+        List<SearchCandidateBatchResult> batchResults = collectSearchCandidateBatchesShared(
                 run,
                 batches,
                 seenUrls,
@@ -225,25 +250,42 @@ public class SourceCollectionService {
             }
         }
 
+        List<String> userSourceUrls = new ArrayList<>();
         for (String url : run.getRequirement().getSourceUrls()) {
             if (!seenUrls.add(normalizeUrl(url))) {
                 continue;
             }
-            OfficialSeed seed = fromUserUrlSeed("S" + index, url);
+            userSourceUrls.add(url);
+        }
+        List<OfficialSeed> userUrlSeeds = fetchUserUrlSeeds(index, userSourceUrls);
+        for (OfficialSeed seed : userUrlSeeds) {
             EvidenceSource source = seed.source();
             sources.add(source);
             officialSeeds.add(seed);
-            index++;
             if (userUrlNeedsAttention(source)) {
-                run.getRecommendedActions().add(userUrlAction(url, source));
+                run.getRecommendedActions().add(userUrlAction(source.getUrl(), source));
             }
         }
+        index = maxCitationNumber(sources) + 1;
 
         index = appendOfficialReferenceCandidates(run, sources, seenUrls, officialSeeds, index);
         if (includeSearchEvidence) {
             appendSearchEvidence(run, sources, index, recollecting, plannedSearchBatches);
         }
         return sources;
+    }
+
+    private List<OfficialSeed> fetchUserUrlSeeds(int startIndex, List<String> urls) {
+        if (urls == null || urls.isEmpty()) {
+            return List.of();
+        }
+        return submitInWindows(
+                urls,
+                properties.maxParallelFetches(),
+                (url, index) -> fromUserUrlSeed("S" + (startIndex + index), url),
+                "user source URL fetch",
+                null
+        ).stream().filter(java.util.Objects::nonNull).toList();
     }
 
     private int maxCitationNumber(List<EvidenceSource> sources) {
@@ -274,8 +316,8 @@ public class SourceCollectionService {
                 : "user-evidence://" + evidence.getId();
         String researchNote = firstPartyResearchNote(normalizedSourceType);
         String complianceNote = evidence.isSensitive()
-                ? "用户提供敏感资料（internal-only），仅作为内部证据使用，避免对外传播。"
-                : "用户提供资料，仅用于当前分析会话。";
+                ? "User-provided sensitive evidence (internal-only); use only as internal evidence and avoid external distribution."
+                : "User-provided evidence for the current analysis session only.";
         if (StringUtils.hasText(researchNote)) {
             complianceNote = complianceNote + " " + researchNote;
         }
@@ -299,10 +341,10 @@ public class SourceCollectionService {
 
     private String firstPartyResearchNote(String sourceType) {
         if (containsIgnoreCase(sourceType, "interview")) {
-            return "一手访谈证据；生成报告前应抽取角色、痛点、原话和决策信号。";
+            return "First-party interview evidence; keep roles, pains, verbatims and decision signals before report generation.";
         }
         if (containsIgnoreCase(sourceType, "survey")) {
-            return "一手问卷证据；总结时应保留样本量、问题措辞和回答分布。";
+            return "First-party survey evidence; keep sample size, wording and response distribution when summarizing.";
         }
         return "";
     }
@@ -316,12 +358,15 @@ public class SourceCollectionService {
         if (candidateGroups.isEmpty()) {
             return index;
         }
-        for (OfficialSeed officialSeed : officialSeeds) {
+        List<OfficialCandidateFetch> candidates = new ArrayList<>();
+        for (int seedIndex = 0; seedIndex < officialSeeds.size(); seedIndex++) {
+            OfficialSeed officialSeed = officialSeeds.get(seedIndex);
             if (!isStrongUserProvidedOfficialSource(officialSeed.source())) {
                 continue;
             }
-            int promotedForUrl = 0;
-            for (OfficialCandidateGroup candidateGroup : candidateGroups) {
+            for (int groupIndex = 0; groupIndex < candidateGroups.size(); groupIndex++) {
+                OfficialCandidateGroup candidateGroup = candidateGroups.get(groupIndex);
+                int urlIndex = 0;
                 for (String candidateUrl : officialCandidateUrls(
                         officialSeed.source().getUrl(),
                         officialSeed.internalLinks(),
@@ -336,33 +381,69 @@ public class SourceCollectionService {
                     if (!seenUrls.add(normalizeUrl(candidateUrl))) {
                         continue;
                     }
-                    EvidenceSource source = fromUrl(
-                            "S" + index,
+                    candidates.add(new OfficialCandidateFetch(
+                            seedIndex,
+                            groupIndex,
+                            urlIndex,
                             candidateUrl,
                             "official_" + candidateGroup.name() + "_candidate",
-                            "Derived from user-provided official URL. requestedOfficialSection=" + candidateGroup.name() + ". ",
-                            true
-                    );
-                    if (source == null) {
-                        continue;
-                    }
-                    sources.add(source);
-                    log.info("Official reference candidate promoted to evidence: citationKey={}, url={}, section={}, sourceType={}, sourceQuality={}",
-                            source.getCitationKey(),
-                            source.getUrl(),
                             candidateGroup.name(),
-                            source.getSourceType(),
-                            source.getSourceQuality());
-                    index++;
-                    promotedForUrl++;
-                    break;
-                }
-                if (promotedForUrl >= MAX_OFFICIAL_REFERENCE_SOURCES_PER_URL) {
-                    break;
+                            "Derived from user-provided official URL. requestedOfficialSection=" + candidateGroup.name() + ". "
+                    ));
+                    urlIndex++;
                 }
             }
         }
+        Set<String> acceptedGroups = new LinkedHashSet<>();
+        Map<Integer, Integer> promotedBySeed = new LinkedHashMap<>();
+        List<OfficialCandidateFetchResult> fetched = new ArrayList<>(fetchOfficialReferenceCandidates(candidates));
+        fetched.sort(Comparator
+                .comparingInt((OfficialCandidateFetchResult result) -> result.candidate().seedIndex())
+                .thenComparingInt(result -> result.candidate().groupIndex())
+                .thenComparingInt(result -> result.candidate().urlIndex()));
+        for (OfficialCandidateFetchResult result : fetched) {
+            OfficialCandidateFetch candidate = result.candidate();
+            EvidenceSource source = result.source();
+            if (source == null) {
+                continue;
+            }
+            String groupKey = candidate.seedIndex() + ":" + candidate.groupIndex();
+            if (acceptedGroups.contains(groupKey)) {
+                continue;
+            }
+            int promotedForSeed = promotedBySeed.getOrDefault(candidate.seedIndex(), 0);
+            if (promotedForSeed >= MAX_OFFICIAL_REFERENCE_SOURCES_PER_URL) {
+                continue;
+            }
+            source.setCitationKey("S" + index);
+            sources.add(source);
+            log.info("Official reference candidate promoted to evidence: citationKey={}, url={}, section={}, sourceType={}, sourceQuality={}",
+                    source.getCitationKey(),
+                    source.getUrl(),
+                    candidate.section(),
+                    source.getSourceType(),
+                    source.getSourceQuality());
+            acceptedGroups.add(groupKey);
+            promotedBySeed.put(candidate.seedIndex(), promotedForSeed + 1);
+            index++;
+        }
         return index;
+    }
+
+    private List<OfficialCandidateFetchResult> fetchOfficialReferenceCandidates(List<OfficialCandidateFetch> candidates) {
+        if (candidates == null || candidates.isEmpty()) {
+            return List.of();
+        }
+        return new ArrayList<>(submitInWindows(
+                candidates,
+                properties.maxParallelFetches(),
+                (candidate, ignored) -> new OfficialCandidateFetchResult(
+                        candidate,
+                        fromUrl("", candidate.url(), candidate.sourceType(), candidate.compliancePrefix(), true)
+                ),
+                "official reference fetch",
+                null
+        ).stream().filter(java.util.Objects::nonNull).toList());
     }
 
     private boolean isStrongUserProvidedOfficialSource(EvidenceSource source) {
@@ -383,26 +464,26 @@ public class SourceCollectionService {
         List<String> missingEvidenceTypes = run.getResearchPackage().getMissingEvidenceTypes();
 
         addGroup(groups, "product", List.of("/product", "/features", "/platform"),
-                mentionsAny(sourcePreferences, "official", "官网", "product", "产品")
-                        || mentionsAny(dimensions, "功能", "能力", "workflow", "工作流", "agent", "协作", "生成", "理解"));
+                mentionsAny(sourcePreferences, "official", "official_site", "product", "\u5b98\u7f51", "\u4ea7\u54c1")
+                        || mentionsAny(dimensions, "feature", "capability", "workflow", "agent", "collaboration", "\u529f\u80fd", "\u80fd\u529b", "\u5de5\u4f5c\u6d41", "\u534f\u4f5c"));
         addGroup(groups, "docs", List.of("/docs", "/documentation", "/help", "/guide", "/guides"),
-                mentionsAny(sourcePreferences, "doc", "docs", "文档", "help")
-                        || mentionsAny(dimensions, "context", "上下文", "代码理解", "代码生成", "ide", "终端", "terminal", "api", "integration", "集成"));
+                mentionsAny(sourcePreferences, "doc", "docs", "documentation", "help", "\u6587\u6863")
+                        || mentionsAny(dimensions, "context", "ide", "terminal", "api", "integration", "\u4e0a\u4e0b\u6587", "\u4ee3\u7801\u7406\u89e3", "\u7ec8\u7aef", "\u96c6\u6210"));
         addGroup(groups, "security", List.of("/security", "/enterprise", "/trust", "/privacy"),
-                mentionsAny(sourcePreferences, "security", "安全", "权限", "合规", "enterprise", "企业")
-                        || mentionsAny(dimensions, "security", "安全", "权限", "合规", "enterprise", "企业", "privacy", "隐私"));
+                mentionsAny(sourcePreferences, "security", "compliance", "permission", "enterprise", "privacy", "\u5b89\u5168", "\u6743\u9650", "\u5408\u89c4", "\u4f01\u4e1a", "\u9690\u79c1")
+                        || mentionsAny(dimensions, "security", "compliance", "permission", "enterprise", "privacy", "\u5b89\u5168", "\u6743\u9650", "\u5408\u89c4", "\u4f01\u4e1a", "\u9690\u79c1"));
         addGroup(groups, "pricing", List.of("/pricing", "/plans"),
-                mentionsAny(dimensions, "pricing", "price", "价格", "定价", "商业模式")
-                        || mentionsAny(sourcePreferences, "pricing", "price", "价格", "定价")
+                mentionsAny(dimensions, "pricing", "price", "plan", "\u4ef7\u683c", "\u5b9a\u4ef7", "\u5546\u4e1a\u6a21\u5f0f")
+                        || mentionsAny(sourcePreferences, "pricing", "price", "plan", "\u4ef7\u683c", "\u5b9a\u4ef7")
                         || mentionsAny(missingEvidenceTypes, "pricing", "pricing_page"));
         addGroup(groups, "customers", List.of("/customers", "/case-studies", "/solutions"),
-                mentionsAny(sourcePreferences, "case", "customer", "客户", "案例")
-                        || mentionsAny(dimensions, "target", "用户", "团队", "协作", "客户", "案例", "persona"));
+                mentionsAny(sourcePreferences, "case", "customer", "\u5ba2\u6237", "\u6848\u4f8b")
+                        || mentionsAny(dimensions, "target", "user", "team", "customer", "case", "persona", "\u7528\u6237", "\u56e2\u961f", "\u5ba2\u6237", "\u6848\u4f8b"));
         addGroup(groups, "release", List.of("/changelog", "/release-notes", "/releases", "/updates", "/blog"),
-                mentionsAny(sourcePreferences, "release", "changelog", "更新", "blog", "博客")
-                        || mentionsAny(dimensions, "roadmap", "版本", "更新", "发布", "release", "changelog"));
+                mentionsAny(sourcePreferences, "release", "changelog", "update", "blog", "\u66f4\u65b0", "\u535a\u5ba2")
+                        || mentionsAny(dimensions, "roadmap", "release", "changelog", "update", "\u7248\u672c", "\u66f4\u65b0", "\u53d1\u5e03"));
 
-        if (groups.isEmpty() && mentionsAny(sourcePreferences, "official", "官网", "official_site")) {
+        if (groups.isEmpty() && mentionsAny(sourcePreferences, "official", "official_site", "\u5b98\u7f51")) {
             groups.add(new OfficialCandidateGroup("product", List.of("/product", "/features", "/platform")));
             groups.add(new OfficialCandidateGroup("docs", List.of("/docs", "/documentation", "/help")));
         }
@@ -524,7 +605,7 @@ public class SourceCollectionService {
         int sourcesPerCompetitor = searchSourcesPerCompetitor(batches.size());
         int maxSearchSources = maxSearchSources(run, batches.size(), sourcesPerCompetitor, recollecting);
         long started = System.nanoTime();
-        List<SearchCandidateBatchResult> batchResults = collectSearchCandidateBatches(
+        List<SearchCandidateBatchResult> batchResults = collectSearchCandidateBatchesShared(
                 run,
                 batches,
                 seenUrls,
@@ -583,7 +664,6 @@ public class SourceCollectionService {
                     .map(this::normalizeText)
                     .collect(java.util.stream.Collectors.toCollection(LinkedHashSet::new));
             List<SearchQueryPlanner.SearchQueryBatch> merged = new ArrayList<>(plannedSearchBatches);
-            // LLM 规划可以更贴合任务，但不能漏掉竞品覆盖；规则规划只补齐缺失竞品。
             ruleBatches.stream()
                     .filter(batch -> !plannedCompetitors.contains(normalizeText(batch.competitor())))
                     .forEach(merged::add);
@@ -886,33 +966,33 @@ public class SourceCollectionService {
         if (run.getRequirement() == null) {
             return recollecting ? "Reviewer evidence recollection" : "Public evidence collection";
         }
-        String competitors = String.join("、", nullToEmpty(run.getRequirement().getCompetitors()));
-        String dimensions = String.join("、", nullToEmpty(run.getRequirement().getDimensions()));
+        String competitors = String.join(", ", nullToEmpty(run.getRequirement().getCompetitors()));
+        String dimensions = String.join(", ", nullToEmpty(run.getRequirement().getDimensions()));
         return "%s%s%s".formatted(
-                recollecting ? "补采 " : "采集 ",
-                StringUtils.hasText(competitors) ? competitors : "目标竞品",
-                StringUtils.hasText(dimensions) ? " 的 " + dimensions + " 证据" : " 的公开证据"
+                recollecting ? "Evidence recollection: " : "Public evidence collection: ",
+                StringUtils.hasText(competitors) ? competitors : "unspecified competitors",
+                StringUtils.hasText(dimensions) ? ", focus: " + dimensions : ", focus: public evidence"
         );
     }
 
     private String inferSubtaskDimension(List<String> queries) {
         String text = normalizeText(String.join(" ", queries == null ? List.of() : queries));
-        if (containsAny(text, "pricing", "price", "plan", "定价", "价格")) {
+        if (containsAny(text, "pricing", "price", "plan", "\u5b9a\u4ef7", "\u4ef7\u683c")) {
             return "pricing";
         }
-        if (containsAny(text, "review", "feedback", "评价", "评论", "反馈")) {
+        if (containsAny(text, "review", "feedback", "\u8bc4\u4ef7", "\u53cd\u9988", "\u53e3\u7891")) {
             return "reviews";
         }
-        if (containsAny(text, "security", "compliance", "permission", "安全", "合规", "权限")) {
+        if (containsAny(text, "security", "compliance", "permission", "\u5b89\u5168", "\u5408\u89c4", "\u6743\u9650")) {
             return "security";
         }
-        if (containsAny(text, "customer", "case", "客户", "案例")) {
+        if (containsAny(text, "customer", "case", "\u5ba2\u6237", "\u6848\u4f8b")) {
             return "customers";
         }
-        if (containsAny(text, "docs", "documentation", "文档")) {
+        if (containsAny(text, "docs", "documentation", "\u6587\u6863")) {
             return "docs";
         }
-        if (containsAny(text, "release", "changelog", "更新", "发布")) {
+        if (containsAny(text, "release", "changelog", "\u66f4\u65b0", "\u53d1\u5e03")) {
             return "release";
         }
         return "public_search";
@@ -922,72 +1002,115 @@ public class SourceCollectionService {
         return java.util.concurrent.TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startedNanos);
     }
 
-    private List<SearchBatchResult> collectSearchBatches(AnalysisRun run,
-                                                         List<SearchQueryPlanner.SearchQueryBatch> batches,
-                                                         Set<String> seenUrls,
-                                                         int sourcesPerCompetitor,
-                                                         boolean recollecting) {
-        ExecutorService executor = Executors.newFixedThreadPool(Math.min(batches.size(), properties.maxParallelSearches()));
+    private <I, O> List<O> submitInWindows(List<I> inputs,
+                                           int parallelism,
+                                           BiFunction<I, Integer, O> task,
+                                           String operation,
+                                           O fallback) {
+        if (inputs == null || inputs.isEmpty()) {
+            return List.of();
+        }
+        int windowSize = Math.max(1, parallelism);
+        List<O> results = new ArrayList<>();
+        for (int offset = 0; offset < inputs.size(); offset += windowSize) {
+            int end = Math.min(inputs.size(), offset + windowSize);
+            List<CompletableFuture<O>> futures = new ArrayList<>();
+            for (int index = offset; index < end; index++) {
+                I input = inputs.get(index);
+                int taskIndex = index;
+                futures.add(CompletableFuture.supplyAsync(() -> task.apply(input, taskIndex), sourceCollectionExecutor));
+            }
+            awaitAsyncWindow(futures, operation);
+            for (CompletableFuture<O> future : futures) {
+                O result = completedAsyncResult(future, fallback, operation);
+                if (result != fallback) {
+                    results.add(result);
+                }
+            }
+        }
+        return results;
+    }
+
+    private void awaitAsyncWindow(List<? extends CompletableFuture<?>> futures, String operation) {
+        CompletableFuture<Void> window = CompletableFuture.allOf(futures.toArray(CompletableFuture[]::new));
         try {
-            // 并发抓取共享“已有来源”快照，批内先去重；最终提升证据时再用全局 seenUrls 做一次严格去重。
-            Set<String> existingSeenUrls = new LinkedHashSet<>(seenUrls);
-            List<CompletableFuture<SearchBatchResult>> futures = batches.stream()
-                    .map(batch -> CompletableFuture.supplyAsync(
-                            () -> collectSearchBatch(
-                                    run,
-                                    batch,
-                                    existingSeenUrls,
-                                    searchSourcesForBatch(run, batch, sourcesPerCompetitor, recollecting)
-                            ),
-                            executor
-                    ))
-                    .toList();
-            return futures.stream()
-                    .map(this::joinSearchBatch)
-                    .filter(result -> result != SearchBatchResult.EMPTY)
-                    .toList();
-        } finally {
-            executor.shutdown();
+            window.get(properties.asyncTaskTimeoutSeconds(), TimeUnit.SECONDS);
+        } catch (TimeoutException ex) {
+            futures.stream()
+                    .filter(future -> !future.isDone())
+                    .forEach(future -> future.cancel(true));
+            log.warn("Source collection async window timed out: operation={}, timeoutSeconds={}, windowSize={}",
+                    operation,
+                    properties.asyncTaskTimeoutSeconds(),
+                    futures.size());
+        } catch (InterruptedException ex) {
+            Thread.currentThread().interrupt();
+            futures.forEach(future -> future.cancel(true));
+            log.warn("Source collection async window interrupted: operation={}, windowSize={}",
+                    operation,
+                    futures.size());
+        } catch (java.util.concurrent.ExecutionException ex) {
+            // Individual failed tasks are logged when their result is collected below.
         }
     }
 
-    private List<SearchCandidateBatchResult> collectSearchCandidateBatches(AnalysisRun run,
-                                                                           List<SearchQueryPlanner.SearchQueryBatch> batches,
-                                                                           Set<String> seenUrls,
-                                                                           int sourcesPerCompetitor,
-                                                                           boolean recollecting) {
-        ExecutorService executor = Executors.newFixedThreadPool(Math.min(batches.size(), properties.maxParallelSearches()));
-        try {
-            Set<String> existingSeenUrls = new LinkedHashSet<>(seenUrls);
-            List<CompletableFuture<SearchCandidateBatchResult>> futures = batches.stream()
-                    .map(batch -> CompletableFuture.supplyAsync(
-                            () -> collectSearchCandidateBatch(
-                                    run,
-                                    batch,
-                                    existingSeenUrls,
-                                    searchSourcesForBatch(run, batch, sourcesPerCompetitor, recollecting)
-                            ),
-                            executor
-                    ))
-                    .toList();
-            return futures.stream()
-                    .map(this::joinSearchCandidateBatch)
-                    .filter(result -> result != SearchCandidateBatchResult.EMPTY)
-                    .toList();
-        } finally {
-            executor.shutdown();
+    private <T> T completedAsyncResult(CompletableFuture<T> future, T fallback, String operation) {
+        if (!future.isDone() || future.isCancelled()) {
+            return fallback;
         }
-    }
-
-    private SearchCandidateBatchResult joinSearchCandidateBatch(CompletableFuture<SearchCandidateBatchResult> future) {
         try {
-            return future.join();
+            return future.getNow(fallback);
         } catch (CompletionException ex) {
-            log.warn("Source collection search candidate batch failed unexpectedly: exceptionType={}, message={}",
-                    ex.getClass().getName(),
-                    ex.getMessage());
-            return SearchCandidateBatchResult.EMPTY;
+            log.warn("Source collection async task failed unexpectedly: operation={}, exceptionType={}, message={}",
+                    operation,
+                    ex.getCause() == null ? ex.getClass().getName() : ex.getCause().getClass().getName(),
+                    ex.getCause() == null ? ex.getMessage() : ex.getCause().getMessage());
+            return fallback;
         }
+    }
+
+    private int searchBatchParallelism() {
+        return Math.max(1, Math.min(properties.maxParallelBatches(), properties.maxParallelSearches()));
+    }
+
+    private List<SearchBatchResult> collectSearchBatchesShared(AnalysisRun run,
+                                                               List<SearchQueryPlanner.SearchQueryBatch> batches,
+                                                               Set<String> seenUrls,
+                                                               int sourcesPerCompetitor,
+                                                               boolean recollecting) {
+        Set<String> existingSeenUrls = new LinkedHashSet<>(seenUrls);
+        return submitInWindows(
+                batches,
+                searchBatchParallelism(),
+                (batch, ignored) -> collectSearchBatch(
+                        run,
+                        batch,
+                        existingSeenUrls,
+                        searchSourcesForBatch(run, batch, sourcesPerCompetitor, recollecting)
+                ),
+                "search batch",
+                SearchBatchResult.EMPTY
+        );
+    }
+
+    private List<SearchCandidateBatchResult> collectSearchCandidateBatchesShared(AnalysisRun run,
+                                                                                 List<SearchQueryPlanner.SearchQueryBatch> batches,
+                                                                                 Set<String> seenUrls,
+                                                                                 int sourcesPerCompetitor,
+                                                                                 boolean recollecting) {
+        Set<String> existingSeenUrls = new LinkedHashSet<>(seenUrls);
+        return submitInWindows(
+                batches,
+                searchBatchParallelism(),
+                (batch, ignored) -> collectSearchCandidateBatch(
+                        run,
+                        batch,
+                        existingSeenUrls,
+                        searchSourcesForBatch(run, batch, sourcesPerCompetitor, recollecting)
+                ),
+                "search candidate batch",
+                SearchCandidateBatchResult.EMPTY
+        );
     }
 
     private int searchSourcesForBatch(AnalysisRun run,
@@ -999,8 +1122,6 @@ public class SourceCollectionService {
         if (!recollecting || decision == null || repairTasks.isEmpty()) {
             return baseSourcesPerCompetitor;
         }
-        // Reviewer 打回后不平均加大所有竞品的搜索量，而是优先给 repairTasks 中被点名的竞品
-        // 多留抓取名额；其他竞品保留少量兜底，避免完全错过新的公开资料。
         Set<String> focusedCompetitors = focusedRepairCompetitors(run);
         if (focusedCompetitors.isEmpty()) {
             return Math.max(1, Math.min(2, baseSourcesPerCompetitor));
@@ -1017,8 +1138,6 @@ public class SourceCollectionService {
         if (decision == null || repairTasks.isEmpty()) {
             return Set.of();
         }
-        // repairTasks 里可能只记录 claim/category/recommendation，这里用文本回扫竞品名，
-        // 把“哪几个竞品需要补证据”从 Reviewer 输出中提取出来。
         String repairText = repairTasks.stream()
                 .map(task -> "%s %s %s %s".formatted(
                         task.getInstruction(),
@@ -1052,17 +1171,6 @@ public class SourceCollectionService {
         return decision.getRepairTasks().stream()
                 .filter(task -> task != null && task.getTargetAgent() == AgentName.RESEARCHER)
                 .toList();
-    }
-
-    private SearchBatchResult joinSearchBatch(CompletableFuture<SearchBatchResult> future) {
-        try {
-            return future.join();
-        } catch (CompletionException ex) {
-            log.warn("Source collection search batch failed unexpectedly: exceptionType={}, message={}",
-                    ex.getClass().getName(),
-                    ex.getMessage());
-            return SearchBatchResult.EMPTY;
-        }
     }
 
     private SearchBatchResult collectSearchBatch(AnalysisRun run,
@@ -1321,32 +1429,13 @@ public class SourceCollectionService {
         if (candidates == null || candidates.isEmpty()) {
             return List.of();
         }
-        ExecutorService executor = Executors.newFixedThreadPool(Math.min(candidates.size(), properties.maxParallelFetches()));
-        try {
-            List<CompletableFuture<CandidateFetchResult>> futures = candidates.stream()
-                    .map(candidate -> CompletableFuture.supplyAsync(() -> {
-                        EvidenceSource source = fromSearchResult("", candidate.toSearchResult());
-                        return new CandidateFetchResult(candidate, source);
-                    }, executor))
-                    .toList();
-            return futures.stream()
-                    .map(this::joinCandidateFetch)
-                    .filter(java.util.Objects::nonNull)
-                    .toList();
-        } finally {
-            executor.shutdown();
-        }
-    }
-
-    private CandidateFetchResult joinCandidateFetch(CompletableFuture<CandidateFetchResult> future) {
-        try {
-            return future.join();
-        } catch (CompletionException ex) {
-            log.warn("Source collection candidate fetch failed unexpectedly: exceptionType={}, message={}",
-                    ex.getClass().getName(),
-                    ex.getMessage());
-            return null;
-        }
+        return submitInWindows(
+                candidates,
+                properties.maxParallelFetches(),
+                (candidate, ignored) -> new CandidateFetchResult(candidate, fromSearchResult("", candidate.toSearchResult())),
+                "search candidate fetch",
+                null
+        ).stream().filter(java.util.Objects::nonNull).toList();
     }
 
     private List<SearchResult> prioritizedSearchResults(SearchQueryPlanner.SearchQueryBatch batch, List<SearchResult> results) {
@@ -1731,14 +1820,14 @@ public class SourceCollectionService {
                 "signin",
                 "log in",
                 "login required",
-                "请登录",
-                "登录",
-                "账号登录",
-                "扫码登录")) {
+                "\u767b\u5f55",
+                "\u8bf7\u767b\u5f55",
+                "\u6388\u6743\u8bbf\u95ee",
+                "\u9700\u8981\u767b\u5f55")) {
             return true;
         }
         return text.length() < MIN_SEARCH_ARTICLE_TEXT_LENGTH
-                && containsAny(text, "sign in", "log in", "login required", "请登录", "账号登录", "扫码登录");
+                && containsAny(text, "sign in", "log in", "login required", "\u767b\u5f55", "\u6388\u6743\u8bbf\u95ee", "\u9700\u8981\u767b\u5f55");
     }
 
     private boolean looksLikeSearchResultShell(String url, String title, String text) {
@@ -1950,6 +2039,18 @@ public class SourceCollectionService {
     }
 
     private record OfficialCandidateGroup(String name, List<String> paths) {
+    }
+
+    private record OfficialCandidateFetch(int seedIndex,
+                                          int groupIndex,
+                                          int urlIndex,
+                                          String url,
+                                          String sourceType,
+                                          String section,
+                                          String compliancePrefix) {
+    }
+
+    private record OfficialCandidateFetchResult(OfficialCandidateFetch candidate, EvidenceSource source) {
     }
 
     private record UrlParts(String scheme, String host, String path) {

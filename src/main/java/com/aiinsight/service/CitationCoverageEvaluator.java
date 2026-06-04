@@ -98,6 +98,14 @@ public class CitationCoverageEvaluator {
                 "建议在后续调研",
                 "建议补充",
                 "需补充",
+                "证据不足",
+                "证据缺口",
+                "缺乏直接证据",
+                "缺少直接证据",
+                "缺少可验证证据",
+                "待验证",
+                "补证",
+                "补充证据",
                 "人工复核",
                 "优先补充证据",
                 "报告依据说明");
@@ -168,8 +176,8 @@ public class CitationCoverageEvaluator {
                 ReviewFinding finding = new ReviewFinding(
                         ReviewSeverity.MEDIUM,
                         "citation_internal_evidence_presented_as_public",
-                        "Report paragraph presents internal or user-provided evidence [" + citationKey + "] as public or market evidence.",
-                        "Add public/official evidence for this paragraph, or rewrite it as a conclusion based on user-provided/internal material."
+                        "报告段落把用户提供或内部资料 [" + citationKey + "] 表述成公开/市场证据。",
+                        "为该段落补充公开或官方来源；如果只能依赖用户提供/内部资料，请改写为“基于用户提供资料”的结论。"
                 );
                 finding.setCitationKey(citationKey);
                 finding.setParagraphIndex(paragraphIndex);
@@ -190,6 +198,9 @@ public class CitationCoverageEvaluator {
         findings.addAll(validateExtractedFacts(run, known));
         for (AnalysisClaim claim : run.getClaims()) {
             if (claim == null || !StringUtils.hasText(claim.getContent())) {
+                continue;
+            }
+            if (isValidationBacklogClaim(claim)) {
                 continue;
             }
             List<String> evidenceIds = claim.getEvidenceIds() == null ? List.of() : claim.getEvidenceIds();
@@ -279,6 +290,12 @@ public class CitationCoverageEvaluator {
         return findings;
     }
 
+    private boolean isValidationBacklogClaim(AnalysisClaim claim) {
+        return "VALIDATION_BACKLOG".equals(normalizeUpper(claim.getRecommendedPlacement()))
+                || "NONE".equals(normalizeUpper(claim.getRecommendedPlacement()))
+                || "UNVERIFIED".equals(normalizeUpper(claim.getSupportStatus()));
+    }
+
     private List<ReviewFinding> validateExtractedFacts(AnalysisRun run, Set<String> knownEvidenceIds) {
         List<ReviewFinding> findings = new ArrayList<>();
         Map<String, String> claimIdByFactId = claimIdByFactId(run);
@@ -294,8 +311,8 @@ public class CitationCoverageEvaluator {
                 findings.add(factFinding(
                         ReviewSeverity.HIGH,
                         "fact_missing_evidence",
-                        "Extracted fact has no evidenceIds: " + fact.getId(),
-                        "Rerun Extractor and only emit facts that carry evidenceIds/chunkKeys, or move the item to unknowns.",
+                        "抽取事实缺少 evidenceIds: " + fact.getId(),
+                        "请重跑 Extractor；只保留带有 evidenceIds/chunkKeys 的事实，无法被证据支撑的字段应移动到未知事实列表。",
                         claimId,
                         fact,
                         null
@@ -307,8 +324,8 @@ public class CitationCoverageEvaluator {
                     ReviewFinding finding = factFinding(
                             ReviewSeverity.MEDIUM,
                             "fact_unknown_chunk",
-                            "Extracted fact references an unknown evidence chunk key: " + chunkKey,
-                            "Rerun Extractor after chunking, or remove stale chunkKeys from the fact binding.",
+                            "抽取事实引用了不存在的证据切片: " + chunkKey,
+                            "请在证据切片刷新后重跑 Extractor，或从事实绑定中移除失效的 chunkKeys。",
                             claimId,
                             fact,
                             null
@@ -324,8 +341,8 @@ public class CitationCoverageEvaluator {
                     findings.add(factFinding(
                             ReviewSeverity.HIGH,
                             "fact_unknown_evidence",
-                            "Extracted fact references an unknown evidence id: [" + evidenceId + "]",
-                            "Rerun Extractor and bind the fact to existing evidence, or drop the unsupported fact.",
+                            "抽取事实引用了不存在的证据编号: [" + evidenceId + "]",
+                            "请重跑 Extractor 并把事实绑定到现有证据；如果没有可支撑证据，请删除该事实。",
                             claimId,
                             fact,
                             evidenceId
@@ -349,11 +366,11 @@ public class CitationCoverageEvaluator {
                             ? "fact_partial_evidence_binding_weak"
                             : "fact_unsupported_by_evidence";
                     String message = hasSupportingEvidence
-                            ? "Extracted fact has supporting evidence, but some bound evidence ids look weak [" + unsupportedIds + "]: " + abbreviate(fact.getValue())
-                            : "Extracted fact value is not supported by its bound evidence ids [" + unsupportedIds + "]: " + abbreviate(fact.getValue());
+                            ? "抽取事实已有支撑证据，但部分绑定证据较弱 [" + unsupportedIds + "]: " + abbreviate(fact.getValue())
+                            : "抽取事实值无法被其绑定证据支撑 [" + unsupportedIds + "]: " + abbreviate(fact.getValue());
                     String recommendation = hasSupportingEvidence
-                            ? "Keep the supported evidence binding and remove weak extra evidenceIds/chunkKeys instead of rerunning the whole analysis."
-                            : "Rerun Extractor to correct the fact value/evidence binding, or move the unsupported field to unknowns.";
+                            ? "保留已能支撑该事实的证据绑定，移除额外的弱 evidenceIds/chunkKeys；无需重跑整条分析链路。"
+                            : "请重跑 Extractor 修正事实值与证据绑定；无法被证据支撑的字段应移动到未知事实列表。";
                     findings.add(factFinding(
                             severity,
                             category,
@@ -406,8 +423,8 @@ public class CitationCoverageEvaluator {
                 ReviewFinding finding = new ReviewFinding(
                         ReviewSeverity.MEDIUM,
                         "claim_missing_fact_binding",
-                        "Structured claim is backed by evidenceIds but not by extracted factIds: " + abbreviate(claim.getContent()),
-                        "Bind the claim to relevant ExtractedFact ids, or keep the claim tentative if no extracted fact supports it."
+                        "结构化结论绑定了 evidenceIds，但没有绑定对应的 extracted factIds: " + abbreviate(claim.getContent()),
+                        "请把该 claim 绑定到相关 ExtractedFact；如果没有抽取事实可支撑，应保持为待验证结论。"
                 );
                 finding.setClaimId(claim.getId());
                 finding.setExcerpt(claim.getContent());
@@ -423,8 +440,8 @@ public class CitationCoverageEvaluator {
                 ReviewFinding finding = new ReviewFinding(
                         ReviewSeverity.HIGH,
                         "claim_unknown_fact",
-                        "Structured claim references an unknown extracted fact id: " + factId,
-                        "Remove the stale factId or rerun Analyst after Extractor regenerates the fact layer."
+                        "结构化结论引用了不存在的 extracted fact id: " + factId,
+                        "请移除失效的 factId；或在 Extractor 重新生成事实层后重跑 Analyst。"
                 );
                 finding.setClaimId(claim.getId());
                 finding.setFactId(factId);
@@ -439,8 +456,8 @@ public class CitationCoverageEvaluator {
             ReviewFinding finding = new ReviewFinding(
                     ReviewSeverity.HIGH,
                     "claim_fact_mismatch",
-                    "High-confidence claim over-interprets or does not align with its bound extracted facts: " + abbreviate(claim.getContent()),
-                    "Rerun Analyst to rewrite the claim from bound facts, bind more relevant facts, or downgrade confidence."
+                    "高置信 claim 与其绑定的抽取事实不一致，或存在过度解读: " + abbreviate(claim.getContent()),
+                    "请重跑 Analyst，基于绑定事实改写该 claim；也可以绑定更相关的事实，或降低置信度。"
             );
             finding.setClaimId(claim.getId());
             finding.setExcerpt(claim.getContent());
@@ -668,8 +685,8 @@ public class CitationCoverageEvaluator {
             return new ClaimEvidencePolicyRisk(
                     claim.getConfidence() == ConfidenceLevel.HIGH ? ReviewSeverity.HIGH : ReviewSeverity.MEDIUM,
                     "claim_internal_evidence_presented_as_public",
-                    "Public or market-facing claim cites only user-provided/internal evidence [" + evidenceId + "].",
-                    "Add public/official evidence, or rewrite the claim as based on user-provided/internal material."
+                    "面向公开或市场判断的 claim 仅引用了用户提供/内部证据 [" + evidenceId + "]。",
+                    "请补充公开或官方证据；如果只能依赖用户提供/内部资料，请改写为基于内部资料的结论。"
             );
         }
         String need = claimEvidenceNeed(claim);
@@ -681,16 +698,16 @@ public class CitationCoverageEvaluator {
                 return new ClaimEvidencePolicyRisk(
                         claim.getConfidence() == ConfidenceLevel.HIGH ? ReviewSeverity.HIGH : ReviewSeverity.MEDIUM,
                         "claim_weak_pricing_source",
-                        "Pricing claim cites secondary pricing evidence [" + evidenceId + "] while first-party pricing evidence is available.",
-                        "Use FIRST_PARTY_OFFICIAL pricing_page evidence or a first-party pricing chunk; otherwise downgrade the claim and mark the price as needing verification."
+                        "定价 claim 在已有一手定价证据时，仍引用了二手定价来源 [" + evidenceId + "]。",
+                        "请优先使用 FIRST_PARTY_OFFICIAL 的 pricing_page 或一手定价切片；否则应降低置信度，并标注价格仍需核验。"
                 );
             }
             if (!chunkHasKind(run, evidenceId, "pricing") && !sourceTypeIs(source, "pricing_page")) {
                 return new ClaimEvidencePolicyRisk(
                         ReviewSeverity.MEDIUM,
                         "claim_missing_pricing_source",
-                        "Pricing claim cites evidence [" + evidenceId + "] that is not marked as pricing content.",
-                        "Bind this claim to pricing_page/pricing chunks, or rewrite it as an unverified pricing assumption."
+                        "定价 claim 引用了未标记为定价内容的证据 [" + evidenceId + "]。",
+                        "请把该 claim 绑定到 pricing_page/pricing 切片；否则改写为待验证的定价假设。"
                 );
             }
             return null;
@@ -702,8 +719,8 @@ public class CitationCoverageEvaluator {
             return new ClaimEvidencePolicyRisk(
                     claim.getConfidence() == ConfidenceLevel.HIGH ? ReviewSeverity.HIGH : ReviewSeverity.MEDIUM,
                     "claim_weak_security_source",
-                    "Security or permission claim cites evidence [" + evidenceId + "] without first-party docs, security docs, or security/permission chunks.",
-                    "Use official security_docs/product_docs/official_site evidence or first-party security/permission chunks; otherwise reduce confidence."
+                    "安全或权限 claim 引用了缺少一手文档、安全文档或 security/permission 切片支撑的证据 [" + evidenceId + "]。",
+                    "请使用官方 security_docs/product_docs/official_site 证据，或一手 security/permission 切片；否则应降低置信度。"
             );
         }
         if ("sentiment".equals(need)) {
@@ -713,8 +730,8 @@ public class CitationCoverageEvaluator {
             return new ClaimEvidencePolicyRisk(
                     ReviewSeverity.MEDIUM,
                     "claim_missing_sentiment_source",
-                    "User sentiment claim cites evidence [" + evidenceId + "] that is not a review, community, interview, survey, or user-provided source.",
-                    "Use public_review/community_discussion/user_interview/user_survey evidence, or rewrite the statement as vendor positioning instead of user sentiment."
+                    "用户口碑/情绪 claim 引用了非评论、社区、访谈、问卷或用户提供来源的证据 [" + evidenceId + "]。",
+                    "请使用 public_review/community_discussion/user_interview/user_survey 证据；否则改写为厂商定位，而不是用户口碑结论。"
             );
         }
         return null;

@@ -103,7 +103,7 @@ export function ReviewPanel({
           </div>
           <small className="decision-action-code">{decisionAction}</small>
           {reworkLimit ? <p className="decision-warning">{reworkLimit}</p> : null}
-          <p>{decision.reason || TEXT.waitingReason}</p>
+          <p>{localizeReviewText(decision.reason) || TEXT.waitingReason}</p>
           <div className="decision-meta-grid">
             <DecisionMeta label={TEXT.affectedClaim} values={decision.affectedClaimIds} empty={TEXT.noClaim} />
             <DecisionMeta label={TEXT.requiredEvidence} values={decision.requiredEvidenceTypes} empty={TEXT.noEvidenceType} />
@@ -181,9 +181,9 @@ function FindingItem({ finding, onLocateFinding }: { finding: ReviewFinding; onL
         <span>{finding.severity}</span>
         <strong>{findingCategoryLabel(finding.category)}</strong>
       </div>
-      <small className="finding-category">{finding.category}</small>
-      <p>{finding.message}</p>
-      <small>{finding.recommendation}</small>
+      <small className="finding-category">类别：{findingCategoryLabel(finding.category)}</small>
+      <p>{localizeReviewText(finding.message)}</p>
+      <small>{localizeReviewText(finding.recommendation)}</small>
       <div className="finding-meta">
         {finding.claimId ? <span>Claim {finding.claimId}</span> : null}
         {finding.citationKey ? <span>[{finding.citationKey}]</span> : null}
@@ -297,15 +297,99 @@ function findingCategoryLabel(category: string) {
     citation_snippet_only: "\u641c\u7d22\u6458\u8981\u6765\u6e90",
     citation_blocked_source: "\u6765\u6e90\u53d7\u9650",
     citation_thin_source: "\u6765\u6e90\u8fc7\u8584",
+    citation_internal_evidence_presented_as_public: "\u5185\u90e8\u8d44\u6599\u88ab\u8868\u8ff0\u4e3a\u516c\u5f00\u8bc1\u636e",
+    citation_region_unavailable_source: "\u6765\u6e90\u4e0d\u53ef\u7528",
+    citation_marketing_only_source: "\u8425\u9500\u578b\u6765\u6e90",
     claim_missing_evidence: "Claim \u7f3a\u8bc1\u636e",
     claim_unknown_evidence: "Claim \u5f15\u7528\u672a\u77e5\u8bc1\u636e",
     claim_weak_support: "Claim \u5f31\u652f\u6491",
     claim_high_confidence_low_quality_source: "\u9ad8\u7f6e\u4fe1\u4f4e\u8d28\u91cf\u6765\u6e90",
     claim_confidence_mismatch: "\u7f6e\u4fe1\u5ea6\u4e0d\u4e00\u81f4",
+    claim_missing_fact_binding: "Claim \u7f3a\u5c11\u4e8b\u5b9e\u7ed1\u5b9a",
+    claim_unknown_fact: "Claim \u5f15\u7528\u672a\u77e5\u4e8b\u5b9e",
+    claim_fact_mismatch: "Claim \u4e0e\u4e8b\u5b9e\u4e0d\u4e00\u81f4",
+    claim_internal_evidence_presented_as_public: "\u5185\u90e8\u8d44\u6599\u88ab\u8868\u8ff0\u4e3a\u516c\u5f00\u8bc1\u636e",
+    claim_weak_pricing_source: "\u5b9a\u4ef7\u6765\u6e90\u504f\u5f31",
+    claim_missing_pricing_source: "\u7f3a\u5c11\u5b9a\u4ef7\u6765\u6e90",
+    claim_weak_security_source: "\u5b89\u5168/\u6743\u9650\u6765\u6e90\u504f\u5f31",
+    claim_missing_sentiment_source: "\u7f3a\u5c11\u7528\u6237\u53e3\u7891\u6765\u6e90",
+    fact_missing_evidence: "\u4e8b\u5b9e\u7f3a\u5c11\u8bc1\u636e",
+    fact_unknown_chunk: "\u4e8b\u5b9e\u5f15\u7528\u672a\u77e5\u5207\u7247",
+    fact_unknown_evidence: "\u4e8b\u5b9e\u5f15\u7528\u672a\u77e5\u8bc1\u636e",
+    fact_partial_evidence_binding_weak: "\u4e8b\u5b9e\u90e8\u5206\u8bc1\u636e\u504f\u5f31",
+    fact_unsupported_by_evidence: "\u4e8b\u5b9e\u672a\u88ab\u8bc1\u636e\u652f\u6491",
     llm_overclaim: "\u8bed\u4e49\u8fc7\u5ea6\u63a8\u65ad",
     llm_semantic_review: "\u8bed\u4e49\u8d28\u68c0"
   };
   return labels[category] ?? category;
+}
+
+function localizeReviewText(value?: string) {
+  if (!value) return "";
+  const exact: Record<string, string> = {
+    "Rerun Extractor to correct the fact value/evidence binding, or move the unsupported field to unknowns.":
+      "请重跑 Extractor 修正事实值与证据绑定；无法被证据支撑的字段应移动到未知事实列表。",
+    "Keep the supported evidence binding and remove weak extra evidenceIds/chunkKeys instead of rerunning the whole analysis.":
+      "保留已能支撑该事实的证据绑定，移除额外的弱 evidenceIds/chunkKeys；无需重跑整条分析链路。",
+    "Rerun Extractor and only emit facts that carry evidenceIds/chunkKeys, or move the item to unknowns.":
+      "请重跑 Extractor；只保留带有 evidenceIds/chunkKeys 的事实，无法被证据支撑的字段应移动到未知事实列表。",
+    "Rerun Extractor after chunking, or remove stale chunkKeys from the fact binding.":
+      "请在证据切片刷新后重跑 Extractor，或从事实绑定中移除失效的 chunkKeys。",
+    "Rerun Extractor and bind the fact to existing evidence, or drop the unsupported fact.":
+      "请重跑 Extractor 并把事实绑定到现有证据；如果没有可支撑证据，请删除该事实。",
+    "Bind the claim to relevant ExtractedFact ids, or keep the claim tentative if no extracted fact supports it.":
+      "请把该 claim 绑定到相关 ExtractedFact；如果没有抽取事实可支撑，应保持为待验证结论。",
+    "Remove the stale factId or rerun Analyst after Extractor regenerates the fact layer.":
+      "请移除失效的 factId；或在 Extractor 重新生成事实层后重跑 Analyst。",
+    "Rerun Analyst to rewrite the claim from bound facts, bind more relevant facts, or downgrade confidence.":
+      "请重跑 Analyst，基于绑定事实改写该 claim；也可以绑定更相关的事实，或降低置信度。"
+  };
+  if (exact[value]) return exact[value];
+  return value
+    .replace(
+      /^Extracted fact has no evidenceIds: (.+)$/,
+      "抽取事实缺少 evidenceIds: $1"
+    )
+    .replace(
+      /^Extracted fact references an unknown evidence chunk key: (.+)$/,
+      "抽取事实引用了不存在的证据切片: $1"
+    )
+    .replace(
+      /^Extracted fact references an unknown evidence id: \[(.+)]$/,
+      "抽取事实引用了不存在的证据编号: [$1]"
+    )
+    .replace(
+      /^Extracted fact has supporting evidence, but some bound evidence ids look weak \[(.+)]: (.+)$/,
+      "抽取事实已有支撑证据，但部分绑定证据较弱 [$1]: $2"
+    )
+    .replace(
+      /^Extracted fact value is not supported by its bound evidence ids \[(.+)]: (.+)$/,
+      "抽取事实值无法被其绑定证据支撑 [$1]: $2"
+    )
+    .replace(
+      /^Structured claim is backed by evidenceIds but not by extracted factIds: (.+)$/,
+      "结构化结论绑定了 evidenceIds，但没有绑定对应的 extracted factIds: $1"
+    )
+    .replace(
+      /^Structured claim references an unknown extracted fact id: (.+)$/,
+      "结构化结论引用了不存在的 extracted fact id: $1"
+    )
+    .replace(
+      /^High-confidence claim over-interprets or does not align with its bound extracted facts: (.+)$/,
+      "高置信 claim 与其绑定的抽取事实不一致，或存在过度解读: $1"
+    )
+    .replace(
+      /^Review found high-risk extracted fact issues \((.+)\); rerun Extractor to repair fact values, evidenceIds, or chunk bindings\.$/,
+      "质检发现高风险抽取事实问题（$1）；需要重跑 Extractor 修复事实值、evidenceIds 或 chunk 绑定。"
+    )
+    .replace(
+      /^Previous Extractor repair did not reduce blocking findings and evidence did not change; rerun Researcher to refresh upstream evidence before extracting facts again\.$/,
+      "上一轮 Extractor 返工没有减少阻断问题，且证据没有变化；需要先重跑 Researcher 刷新上游证据，再重新抽取事实。"
+    )
+    .replace(
+      /^Previous Analyst repair changed claims but did not reduce blocking findings while evidence, profiles, and facts stayed unchanged; rerun Extractor to rebuild upstream fact\/evidence bindings before analyzing again\.$/,
+      "上一轮 Analyst 返工虽然改动了 claims，但阻断问题没有减少，且证据、画像和事实层没有变化；需要先重跑 Extractor 重建上游事实/证据绑定，再继续分析。"
+    );
 }
 
 function formatTime(value: string) {

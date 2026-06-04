@@ -55,7 +55,7 @@ class SpringAiLlmClient implements LlmClient {
         if (!hasText(content) && shouldRetryBlankLength(response, options)) {
             ChatOptions retryOptions = retryOptions(options);
             ChatRequest retryRequest = compactRetryRequest(request);
-            log.warn("LLM response blank because output reached length limit; retrying compactly: model={}, agent={}, subtask={}, originalOutputBudget={}, retryOutputBudget={}, sentMaxTokens={}, generationMetadata={}",
+            log.warn("LLM response blank because output reached length limit; retrying compactly: model={}, agent={}, subtask={}, originalResponseBudget={}, retryResponseBudget={}, sentMaxTokens={}, generationMetadata={}",
                     properties.getModel(),
                     agentLogValue(request),
                     subtaskLogValue(request),
@@ -118,14 +118,14 @@ class SpringAiLlmClient implements LlmClient {
     }
 
     private ChatResponse callModel(ChatRequest request, ChatOptions options, long startedAt, int attempt) {
-        log.info("LLM request started: model={}, agent={}, subtask={}, attempt={}, messages={}, temperature={}, outputBudget={}, sentMaxTokens={}",
+        log.info("LLM request started: model={}, agent={}, subtask={}, attempt={}, messages={}, temperature={}, responseBudgetMode={}, sentMaxTokens={}",
                 properties.getModel(),
                 agentLogValue(request),
                 subtaskLogValue(request),
                 attempt,
                 request.getMessages().size(),
                 options.getTemperature(),
-                outputBudgetLogValue(options),
+                responseBudgetLogValue(options),
                 SEND_MAX_TOKENS);
         OpenAiChatOptions.Builder optionsBuilder = OpenAiChatOptions.builder()
                 .model(properties.getModel())
@@ -195,11 +195,11 @@ class SpringAiLlmClient implements LlmClient {
         return request != null && hasText(request.getSubtaskName()) ? request.getSubtaskName() : "default";
     }
 
-    private String outputBudgetLogValue(ChatOptions options) {
+    private String responseBudgetLogValue(ChatOptions options) {
         if (SEND_MAX_TOKENS) {
             return "provider-max-tokens:" + options.getMaxTokens();
         }
-        return "local-only:" + options.getMaxTokens();
+        return "local-retry-threshold-only:" + options.getMaxTokens();
     }
 
     private String responseText(ChatResponse response) {

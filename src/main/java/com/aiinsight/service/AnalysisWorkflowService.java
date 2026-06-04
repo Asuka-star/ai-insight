@@ -397,7 +397,10 @@ public class AnalysisWorkflowService {
     public AnalysisRun addContext(UUID runId, AddAnalysisContextRequest request) {
         AnalysisRun run = get(runId);
         ensureContextAcceptable(run);
-        ContextIntent intent = request.getIntent() == null ? ContextIntent.COMMENT : request.getIntent();
+        if (request.getIntent() == null) {
+            throw new IllegalArgumentException("context intent is required");
+        }
+        ContextIntent intent = request.getIntent();
         AnalysisContextMessage message = new AnalysisContextMessage(
                 ContextRole.USER,
                 intent,

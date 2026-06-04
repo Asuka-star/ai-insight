@@ -4,7 +4,5 @@ public enum ContextIntent {
     ADJUST_SCOPE,
     ADD_EVIDENCE,
     REQUEST_RERUN,
-    REVISE_REPORT,
-    COMMENT,
-    CLARIFICATION
+    REVISE_REPORT
 }

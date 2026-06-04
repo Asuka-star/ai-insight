@@ -17,7 +17,7 @@ public class AnalysisContextMessage {
 
     private UUID id = UUID.randomUUID();
     private ContextRole role = ContextRole.USER;
-    private ContextIntent intent = ContextIntent.COMMENT;
+    private ContextIntent intent;
     private String content;
     private AgentName targetAgent;
     private Instant createdAt = Instant.now();

@@ -1,4 +1,5 @@
-import { GitCompareArrows } from "lucide-react";
+import { useState } from "react";
+import { ChevronDown, GitCompareArrows } from "lucide-react";
 import type { AnalysisArtifact } from "../types";
 import { ARTIFACT_LABELS } from "../constants";
 
@@ -9,11 +10,19 @@ interface ArtifactVersionsPanelProps {
 }
 
 export function ArtifactVersionsPanel({ artifacts, selectedArtifactId, onSelectArtifact }: ArtifactVersionsPanelProps) {
+  const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>({});
   const grouped = artifacts.reduce<Record<string, AnalysisArtifact[]>>((acc, artifact) => {
     const key = artifact.type;
     acc[key] = [...(acc[key] ?? []), artifact];
     return acc;
   }, {});
+
+  const toggleGroup = (type: string) => {
+    setCollapsedGroups((current) => ({
+      ...current,
+      [type]: !current[type]
+    }));
+  };
 
   if (!artifacts.length) {
     return (
@@ -27,26 +36,37 @@ export function ArtifactVersionsPanel({ artifacts, selectedArtifactId, onSelectA
 
   return (
     <div className="version-panel">
-      {Object.entries(grouped).map(([type, items]) => (
-        <section className="version-group" key={type}>
-          <div className="version-heading">
-            <strong>{ARTIFACT_LABELS[type as keyof typeof ARTIFACT_LABELS] ?? type}</strong>
-            <span>{items.length} 个版本</span>
-          </div>
-          {items.map((artifact) => (
+      {Object.entries(grouped).map(([type, items]) => {
+        const collapsed = collapsedGroups[type] ?? true;
+        const label = ARTIFACT_LABELS[type as keyof typeof ARTIFACT_LABELS] ?? type;
+        return (
+          <section className={`version-group ${collapsed ? "collapsed" : ""}`} key={type}>
             <button
-              key={artifact.id}
+              className="version-heading"
               type="button"
-              className={`version-item ${artifact.id === selectedArtifactId ? "selected" : ""}`}
-              onClick={() => onSelectArtifact(artifact.id)}
+              aria-expanded={!collapsed}
+              aria-label={collapsed ? `展开${label}` : `折叠${label}`}
+              onClick={() => toggleGroup(type)}
             >
-              <span>{artifact.title || type}</span>
-              <strong>v{artifact.version || 1}</strong>
-              <small>{artifact.citationKeys?.length ?? 0} 条引用</small>
+              <strong>{label}</strong>
+              <span>{items.length} 个版本</span>
+              <ChevronDown size={16} />
             </button>
-          ))}
-        </section>
-      ))}
+            {collapsed ? null : items.map((artifact) => (
+              <button
+                key={artifact.id}
+                type="button"
+                className={`version-item ${artifact.id === selectedArtifactId ? "selected" : ""}`}
+                onClick={() => onSelectArtifact(artifact.id)}
+              >
+                <span>{artifact.title || type}</span>
+                <strong>v{artifact.version || 1}</strong>
+                <small>{artifact.citationKeys?.length ?? 0} 条引用</small>
+              </button>
+            ))}
+          </section>
+        );
+      })}
     </div>
   );
 }

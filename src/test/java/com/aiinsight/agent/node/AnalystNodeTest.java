@@ -170,6 +170,90 @@ class AnalystNodeTest {
     }
 
     @Test
+    void matrixAndSwotKeepLowConfidenceClaimsInValidationBacklog() {
+        LlmClient llmClient = new LlmClient() {
+            @Override
+            public boolean isAvailable() {
+                return true;
+            }
+
+            @Override
+            public String complete(ChatRequest request) {
+                return """
+                        {
+                          "claims": [
+                            {
+                              "type": "COMPARISON",
+                              "content": "Cursor positioning is still an unverified strategic claim.",
+                              "confidence": "LOW",
+                              "dimension": "团队协作",
+                              "supportStatus": "UNVERIFIED",
+                              "recommendedPlacement": "MATRIX",
+                              "competitorNames": ["Cursor"],
+                              "evidenceIds": []
+                            },
+                            {
+                              "type": "STRENGTH",
+                              "content": "Cursor has a publishable multi-file editing strength.",
+                              "confidence": "MEDIUM",
+                              "dimension": "代码理解与生成能力",
+                              "supportStatus": "SUPPORTED",
+                              "recommendedPlacement": "SWOT",
+                              "competitorNames": ["Cursor"],
+                              "evidenceIds": ["S1"]
+                            },
+                            {
+                              "type": "FACT",
+                              "content": "Cursor has a supported note that should not be published in main views.",
+                              "confidence": "MEDIUM",
+                              "dimension": "综合判断",
+                              "supportStatus": "SUPPORTED",
+                              "recommendedPlacement": "NONE",
+                              "competitorNames": ["Cursor"],
+                              "evidenceIds": ["S1"]
+                            }
+                          ]
+                        }
+                        """;
+            }
+        };
+        AnalysisRun run = new AnalysisRun(new AnalysisRequirement(
+                "Analyze Cursor",
+                "AI coding tools",
+                List.of("Cursor"),
+                List.of("代码理解与生成能力", "团队协作"),
+                List.of("official_site"),
+                List.of()
+        ));
+        run.getEvidenceSources().add(new EvidenceSource(
+                "S1",
+                "Cursor product page",
+                "https://example.test/cursor",
+                "official_site",
+                "FETCHED",
+                "LIVE_FETCHED",
+                "HIGH",
+                "NONE",
+                "Cursor has a publishable multi-file editing strength.",
+                "Cursor has a publishable multi-file editing strength.",
+                "test evidence"
+        ));
+
+        new AnalystNode(llmClient, new ObjectMapper(), new FallbackAnalysisDraftFactory()).execute(run);
+
+        String matrix = latestArtifact(run, ArtifactType.COMPETITIVE_MATRIX);
+        String swot = latestArtifact(run, ArtifactType.SWOT_ANALYSIS);
+        assertThat(matrix)
+                .contains("## 待验证结论", "Cursor positioning is still an unverified strategic claim")
+                .contains("Cursor has a supported note that should not be published in main views", "放置建议为不展示")
+                .contains("| 团队协作 | 证据不足，待验证。 | LOW | 证据不足 |")
+                .contains("| Cursor | 暂无可归属的结构化结论。 | LOW | 证据不足 |");
+        assertThat(swot)
+                .contains("Cursor has a publishable multi-file editing strength")
+                .doesNotContain("Cursor positioning is still an unverified strategic claim");
+    }
+
+    @Test
     void analystRepairKeepsClaimIdAndDowngradesUnresolvedTaskClaim() {
         String claimText = "Cursor Composer is clearly the strongest workflow benchmark.";
         LlmClient llmClient = new LlmClient() {
@@ -243,6 +327,89 @@ class AnalystNodeTest {
         assertThat(repaired.getConfidence()).isEqualTo(ConfidenceLevel.LOW);
         assertThat(repaired.getEvidenceIds()).doesNotContain("S1");
         assertThat(repaired.getContent()).contains("证据不足", "待验证");
+    }
+
+    @Test
+    void analystRendersArtifactsFromGuardedClaimsAfterRepairDowngrade() {
+        String claimText = "Cursor Composer is clearly the strongest workflow benchmark.";
+        LlmClient llmClient = new LlmClient() {
+            @Override
+            public boolean isAvailable() {
+                return true;
+            }
+
+            @Override
+            public String complete(ChatRequest request) {
+                return """
+                        {
+                          "claims": [
+                            {
+                              "type": "FACT",
+                              "content": "%s",
+                              "confidence": "HIGH",
+                              "dimension": "features",
+                              "supportStatus": "SUPPORTED",
+                              "recommendedPlacement": "MATRIX",
+                              "competitorNames": ["Cursor"],
+                              "evidenceIds": ["S1"]
+                            }
+                          ]
+                        }
+                        """.formatted(claimText);
+            }
+        };
+        AnalysisRun run = new AnalysisRun(new AnalysisRequirement(
+                "Analyze Cursor",
+                "AI coding tools",
+                List.of("Cursor"),
+                List.of("features"),
+                List.of("official_site"),
+                List.of()
+        ));
+        run.getEvidenceSources().add(new EvidenceSource(
+                "S1",
+                "Cursor product page",
+                "https://example.test/cursor",
+                "official_site",
+                "FETCHED",
+                "LIVE_FETCHED",
+                "HIGH",
+                "NONE",
+                "Cursor Composer supports multi-file code edits.",
+                "Cursor Composer supports multi-file code edits.",
+                "test evidence"
+        ));
+        AnalysisClaim previous = new AnalysisClaim();
+        previous.setId("C-GUARDED");
+        previous.setType(ClaimType.FACT);
+        previous.setContent(claimText);
+        previous.setConfidence(ConfidenceLevel.HIGH);
+        previous.setCompetitorNames(List.of("Cursor"));
+        previous.setEvidenceIds(List.of("S1"));
+        run.getClaims().add(previous);
+
+        run.getReviewDecision().setAction(ReviewAction.REWORK_ANALYSIS);
+        run.getReviewDecision().setTargetAgent(AgentName.ANALYST);
+        ReviewRepairTask task = new ReviewRepairTask();
+        task.setTargetAgent(AgentName.ANALYST);
+        task.setClaimId("C-GUARDED");
+        task.setCitationKey("S1");
+        task.setCategory("claim_evidence_mismatch");
+        task.setCurrentText(claimText);
+        run.getReviewDecision().setRepairTasks(List.of(task));
+
+        new AnalystNode(llmClient, new ObjectMapper(), new FallbackAnalysisDraftFactory()).execute(run);
+
+        AnalysisClaim repaired = run.getClaims().get(0);
+        assertThat(repaired.getConfidence()).isEqualTo(ConfidenceLevel.LOW);
+        assertThat(repaired.getSupportStatus()).isEqualTo("UNVERIFIED");
+        assertThat(repaired.getRecommendedPlacement()).isEqualTo("VALIDATION_BACKLOG");
+
+        String matrix = latestArtifact(run, ArtifactType.COMPETITIVE_MATRIX);
+        assertThat(matrix)
+                .doesNotContain("| Cursor | FACT: " + claimText)
+                .contains("| FACT | LOW | UNVERIFIED | VALIDATION_BACKLOG")
+                .contains("## 待验证结论", claimText);
     }
 
     @Test
@@ -518,5 +685,13 @@ class AnalystNodeTest {
                 throw new IllegalStateException("LLM is not configured");
             }
         };
+    }
+
+    private String latestArtifact(AnalysisRun run, ArtifactType type) {
+        return run.getArtifacts().stream()
+                .filter(artifact -> artifact.getType() == type)
+                .reduce((first, second) -> second)
+                .orElseThrow()
+                .getContent();
     }
 }

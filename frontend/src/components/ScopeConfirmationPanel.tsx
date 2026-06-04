@@ -2,6 +2,7 @@ import { memo, useCallback, useEffect, useState } from "react";
 import { CheckCircle2, ClipboardCheck, PlayCircle, RefreshCw } from "lucide-react";
 import type { AnalysisRun, ClarificationItem, ClarificationOption } from "../types";
 import { displayRunPhase, resolveRunPhase } from "../utils";
+import { CollapsiblePanel } from "./CollapsiblePanel";
 
 interface ScopeConfirmationPanelProps {
   run: AnalysisRun | null;
@@ -25,6 +26,8 @@ interface ScopeConfirmationPanelProps {
   onStart: () => void;
   creating: boolean;
   busy: boolean;
+  collapsed?: boolean;
+  onToggle?: () => void;
 }
 
 export function ScopeConfirmationPanel({
@@ -48,7 +51,9 @@ export function ScopeConfirmationPanel({
   onConfirm,
   onStart,
   creating,
-  busy
+  busy,
+  collapsed = false,
+  onToggle
 }: ScopeConfirmationPanelProps) {
   const [formEditVersion, setFormEditVersion] = useState(0);
   const phase = resolveRunPhase(run);
@@ -79,6 +84,7 @@ export function ScopeConfirmationPanel({
     && !mainAnalysisStarted
     && (isConfirmed || canStartWithoutConfirm)
     && ["AWAITING_CONFIRMATION", "PENDING", "NEEDS_USER_INPUT"].includes(phaseText);
+  const summary = displayRunPhase(String(phase));
 
   const handleManualEdit = useCallback((update: () => void) => {
     setFormEditVersion((version) => version + 1);
@@ -86,15 +92,15 @@ export function ScopeConfirmationPanel({
   }, []);
 
   return (
-    <section className="panel scope-panel">
-      <div className="section-title">
-        <div>
-          <p className="eyebrow">范围</p>
-          <h2>范围确认</h2>
-        </div>
-        <span className={`phase-pill ${String(phase).toLowerCase()}`}>{displayRunPhase(String(phase))}</span>
-      </div>
-
+    <CollapsiblePanel
+      eyebrow="范围"
+      title="范围确认"
+      icon={<ClipboardCheck size={18} />}
+      summary={collapsed ? summary : undefined}
+      collapsed={collapsed}
+      onToggle={onToggle ?? (() => undefined)}
+      className="scope-panel"
+    >
       <div className="scope-grid">
         <label>
           行业方向
@@ -221,7 +227,7 @@ export function ScopeConfirmationPanel({
       ) : !scopeEditable ? (
         <p className="scope-hint"><ClipboardCheck size={14} /> 分析开始后范围已锁定，避免执行产物与分析范围不一致。</p>
       ) : null}
-    </section>
+    </CollapsiblePanel>
   );
 }
 

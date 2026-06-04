@@ -21,6 +21,9 @@ public class AnalysisClaim {
     private String content;
     private ConfidenceLevel confidence = ConfidenceLevel.MEDIUM;
     private String generatedBy;
+    private String dimension;
+    private String supportStatus;
+    private String recommendedPlacement;
     private List<String> competitorNames = new ArrayList<>();
     private List<String> factIds = new ArrayList<>();
     private List<String> evidenceIds = new ArrayList<>();
