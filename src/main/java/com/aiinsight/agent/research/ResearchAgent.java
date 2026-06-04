@@ -2,11 +2,14 @@ package com.aiinsight.agent.research;
 
 import com.aiinsight.model.enums.AgentName;
 import com.aiinsight.model.enums.ReviewAction;
+import com.aiinsight.model.review.ReviewDecision;
 import com.aiinsight.model.run.AnalysisRun;
 import com.aiinsight.model.run.EvidenceChunk;
 import com.aiinsight.model.run.EvidenceSource;
 import com.aiinsight.service.EvidenceChunkService;
 import com.aiinsight.service.EvidenceEmbeddingService;
+import com.aiinsight.service.EvidenceSourceLifecycleService;
+import com.aiinsight.service.EvidenceSourceLifecycleService.EvidenceReplacementResult;
 import com.aiinsight.service.LlmSearchCandidateSelector;
 import com.aiinsight.service.LlmSearchQueryPlanner;
 import com.aiinsight.service.SearchQueryPlanner;
@@ -33,6 +36,7 @@ public class ResearchAgent {
     private final EvidenceEmbeddingService evidenceEmbeddingService;
     private final LlmSearchQueryPlanner llmSearchQueryPlanner;
     private final LlmSearchCandidateSelector llmSearchCandidateSelector;
+    private final EvidenceSourceLifecycleService evidenceSourceLifecycleService;
 
     public ResearchAgentResult run(AnalysisRun run) {
         boolean recollecting = isRecollectionMode(run);
@@ -56,6 +60,16 @@ public class ResearchAgent {
                 searchCandidates,
                 candidateSelection
         );
+        EvidenceReplacementResult replacementResult = evidenceSourceLifecycleService.reconcileAfterCollection(
+                run,
+                beforeSources,
+                collectedSources
+        );
+        if (replacementResult.replacedBindings() > 0 || replacementResult.prunedBindings() > 0) {
+            run.getRecommendedActions().add(
+                    "已执行证据绑定修复：替换绑定=%d，移除弱绑定=%d。旧来源仍保留用于审计和背景参考，但不再支撑对应结论。"
+                            .formatted(replacementResult.replacedBindings(), replacementResult.prunedBindings()));
+        }
         replaceRunSources(run, collectedSources);
         List<EvidenceChunk> chunks = evidenceEmbeddingService.embedChunks(evidenceChunkService.chunk(collectedSources));
         List<String> missingEvidenceTypes = missingEvidenceTypes(run, collectedSources);
@@ -448,8 +462,10 @@ public class ResearchAgent {
     }
 
     private boolean isRecollectionMode(AnalysisRun run) {
-        return run.getReviewDecision().getAction() == ReviewAction.RECOLLECT_EVIDENCE
-                && run.getReviewDecision().getTargetAgent() == AgentName.RESEARCHER;
+        ReviewDecision decision = run.getRepairDecisionFor(AgentName.RESEARCHER);
+        return decision != null
+                && decision.getAction() == ReviewAction.RECOLLECT_EVIDENCE
+                && decision.getTargetAgent() == AgentName.RESEARCHER;
     }
 
     private String objective(AnalysisRun run, boolean recollecting) {
@@ -459,9 +475,10 @@ public class ResearchAgent {
         String dimensions = run.getRequirement() == null
                 ? "unspecified dimensions"
                 : run.getRequirement().getDimensions().stream().filter(StringUtils::hasText).collect(Collectors.joining("、"));
-        if (recollecting && run.getReviewDecision() != null && !run.getReviewDecision().getRequiredEvidenceTypes().isEmpty()) {
+        ReviewDecision decision = run.getRepairDecisionFor(AgentName.RESEARCHER);
+        if (recollecting && decision != null && !decision.getRequiredEvidenceTypes().isEmpty()) {
             return "补采 Reviewer 要求的 %s 证据，覆盖竞品：%s".formatted(
-                    String.join("、", run.getReviewDecision().getRequiredEvidenceTypes()),
+                    String.join("、", decision.getRequiredEvidenceTypes()),
                     competitors
             );
         }

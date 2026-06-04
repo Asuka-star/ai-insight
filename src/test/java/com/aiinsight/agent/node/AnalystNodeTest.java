@@ -15,7 +15,9 @@ import com.aiinsight.model.run.EvidenceChunk;
 import com.aiinsight.model.run.EvidenceSource;
 import com.aiinsight.model.schema.AnalysisClaim;
 import com.aiinsight.model.schema.CompetitorFactSet;
+import com.aiinsight.model.schema.CompetitorProfile;
 import com.aiinsight.model.schema.ExtractedFact;
+import com.aiinsight.model.schema.PricingModel;
 import com.aiinsight.service.AnalysisDraft;
 import com.aiinsight.service.fallback.FallbackAnalysisDraftFactory;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -333,6 +335,158 @@ class AnalystNodeTest {
         assertThat(repaired.getContent()).doesNotContain("证据不足", "待验证");
     }
 
+    @Test
+    void fallbackAnalystDoesNotPromotePricingProfileEvidenceWithoutPricingFact() {
+        AnalysisRun run = new AnalysisRun(new AnalysisRequirement(
+                "Analyze Cursor pricing",
+                "AI coding tools",
+                List.of("Cursor"),
+                List.of("pricing"),
+                List.of("pricing_page"),
+                List.of()
+        ));
+        run.getEvidenceSources().add(new EvidenceSource(
+                "S1",
+                "Cursor pricing",
+                "https://example.test/cursor/pricing",
+                "pricing_page",
+                "FETCHED",
+                "LIVE_FETCHED",
+                "HIGH",
+                "NONE",
+                "Cursor pricing page is available.",
+                "Cursor pricing page is available.",
+                "test evidence"
+        ));
+        PricingModel pricingModel = new PricingModel();
+        pricingModel.setStrategySummary("已补充价格页证据，可初步描述套餐策略，具体金额仍以原始页面为准。");
+        pricingModel.setEvidenceIds(List.of("S1"));
+        CompetitorProfile profile = new CompetitorProfile();
+        profile.setProductName("Cursor");
+        profile.setPricingModel(pricingModel);
+        profile.setEvidenceIds(List.of("S1"));
+        run.getCompetitorProfiles().add(profile);
+
+        new AnalystNode(unavailableLlm(), new ObjectMapper(), new FallbackAnalysisDraftFactory()).execute(run);
+
+        assertThat(run.getClaims())
+                .filteredOn(claim -> claim.getContent().contains("定价") || claim.getContent().contains("价格"))
+                .anySatisfy(claim -> {
+                    assertThat(claim.getType()).isEqualTo(ClaimType.RISK);
+                    assertThat(claim.getConfidence()).isEqualTo(ConfidenceLevel.LOW);
+                    assertThat(claim.getEvidenceIds()).isEmpty();
+                    assertThat(claim.getContent()).contains("事实层", "待验证");
+                    assertThat(claim.getContent()).doesNotContain("可初步比较定价策略");
+                });
+    }
+
+    @Test
+    void fallbackAnalystUsesPublishedPricingFactsForPricingComparison() {
+        AnalysisRun run = new AnalysisRun(new AnalysisRequirement(
+                "Analyze Cursor pricing",
+                "AI coding tools",
+                List.of("Cursor"),
+                List.of("pricing"),
+                List.of("pricing_page"),
+                List.of()
+        ));
+        run.getEvidenceSources().add(new EvidenceSource(
+                "S1",
+                "Cursor pricing",
+                "https://example.test/cursor/pricing",
+                "pricing_page",
+                "FETCHED",
+                "LIVE_FETCHED",
+                "HIGH",
+                "NONE",
+                "Cursor Pro costs $20/month.",
+                "Cursor Pro costs $20/month.",
+                "test evidence"
+        ));
+        ExtractedFact pricingFact = new ExtractedFact();
+        pricingFact.setId("F-PRICE");
+        pricingFact.setCompetitorName("Cursor");
+        pricingFact.setFactType(FactType.PRICING);
+        pricingFact.setAttribute("pricing_plan");
+        pricingFact.setValue("Pro | $20/month | monthly | Developers | Composer");
+        pricingFact.setEvidenceIds(List.of("S1"));
+        CompetitorFactSet factSet = new CompetitorFactSet();
+        factSet.setCompetitorName("Cursor");
+        factSet.setFacts(List.of(pricingFact));
+        run.getCompetitorFactSets().add(factSet);
+
+        new AnalystNode(unavailableLlm(), new ObjectMapper(), new FallbackAnalysisDraftFactory()).execute(run);
+
+        assertThat(run.getClaims())
+                .filteredOn(claim -> claim.getContent().contains("定价") || claim.getContent().contains("价格"))
+                .anySatisfy(claim -> {
+                    assertThat(claim.getType()).isEqualTo(ClaimType.COMPARISON);
+                    assertThat(claim.getConfidence()).isEqualTo(ConfidenceLevel.MEDIUM);
+                    assertThat(claim.getEvidenceIds()).containsExactly("S1");
+                    assertThat(claim.getContent()).contains("可追溯");
+                });
+    }
+
+    @Test
+    void downgradesClaimWhenBoundEvidenceDoesNotSupportContent() {
+        LlmClient llmClient = new LlmClient() {
+            @Override
+            public boolean isAvailable() {
+                return true;
+            }
+
+            @Override
+            public String complete(com.aiinsight.llm.ChatRequest request) {
+                return """
+                        {
+                          "claims": [
+                            {
+                              "type": "STRENGTH",
+                              "content": "Cursor provides SSO and SCIM enterprise security controls.",
+                              "confidence": "HIGH",
+                              "competitorNames": ["Cursor"],
+                              "factIds": [],
+                              "evidenceIds": ["S1"],
+                              "chunkKeys": []
+                            }
+                          ]
+                        }
+                        """;
+            }
+        };
+        AnalysisRun run = new AnalysisRun(new AnalysisRequirement(
+                "Analyze Cursor",
+                "AI coding tools",
+                List.of("Cursor"),
+                List.of("enterprise security"),
+                List.of("official_site"),
+                List.of()
+        ));
+        run.getEvidenceSources().add(new EvidenceSource(
+                "S1",
+                "Cursor product page",
+                "https://example.test/cursor",
+                "official_site",
+                "FETCHED",
+                "LIVE_FETCHED",
+                "HIGH",
+                "NONE",
+                "Cursor Composer supports multi-file code edits.",
+                "Cursor Composer supports multi-file code edits.",
+                "test evidence"
+        ));
+
+        new AnalystNode(llmClient, new ObjectMapper(), new FallbackAnalysisDraftFactory()).execute(run);
+
+        assertThat(run.getClaims())
+                .singleElement()
+                .satisfies(claim -> {
+                    assertThat(claim.getConfidence()).isEqualTo(ConfidenceLevel.LOW);
+                    assertThat(claim.getEvidenceIds()).isEmpty();
+                    assertThat(claim.getContent()).contains("SSO", "SCIM");
+                });
+    }
+
     private CompetitorFactSet cursorFactSet() {
         ExtractedFact fact = new ExtractedFact();
         fact.setId("F1");
@@ -350,5 +504,19 @@ class AnalystNodeTest {
         factSet.setCompetitorName("Cursor");
         factSet.setFacts(List.of(fact));
         return factSet;
+    }
+
+    private LlmClient unavailableLlm() {
+        return new LlmClient() {
+            @Override
+            public boolean isAvailable() {
+                return false;
+            }
+
+            @Override
+            public String complete(ChatRequest request) {
+                throw new IllegalStateException("LLM is not configured");
+            }
+        };
     }
 }

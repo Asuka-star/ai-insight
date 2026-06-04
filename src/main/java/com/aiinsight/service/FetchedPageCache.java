@@ -169,19 +169,19 @@ class FetchedPageCache {
                                 updated_at = excluded.updated_at
                             """,
                     normalizedUrl,
-                    page.getUrl(),
-                    page.getTitle(),
-                    page.getRawText(),
-                    page.getComplianceNote(),
-                    varchar(page.getSourceType(), 64),
-                    varchar(page.getSourceQuality(), 32),
-                    varchar(page.getFailureReason(), 64),
+                    dbSafe(page.getUrl()),
+                    dbSafe(page.getTitle()),
+                    dbSafe(page.getRawText()),
+                    dbSafe(page.getComplianceNote()),
+                    varchar(dbSafe(page.getSourceType()), 64),
+                    varchar(dbSafe(page.getSourceQuality()), 32),
+                    varchar(dbSafe(page.getFailureReason()), 64),
                     page.getStatusCode(),
-                    page.getContentType(),
-                    varchar(page.getContentHash(), 64),
+                    dbSafe(page.getContentType()),
+                    varchar(dbSafe(page.getContentHash()), 64),
                     timestamp(page.getFetchedAt()),
                     page.isUsable(),
-                    varchar(page.getStatus(), 64),
+                    varchar(dbSafe(page.getStatus()), 64),
                     timestamp(entry.cachedAt()),
                     timestamp(Instant.now())
             );
@@ -261,6 +261,10 @@ class FetchedPageCache {
                 return value;
             }
             return value.substring(0, maxLength);
+        }
+
+        private String dbSafe(String value) {
+            return value == null ? null : value.replace("\u0000", "");
         }
     }
 

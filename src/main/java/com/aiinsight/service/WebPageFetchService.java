@@ -675,7 +675,7 @@ public class WebPageFetchService {
     }
 
     private String normalizeText(String text) {
-        return HtmlUtils.htmlUnescape(text).replaceAll("\\s+", " ").trim();
+        return storageSafeText(HtmlUtils.htmlUnescape(text)).replaceAll("\\s+", " ").trim();
     }
 
     private String metadataText(Document document, String title) {
@@ -750,6 +750,10 @@ public class WebPageFetchService {
         }
     }
 
+    static String storageSafeText(String value) {
+        return value == null ? "" : value.replace("\u0000", "");
+    }
+
     private record FetchAttemptResult(HttpResponse<String> response, int retryCount) {
     }
 
@@ -786,25 +790,28 @@ public class WebPageFetchService {
                             String contentType,
                             String contentHash,
                             List<String> internalLinks,
-                            Instant fetchedAt,
-                            boolean cacheHit,
-                            boolean usable,
-                            String status) {
-            this.url = url;
-            this.title = title;
-            this.rawText = rawText;
-            this.complianceNote = complianceNote;
-            this.sourceType = sourceType;
-            this.sourceQuality = sourceQuality;
-            this.failureReason = failureReason;
+                             Instant fetchedAt,
+                             boolean cacheHit,
+                             boolean usable,
+                             String status) {
+            String safeRawText = storageSafeText(rawText);
+            this.url = storageSafeText(url);
+            this.title = storageSafeText(title);
+            this.rawText = safeRawText;
+            this.complianceNote = storageSafeText(complianceNote);
+            this.sourceType = storageSafeText(sourceType);
+            this.sourceQuality = storageSafeText(sourceQuality);
+            this.failureReason = storageSafeText(failureReason);
             this.statusCode = statusCode;
-            this.contentType = contentType;
-            this.contentHash = contentHash;
+            this.contentType = storageSafeText(contentType);
+            this.contentHash = shouldRehash(rawText, safeRawText, contentHash)
+                    ? contentHash(safeRawText)
+                    : storageSafeText(contentHash);
             this.internalLinks = internalLinks == null ? List.of() : List.copyOf(internalLinks);
             this.fetchedAt = fetchedAt;
             this.cacheHit = cacheHit;
             this.usable = usable;
-            this.status = status;
+            this.status = storageSafeText(status);
         }
 
         static FetchedPage success(String url, String title, String rawText, String complianceNote) {
@@ -936,6 +943,12 @@ public class WebPageFetchService {
             return note
                     .replaceAll("\\s*cacheHit=true; cachedAt=[^;]+; contentHash=[0-9a-f]+\\.", "")
                     .trim();
+        }
+
+        private static boolean shouldRehash(String originalRawText, String safeRawText, String providedHash) {
+            return providedHash == null
+                    || providedHash.isBlank()
+                    || (originalRawText != null && !safeRawText.equals(originalRawText));
         }
     }
 }

@@ -155,17 +155,7 @@ public class FallbackExtractionFactory {
     }
 
     private List<PricingPlan> createPricingPlans(boolean pricingEvidencePresent, List<String> evidenceIds) {
-        if (!pricingEvidencePresent) {
-            return List.of();
-        }
-        return List.of(new PricingPlan(
-                "公开套餐 / 定制方案",
-                "以价格页为准",
-                "以原始页面为准",
-                "目标用户或采购主体",
-                List.of("已披露能力", "适用范围", "限制条件"),
-                evidenceIds
-        ));
+        return List.of();
     }
 
     private boolean sourceMatchesCompetitor(EvidenceSource source, String competitor) {

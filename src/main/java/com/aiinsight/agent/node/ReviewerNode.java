@@ -7,6 +7,7 @@ import com.aiinsight.model.run.AnalysisRun;
 import com.aiinsight.model.enums.ArtifactType;
 import com.aiinsight.model.enums.ReviewAction;
 import com.aiinsight.model.run.AnalysisRequirement;
+import com.aiinsight.model.run.ReviewRepairDelta;
 import com.aiinsight.model.review.ReviewDecision;
 import com.aiinsight.model.review.ReviewFinding;
 import com.aiinsight.model.review.ReviewRepairTask;
@@ -582,12 +583,25 @@ public class ReviewerNode implements AgentNode {
             run.getRecommendedActions().add("质检发现一手调研证据缺口（%s）：公开搜索不能自动生成真实问卷或访谈，请上传对应资料；自动流程将改为降级相关结论或修订报告。"
                     .formatted(String.join("、", manualOnlyEvidenceTypes)));
         }
+        if (shouldEscalateExtractorRepairToResearcher(run, blockingFindings)) {
+            decision.setAction(ReviewAction.RECOLLECT_EVIDENCE);
+            decision.setTargetAgent(AgentName.RESEARCHER);
+            decision.setReason("Previous Extractor repair did not reduce blocking findings and evidence did not change; rerun Researcher to refresh upstream evidence before extracting facts again.");
+            decision.setRequiredEvidenceTypes(repairEvidenceTypesForEscalation(run));
+            return;
+        }
         if (blockingFindings.stream().anyMatch(this::needsExtractionRework)) {
             decision.setAction(ReviewAction.REWORK_ANALYSIS);
             decision.setTargetAgent(AgentName.EXTRACTOR);
             decision.setReason("Review found high-risk extracted fact issues (%s); rerun Extractor to repair fact values, evidenceIds, or chunk bindings.".formatted(
                     categorySummary(blockingFindings)
             ));
+            return;
+        }
+        if (shouldEscalateAnalystRepairToExtractor(run, blockingFindings)) {
+            decision.setAction(ReviewAction.REWORK_ANALYSIS);
+            decision.setTargetAgent(AgentName.EXTRACTOR);
+            decision.setReason("Previous Analyst repair changed claims but did not reduce blocking findings while evidence, profiles, and facts stayed unchanged; rerun Extractor to rebuild upstream fact/evidence bindings before analyzing again.");
             return;
         }
         if (blockingFindings.stream().anyMatch(this::needsAnalysisRework)) {
@@ -611,7 +625,36 @@ public class ReviewerNode implements AgentNode {
         ));
     }
 
+    private boolean shouldEscalateAnalystRepairToExtractor(AnalysisRun run, List<ReviewFinding> blockingFindings) {
+        ReviewRepairDelta delta = run.getLastReviewRepairDelta();
+        return delta != null
+                && delta.getAgentName() == AgentName.ANALYST
+                && delta.findingsDidNotImprove(run.getReviewFindings().size())
+                && delta.evidenceUnchanged()
+                && delta.extractedStateUnchanged()
+                && blockingFindings.stream().anyMatch(this::needsAnalysisRework);
+    }
+
+    private boolean shouldEscalateExtractorRepairToResearcher(AnalysisRun run, List<ReviewFinding> blockingFindings) {
+        ReviewRepairDelta delta = run.getLastReviewRepairDelta();
+        return delta != null
+                && delta.getAgentName() == AgentName.EXTRACTOR
+                && delta.findingsDidNotImprove(run.getReviewFindings().size())
+                && delta.evidenceUnchanged()
+                && blockingFindings.stream().anyMatch(this::needsExtractionRework);
+    }
+
+    private List<String> repairEvidenceTypesForEscalation(AnalysisRun run) {
+        List<String> missing = run.getResearchPackage() == null
+                ? List.of()
+                : autoCollectableEvidenceTypes(run.getResearchPackage().getMissingEvidenceTypes());
+        return missing.isEmpty() ? List.of("official_site", "pricing_page", "public_review") : missing;
+    }
+
     private List<String> autoCollectableEvidenceTypes(List<String> evidenceTypes) {
+        if (evidenceTypes == null || evidenceTypes.isEmpty()) {
+            return List.of();
+        }
         return evidenceTypes.stream()
                 .filter(StringUtils::hasText)
                 .filter(type -> !isManualOnlyEvidenceType(type))
@@ -620,6 +663,9 @@ public class ReviewerNode implements AgentNode {
     }
 
     private List<String> manualOnlyEvidenceTypes(List<String> evidenceTypes) {
+        if (evidenceTypes == null || evidenceTypes.isEmpty()) {
+            return List.of();
+        }
         return evidenceTypes.stream()
                 .filter(StringUtils::hasText)
                 .filter(this::isManualOnlyEvidenceType)

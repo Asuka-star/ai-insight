@@ -1,5 +1,7 @@
 package com.aiinsight.service;
 
+import com.aiinsight.model.enums.AgentName;
+import com.aiinsight.model.review.ReviewDecision;
 import com.aiinsight.model.review.ReviewRepairTask;
 import com.aiinsight.model.run.AnalysisRequirement;
 import com.aiinsight.model.run.AnalysisRun;
@@ -39,10 +41,11 @@ public class ResearchCoverageService {
     }
 
     public void enrichRepairTasks(AnalysisRun run) {
-        if (run == null || run.getReviewDecision() == null || run.getReviewDecision().getRepairTasks() == null) {
+        ReviewDecision decision = run == null ? null : run.getRepairDecisionFor(AgentName.RESEARCHER);
+        if (decision == null || decision.getRepairTasks() == null) {
             return;
         }
-        for (ReviewRepairTask task : run.getReviewDecision().getRepairTasks()) {
+        for (ReviewRepairTask task : decision.getRepairTasks()) {
             enrichRepairTask(run, task);
         }
     }
@@ -61,8 +64,9 @@ public class ResearchCoverageService {
                     .filter(target -> target.getRepairTaskId() == null)
                     .forEach(targets::add);
         }
-        if (run.getReviewDecision() != null && run.getReviewDecision().getRepairTasks() != null) {
-            run.getReviewDecision().getRepairTasks().stream()
+        ReviewDecision decision = run.getRepairDecisionFor(AgentName.RESEARCHER);
+        if (decision != null && decision.getRepairTasks() != null) {
+            decision.getRepairTasks().stream()
                     .map(task -> repairTarget(run, task))
                     .forEach(targets::add);
         }

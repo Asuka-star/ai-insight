@@ -9,11 +9,14 @@ import com.aiinsight.model.enums.AgentName;
 import com.aiinsight.model.enums.ArtifactType;
 import com.aiinsight.model.enums.ClaimType;
 import com.aiinsight.model.enums.ConfidenceLevel;
+import com.aiinsight.model.enums.FactType;
 import com.aiinsight.model.enums.ReviewAction;
+import com.aiinsight.model.review.ReviewDecision;
 import com.aiinsight.model.review.ReviewRepairTask;
 import com.aiinsight.model.run.AnalysisArtifact;
 import com.aiinsight.model.run.AnalysisRequirement;
 import com.aiinsight.model.run.AnalysisRun;
+import com.aiinsight.model.run.EvidenceChunk;
 import com.aiinsight.model.run.EvidenceSource;
 import com.aiinsight.model.schema.AnalysisClaim;
 import com.aiinsight.model.schema.CompetitorFactSet;
@@ -30,6 +33,7 @@ import com.aiinsight.util.LlmSubtaskSupport.LlmSubtaskResult;
 import static com.aiinsight.util.AgentUtils.CITATION_PATTERN;
 import static com.aiinsight.util.AgentUtils.abbreviate;
 import static com.aiinsight.util.AgentUtils.containsAny;
+import static com.aiinsight.util.AgentUtils.containsIgnoreCase;
 import static com.aiinsight.util.AgentUtils.hasText;
 import static com.aiinsight.util.AgentUtils.knownCitationKeys;
 import static com.aiinsight.util.AgentUtils.normalizeLower;
@@ -67,6 +71,18 @@ public class AnalystNode implements AgentNode {
     private final LlmClient llmClient;
     private final ObjectMapper objectMapper;
     private final FallbackAnalysisDraftFactory fallbackAnalysisDraftFactory;
+    private static final Set<String> CLAIM_SUPPORT_STOP_WORDS = Set.of(
+            "supports", "support", "provides", "provide", "offers", "offer", "includes", "include",
+            "using", "used", "with", "without", "for", "from", "that", "this", "and", "the",
+            "feature", "features", "capability", "capabilities", "product", "users", "user",
+            "analysis", "competitive", "advantage", "risk", "opportunity", "recommendation",
+            "支持", "提供", "功能", "能力", "用户", "产品", "可以", "用于", "适用", "覆盖", "包括",
+            "风险", "机会", "建议", "分析", "竞品", "结论", "证据", "不足", "待验证"
+    );
+    private static final Set<String> HIGH_PRECISION_SUPPORT_TERMS = Set.of(
+            "sso", "scim", "saml", "soc", "soc2", "soc 2", "rbac", "iso", "hipaa", "gdpr",
+            "bedrock", "slack", "terminal", "ide", "vscode", "github", "gitlab"
+    );
 
     @Override
     public AgentName name() {
@@ -262,6 +278,7 @@ public class AnalystNode implements AgentNode {
         claim.setFactIds(distinctKnownFactIds(run, draft.factIds));
         claim.setChunkKeys(distinctKnownChunkKeys(run, draft.chunkKeys));
         bindClaimFacts(run, claim);
+        pruneUnsupportedClaimEvidence(run, claim);
         adjustClaimConfidence(run, claim);
         if (claim.getEvidenceIds().isEmpty() && !containsUncertaintyMarker(claim.getContent())) {
             claim.setContent(claim.getContent() + "（证据不足，待验证）");
@@ -286,6 +303,7 @@ public class AnalystNode implements AgentNode {
         claim.setFactIds(distinctKnownFactIds(run, claim.getFactIds()));
         claim.setChunkKeys(distinctKnownChunkKeys(run, claim.getChunkKeys()));
         bindClaimFacts(run, claim);
+        pruneUnsupportedClaimEvidence(run, claim);
         if (claim.getEvidenceIds().isEmpty()) {
             claim.setConfidence(ConfidenceLevel.LOW);
             if (!containsUncertaintyMarker(claim.getContent())) {
@@ -334,13 +352,14 @@ public class AnalystNode implements AgentNode {
     }
 
     private List<AnalysisClaim> applyAnalystRepairGuard(AnalysisRun run, List<AnalysisClaim> claims) {
-        if (run.getReviewDecision() == null
-                || run.getReviewDecision().getAction() != ReviewAction.REWORK_ANALYSIS
-                || run.getReviewDecision().getTargetAgent() != AgentName.ANALYST
-                || run.getReviewDecision().getRepairTasks().isEmpty()) {
+        ReviewDecision decision = run.getRepairDecisionFor(AgentName.ANALYST);
+        if (decision == null
+                || decision.getAction() != ReviewAction.REWORK_ANALYSIS
+                || decision.getTargetAgent() != AgentName.ANALYST
+                || decision.getRepairTasks().isEmpty()) {
             return claims;
         }
-        List<ReviewRepairTask> tasks = run.getReviewDecision().getRepairTasks().stream()
+        List<ReviewRepairTask> tasks = decision.getRepairTasks().stream()
                 .filter(task -> task.getTargetAgent() == AgentName.ANALYST)
                 .toList();
         if (tasks.isEmpty()) {
@@ -540,6 +559,171 @@ public class AnalystNode implements AgentNode {
                     .limit(8)
                     .toList());
         }
+    }
+
+    private void pruneUnsupportedClaimEvidence(AnalysisRun run, AnalysisClaim claim) {
+        if (claim == null || claim.getEvidenceIds().isEmpty()) {
+            return;
+        }
+        List<String> supportedEvidenceIds = claim.getEvidenceIds().stream()
+                .filter(id -> evidenceSupportsClaim(run, id, claim))
+                .distinct()
+                .limit(6)
+                .toList();
+        if (supportedEvidenceIds.size() == claim.getEvidenceIds().size()) {
+            return;
+        }
+        claim.setEvidenceIds(supportedEvidenceIds);
+        Set<String> acceptedSources = new LinkedHashSet<>(supportedEvidenceIds);
+        claim.setChunkKeys(claim.getChunkKeys().stream()
+                .filter(chunkKey -> chunkSupportsClaim(run, chunkKey, acceptedSources, claim))
+                .distinct()
+                .limit(8)
+                .toList());
+        if (supportedEvidenceIds.isEmpty()) {
+            claim.setConfidence(ConfidenceLevel.LOW);
+        } else if (claim.getConfidence() == ConfidenceLevel.HIGH) {
+            claim.setConfidence(ConfidenceLevel.MEDIUM);
+        }
+    }
+
+    private boolean evidenceSupportsClaim(AnalysisRun run, String citationKey, AnalysisClaim claim) {
+        if (boundFactSupportsEvidence(run, citationKey, claim)) {
+            return true;
+        }
+        EvidenceSource source = sourceByCitationKey(run).get(citationKey);
+        if (source == null) {
+            return false;
+        }
+        String sourceText = evidenceSourceText(source);
+        if (!claimMentionsAnyCompetitor(claim, sourceText)) {
+            return false;
+        }
+        if (supportTextMatches(claim.getContent(), sourceText)) {
+            return true;
+        }
+        return run.getEvidenceChunks().stream()
+                .filter(chunk -> citationKey.equals(chunk.getSourceCitationKey()))
+                .anyMatch(chunk -> supportTextMatches(claim.getContent(), evidenceChunkText(chunk)));
+    }
+
+    private boolean boundFactSupportsEvidence(AnalysisRun run, String citationKey, AnalysisClaim claim) {
+        Set<String> boundFactIds = new LinkedHashSet<>(safeList(claim.getFactIds()));
+        return run.getCompetitorFactSets().stream()
+                .flatMap(factSet -> factSet.getFacts().stream())
+                .filter(fact -> fact.getEvidenceIds().contains(citationKey))
+                .filter(fact -> boundFactIds.isEmpty() || boundFactIds.contains(fact.getId()))
+                .anyMatch(fact -> factSupportsClaim(fact, claim));
+    }
+
+    private boolean factSupportsClaim(ExtractedFact fact, AnalysisClaim claim) {
+        if (fact.getFactType() == FactType.PRICING && claimLooksLikePricing(claim)) {
+            return true;
+        }
+        if (fact.getFactType() == FactType.CUSTOMER_SIGNAL && claimLooksLikeCustomerSignal(claim)) {
+            return true;
+        }
+        return supportTextMatches(claim.getContent(), "%s %s %s".formatted(
+                fact.getFactType(),
+                nullToEmpty(fact.getAttribute()),
+                nullToEmpty(fact.getValue())
+        ));
+    }
+
+    private boolean claimLooksLikePricing(AnalysisClaim claim) {
+        String text = normalizeLower(claim.getContent());
+        return containsAny(text, "pricing", "price", "plan", "subscription", "billing", "$",
+                "价格", "定价", "套餐", "订阅", "付费", "商业模式");
+    }
+
+    private boolean claimLooksLikeCustomerSignal(AnalysisClaim claim) {
+        String text = normalizeLower(claim.getContent());
+        return containsAny(text, "review", "feedback", "customer", "user", "pain", "interview", "survey",
+                "评价", "反馈", "用户", "痛点", "访谈", "调研");
+    }
+
+    private boolean chunkSupportsClaim(AnalysisRun run,
+                                       String chunkKey,
+                                       Set<String> acceptedSources,
+                                       AnalysisClaim claim) {
+        return run.getEvidenceChunks().stream()
+                .filter(chunk -> chunkKey.equals(chunk.getChunkKey()))
+                .filter(chunk -> acceptedSources.contains(chunk.getSourceCitationKey()))
+                .anyMatch(chunk -> supportTextMatches(claim.getContent(), evidenceChunkText(chunk)));
+    }
+
+    private boolean claimMentionsAnyCompetitor(AnalysisClaim claim, String evidenceText) {
+        List<String> competitors = safeList(claim.getCompetitorNames()).stream()
+                .filter(AgentUtils::hasText)
+                .toList();
+        if (competitors.isEmpty()) {
+            return true;
+        }
+        return competitors.stream().anyMatch(competitor -> containsIgnoreCase(evidenceText, competitor));
+    }
+
+    private boolean supportTextMatches(String claimText, String evidenceText) {
+        Set<String> claimTerms = supportTerms(claimText);
+        Set<String> evidenceTerms = supportTerms(evidenceText);
+        if (claimTerms.isEmpty() || evidenceTerms.isEmpty()) {
+            return false;
+        }
+        Set<String> preciseTerms = claimTerms.stream()
+                .filter(HIGH_PRECISION_SUPPORT_TERMS::contains)
+                .collect(Collectors.toCollection(LinkedHashSet::new));
+        if (preciseTerms.isEmpty()) {
+            return true;
+        }
+        if (!evidenceTerms.containsAll(preciseTerms)) {
+            return false;
+        }
+        long overlap = claimTerms.stream().filter(evidenceTerms::contains).count();
+        int required = claimTerms.size() <= 3 ? 1 : 2;
+        return overlap >= Math.min(required, claimTerms.size());
+    }
+
+    private Set<String> supportTerms(String text) {
+        Set<String> terms = new LinkedHashSet<>();
+        if (!hasText(text)) {
+            return terms;
+        }
+        String normalized = normalizeLower(text)
+                .replaceAll("[^\\p{IsHan}a-z0-9]+", " ")
+                .trim();
+        for (String part : normalized.split("\\s+")) {
+            if (part.length() >= 3 && !CLAIM_SUPPORT_STOP_WORDS.contains(part)) {
+                terms.add(part);
+            }
+        }
+        String chineseOnly = normalized.replaceAll("[^\\p{IsHan}]", "");
+        for (int i = 0; i < chineseOnly.length() - 1; i++) {
+            String term = chineseOnly.substring(i, i + 2);
+            if (!CLAIM_SUPPORT_STOP_WORDS.contains(term)) {
+                terms.add(term);
+            }
+        }
+        return terms;
+    }
+
+    private String evidenceSourceText(EvidenceSource source) {
+        return "%s %s %s %s %s %s".formatted(
+                nullToEmpty(source.getTitle()),
+                nullToEmpty(source.getUrl()),
+                nullToEmpty(source.getSourceType()),
+                nullToEmpty(source.getSnippet()),
+                nullToEmpty(source.getRawText()),
+                nullToEmpty(source.getComplianceNote())
+        );
+    }
+
+    private String evidenceChunkText(EvidenceChunk chunk) {
+        return "%s %s %s %s %s".formatted(
+                nullToEmpty(chunk.getTitle()),
+                nullToEmpty(chunk.getUrl()),
+                chunk.getHeadingPath() == null ? "" : String.join(" ", chunk.getHeadingPath()),
+                nullToEmpty(chunk.getContentKind()),
+                nullToEmpty(chunk.getText())
+        );
     }
 
     private List<ExtractedFact> selectedFactsForClaim(AnalysisRun run, AnalysisClaim claim) {
@@ -1125,17 +1309,18 @@ public class AnalystNode implements AgentNode {
     }
 
     private String repairPlanBlock(AnalysisRun run) {
-        if (run.getReviewDecision() == null || run.getReviewDecision().getAction() == ReviewAction.PASS) {
+        ReviewDecision decision = run.getRepairDecisionFor(AgentName.ANALYST);
+        if (decision == null || decision.getAction() == ReviewAction.PASS) {
             return "当前不是复核修复模式。";
         }
-        String instructions = run.getReviewDecision().getRepairInstructions().isEmpty()
+        String instructions = decision.getRepairInstructions().isEmpty()
                 ? "暂无具体修复指令。"
-                : run.getReviewDecision().getRepairInstructions().stream()
+                : decision.getRepairInstructions().stream()
                 .map(instruction -> "- " + instruction)
                 .collect(Collectors.joining("\n"));
-        String tasks = run.getReviewDecision().getRepairTasks().isEmpty()
+        String tasks = decision.getRepairTasks().isEmpty()
                 ? "暂无结构化修复任务。"
-                : run.getReviewDecision().getRepairTasks().stream()
+                : decision.getRepairTasks().stream()
                 .filter(task -> task.getTargetAgent() == AgentName.ANALYST)
                 .map(task -> "- action=%s claim=%s citation=%s currentText=%s instruction=%s expectedFix=%s criteria=%s".formatted(
                         task.getAction(),
@@ -1157,10 +1342,10 @@ public class AnalystNode implements AgentNode {
                 结构化修复任务：
                 %s
                 """.formatted(
-                run.getReviewDecision().getAction(),
-                nullToEmpty(run.getReviewDecision().getRepairScopeSummary()),
-                run.getReviewDecision().getAffectedClaimIds(),
-                run.getReviewDecision().getFindingCategories(),
+                decision.getAction(),
+                nullToEmpty(decision.getRepairScopeSummary()),
+                decision.getAffectedClaimIds(),
+                decision.getFindingCategories(),
                 instructions,
                 tasks
         );

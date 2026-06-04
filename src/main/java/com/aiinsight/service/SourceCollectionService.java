@@ -3,8 +3,10 @@ package com.aiinsight.service;
 import com.aiinsight.model.run.AnalysisRun;
 import com.aiinsight.model.run.EvidenceSource;
 import com.aiinsight.model.run.UserProvidedEvidence;
+import com.aiinsight.model.enums.AgentName;
 import com.aiinsight.model.enums.ResearchSubtaskPriority;
 import com.aiinsight.model.enums.ResearchSubtaskStatus;
+import com.aiinsight.model.review.ReviewDecision;
 import com.aiinsight.model.schema.CandidateUrl;
 import com.aiinsight.model.schema.EvidenceBudget;
 import com.aiinsight.model.schema.ResearchCollectionPlan;
@@ -978,7 +980,8 @@ public class SourceCollectionService {
                                       SearchQueryPlanner.SearchQueryBatch batch,
                                       int baseSourcesPerCompetitor,
                                       boolean recollecting) {
-        if (!recollecting || run.getReviewDecision() == null || run.getReviewDecision().getRepairTasks().isEmpty()) {
+        ReviewDecision decision = run.getRepairDecisionFor(AgentName.RESEARCHER);
+        if (!recollecting || decision == null || decision.getRepairTasks().isEmpty()) {
             return baseSourcesPerCompetitor;
         }
         // Reviewer 打回后不平均加大所有竞品的搜索量，而是优先给 repairTasks 中被点名的竞品
@@ -994,9 +997,13 @@ public class SourceCollectionService {
     }
 
     private Set<String> focusedRepairCompetitors(AnalysisRun run) {
+        ReviewDecision decision = run.getRepairDecisionFor(AgentName.RESEARCHER);
+        if (decision == null || decision.getRepairTasks().isEmpty()) {
+            return Set.of();
+        }
         // repairTasks 里可能只记录 claim/category/recommendation，这里用文本回扫竞品名，
         // 把“哪几个竞品需要补证据”从 Reviewer 输出中提取出来。
-        String repairText = run.getReviewDecision().getRepairTasks().stream()
+        String repairText = decision.getRepairTasks().stream()
                 .map(task -> "%s %s %s %s".formatted(
                         task.getInstruction(),
                         task.getAcceptanceCriteria(),
@@ -1004,10 +1011,10 @@ public class SourceCollectionService {
                         task.getCategory()
                 ))
                 .collect(java.util.stream.Collectors.joining(" "));
-        repairText = repairText + " " + String.join(" ", run.getReviewDecision().getRepairInstructions());
+        repairText = repairText + " " + String.join(" ", decision.getRepairInstructions());
         Set<String> focused = new LinkedHashSet<>();
         for (String competitor : run.getRequirement().getCompetitors()) {
-            boolean structuredTarget = run.getReviewDecision().getRepairTasks().stream()
+            boolean structuredTarget = decision.getRepairTasks().stream()
                     .map(task -> task.getCompetitorName())
                     .filter(StringUtils::hasText)
                     .anyMatch(target -> normalizeText(target).equals(normalizeText(competitor)));
@@ -1374,6 +1381,7 @@ public class SourceCollectionService {
                 true
         );
         if (fetched != null) {
+            enrichSearchEvidence(fetched, result);
             if (StringUtils.hasText(citationKey)) {
                 log.info("Search result promoted to fetched evidence: citationKey={}, url={}, query={}, rank={}",
                         citationKey,
@@ -1389,6 +1397,24 @@ public class SourceCollectionService {
                 result.getQuery(),
                 result.getRank());
         return null;
+    }
+
+    private void enrichSearchEvidence(EvidenceSource source, SearchResult result) {
+        if (source == null || result == null) {
+            return;
+        }
+        String searchContext = "%s %s %s".formatted(
+                safeText(result.getTitle()),
+                safeText(result.getSnippet()),
+                safeText(result.getQuery())
+        ).trim();
+        if (StringUtils.hasText(searchContext)) {
+            source.setSnippet(snippet(searchContext + " " + safeText(source.getSnippet())));
+        }
+        source.setComplianceNote(safeText(source.getComplianceNote())
+                + " searchTitle=\"" + safeText(result.getTitle()) + "\""
+                + " searchQuery=\"" + safeText(result.getQuery()) + "\""
+                + " searchRank=" + result.getRank() + ".");
     }
 
     private EvidenceSource fromUserUrl(String citationKey, String url) {
@@ -1672,6 +1698,10 @@ public class SourceCollectionService {
 
     private String normalizeText(String text) {
         return text == null ? "" : text.trim().toLowerCase(Locale.ROOT);
+    }
+
+    private String safeText(String text) {
+        return text == null ? "" : text;
     }
 
     private List<String> nullToEmpty(List<String> values) {

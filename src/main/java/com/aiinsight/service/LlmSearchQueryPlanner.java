@@ -6,6 +6,7 @@ import com.aiinsight.llm.ChatRequest;
 import com.aiinsight.llm.LlmClient;
 import com.aiinsight.model.enums.AgentName;
 import com.aiinsight.model.enums.ReviewAction;
+import com.aiinsight.model.review.ReviewDecision;
 import com.aiinsight.model.review.ReviewRepairTask;
 import com.aiinsight.model.run.AnalysisRequirement;
 import com.aiinsight.model.run.AnalysisRun;
@@ -189,20 +190,21 @@ public class LlmSearchQueryPlanner {
     }
 
     private String repairContext(AnalysisRun run, boolean recollecting) {
-        if (!recollecting || run.getReviewDecision() == null
-                || run.getReviewDecision().getAction() != ReviewAction.RECOLLECT_EVIDENCE
-                || run.getReviewDecision().getTargetAgent() != AgentName.RESEARCHER) {
+        ReviewDecision decision = run.getRepairDecisionFor(AgentName.RESEARCHER);
+        if (!recollecting || decision == null
+                || decision.getAction() != ReviewAction.RECOLLECT_EVIDENCE
+                || decision.getTargetAgent() != AgentName.RESEARCHER) {
             return "无";
         }
         // 复核补采时把 ReviewDecision 的结构化 repairTasks 原样喂给 Query Planner，
         // 让新一轮搜索围绕缺口收敛，而不是重新做一次宽泛行业调研。
-        String requiredTypes = String.join("、", run.getReviewDecision().getRequiredEvidenceTypes());
-        String tasks = run.getReviewDecision().getRepairTasks().stream()
+        String requiredTypes = String.join("、", decision.getRequiredEvidenceTypes());
+        String tasks = decision.getRepairTasks().stream()
                 .filter(task -> task.getTargetAgent() == AgentName.RESEARCHER)
                 .limit(6)
                 .map(this::repairTaskLine)
                 .collect(Collectors.joining("\n"));
-        String instructions = run.getReviewDecision().getRepairInstructions().stream()
+        String instructions = decision.getRepairInstructions().stream()
                 .limit(6)
                 .collect(Collectors.joining("\n"));
         return """

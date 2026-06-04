@@ -12,6 +12,7 @@ import com.aiinsight.model.run.AnalysisArtifact;
 import com.aiinsight.model.run.AnalysisRun;
 import com.aiinsight.model.run.EvidenceChunk;
 import com.aiinsight.model.run.EvidenceSource;
+import com.aiinsight.model.run.ReviewRepairDelta;
 import com.aiinsight.model.schema.AnalysisClaim;
 import com.aiinsight.model.schema.CompetitorFactSet;
 import com.aiinsight.model.schema.ExtractedFact;
@@ -112,6 +113,46 @@ class ReviewerNodeTest {
     }
 
     @Test
+    void escalatesRepeatedAnalystRepairWithoutUpstreamChangeToExtractor() {
+        AnalysisRun run = new AnalysisRun();
+        run.addArtifact(new AnalysisArtifact(ArtifactType.REPORT_DRAFT, "draft", "Summary only.", List.of()));
+        run.getEvidenceSources().add(source("S33", "Cursor Composer supports multi-file code editing."));
+        run.getEvidenceChunks().add(chunk("S33-C1", "S33", "feature", "Cursor Composer supports multi-file code editing."));
+        ExtractedFact fact = fact("F33", FactType.FEATURE, "composer",
+                "Cursor Composer supports multi-file code editing.", List.of("S33"), List.of("S33-C1"));
+        run.getCompetitorFactSets().add(factSet(fact));
+        AnalysisClaim claim = claim("Cursor is the best enterprise governance platform.", List.of("S33"), List.of("F33"));
+        run.getClaims().add(claim);
+        run.setLastReviewRepairDelta(unchangedUpstreamDelta(AgentName.ANALYST, 1));
+
+        new ReviewerNode(new CitationCoverageEvaluator(), noopLlmClient(), new FallbackReviewReportFactory()).execute(run);
+
+        assertThat(run.getReviewDecision().getAction()).isEqualTo(ReviewAction.REWORK_ANALYSIS);
+        assertThat(run.getReviewDecision().getTargetAgent()).isEqualTo(AgentName.EXTRACTOR);
+        assertThat(run.getReviewDecision().getReason()).contains("Previous Analyst repair");
+    }
+
+    @Test
+    void escalatesRepeatedExtractorRepairWithoutEvidenceChangeToResearcher() {
+        AnalysisRun run = new AnalysisRun();
+        run.addArtifact(new AnalysisArtifact(ArtifactType.REPORT_DRAFT, "draft", "Summary only.", List.of()));
+        run.getEvidenceSources().add(source("S34", "Cursor Composer supports multi-file code editing."));
+        run.getEvidenceChunks().add(chunk("S34-C1", "S34", "feature", "Cursor Composer supports multi-file code editing."));
+        ExtractedFact fact = fact("F34", FactType.SECURITY, "compliance",
+                "Cursor includes SOC 2 enterprise compliance controls.", List.of("S34"), List.of("S34-C1"));
+        run.getCompetitorFactSets().add(factSet(fact));
+        run.getClaims().add(claim("Cursor includes SOC 2 enterprise compliance controls.", List.of("S34"), List.of("F34")));
+        run.setLastReviewRepairDelta(unchangedUpstreamDelta(AgentName.EXTRACTOR, 1));
+
+        new ReviewerNode(new CitationCoverageEvaluator(), noopLlmClient(), new FallbackReviewReportFactory()).execute(run);
+
+        assertThat(run.getReviewDecision().getAction()).isEqualTo(ReviewAction.RECOLLECT_EVIDENCE);
+        assertThat(run.getReviewDecision().getTargetAgent()).isEqualTo(AgentName.RESEARCHER);
+        assertThat(run.getReviewDecision().getRequiredEvidenceTypes()).contains("official_site", "pricing_page", "public_review");
+        assertThat(run.getReviewDecision().getReason()).contains("Previous Extractor repair");
+    }
+
+    @Test
     void capsLlmFindingsPerSubtask() {
         AnalysisRun run = new AnalysisRun();
         run.addArtifact(new AnalysisArtifact(
@@ -209,6 +250,31 @@ class ReviewerNodeTest {
                         """.formatted(claimId);
             }
         };
+    }
+
+    private ReviewRepairDelta unchangedUpstreamDelta(AgentName agentName, int findingsBefore) {
+        ReviewRepairDelta delta = new ReviewRepairDelta();
+        delta.setAgentName(agentName);
+        delta.setChanged(true);
+        delta.setFindingsBefore(findingsBefore);
+        delta.setFindingsAfter(findingsBefore);
+        delta.setEvidenceSourcesBefore(1);
+        delta.setEvidenceSourcesAfter(1);
+        delta.setClaimsBefore(1);
+        delta.setClaimsAfter(2);
+        delta.setArtifactsBefore(1);
+        delta.setArtifactsAfter(2);
+        delta.setEvidenceFingerprintBefore("evidence");
+        delta.setEvidenceFingerprintAfter("evidence");
+        delta.setProfileFingerprintBefore("profile");
+        delta.setProfileFingerprintAfter("profile");
+        delta.setFactFingerprintBefore("fact");
+        delta.setFactFingerprintAfter("fact");
+        delta.setClaimsFingerprintBefore("claims-before");
+        delta.setClaimsFingerprintAfter("claims-after");
+        delta.setReportFingerprintBefore("report");
+        delta.setReportFingerprintAfter("report");
+        return delta;
     }
 
     private EvidenceSource source(String citationKey, String text) {

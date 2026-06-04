@@ -1,6 +1,8 @@
 package com.aiinsight.service;
 
+import com.aiinsight.model.enums.AgentName;
 import com.aiinsight.model.enums.ReviewAction;
+import com.aiinsight.model.review.ReviewDecision;
 import com.aiinsight.model.review.ReviewRepairTask;
 import com.aiinsight.model.run.AnalysisRequirement;
 import com.aiinsight.model.run.AnalysisRun;
@@ -47,8 +49,9 @@ public class LeadResearchPlanner {
                                     List<SearchQueryPlanner.SearchQueryBatch> batches,
                                     boolean recollecting) {
         Set<String> focus = new LinkedHashSet<>();
-        if (recollecting && run.getReviewDecision() != null) {
-            run.getReviewDecision().getRepairTasks().stream()
+        ReviewDecision decision = run.getRepairDecisionFor(AgentName.RESEARCHER);
+        if (recollecting && decision != null) {
+            decision.getRepairTasks().stream()
                     .map(this::repairFocus)
                     .filter(StringUtils::hasText)
                     .forEach(focus::add);
@@ -104,9 +107,10 @@ public class LeadResearchPlanner {
                 sourceTypes.addAll(sourceTypesForDimension(dimension));
             }
         }
-        if (recollecting && run.getReviewDecision() != null) {
-            nullToEmpty(run.getReviewDecision().getRequiredEvidenceTypes()).forEach(sourceTypes::add);
-            run.getReviewDecision().getRepairTasks().stream()
+        ReviewDecision decision = run.getRepairDecisionFor(AgentName.RESEARCHER);
+        if (recollecting && decision != null) {
+            nullToEmpty(decision.getRequiredEvidenceTypes()).forEach(sourceTypes::add);
+            decision.getRepairTasks().stream()
                     .flatMap(task -> nullToEmpty(task.getSourcePreferences()).stream())
                     .forEach(sourceTypes::add);
         }
@@ -117,11 +121,12 @@ public class LeadResearchPlanner {
     }
 
     private List<String> repairPriorities(AnalysisRun run, boolean recollecting) {
-        if (!recollecting || run.getReviewDecision() == null
-                || run.getReviewDecision().getAction() != ReviewAction.RECOLLECT_EVIDENCE) {
+        ReviewDecision decision = run.getRepairDecisionFor(AgentName.RESEARCHER);
+        if (!recollecting || decision == null
+                || decision.getAction() != ReviewAction.RECOLLECT_EVIDENCE) {
             return List.of();
         }
-        return run.getReviewDecision().getRepairTasks().stream()
+        return decision.getRepairTasks().stream()
                 .map(this::repairPriority)
                 .filter(StringUtils::hasText)
                 .distinct()

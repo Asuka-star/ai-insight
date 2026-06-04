@@ -14,6 +14,7 @@ import com.aiinsight.model.run.AgentTrace;
 import com.aiinsight.model.run.AnalysisRequirement;
 import com.aiinsight.model.run.AnalysisArtifact;
 import com.aiinsight.model.run.AnalysisRun;
+import com.aiinsight.model.run.ReviewRepairDelta;
 import com.aiinsight.model.schema.AnalysisClaim;
 import com.aiinsight.model.schema.CompetitorFactSet;
 import com.aiinsight.model.schema.CompetitorProfile;
@@ -201,6 +202,7 @@ public class WorkflowNodeExecutor {
         RepairSnapshot after = RepairSnapshot.capture(run, node.name());
         String summary = repairDeltaSummary(node.name(), before, after);
         AgentTraceContext.recordProcessSummary(summary);
+        run.setLastReviewRepairDelta(before.toDelta(after));
         log.info("Review repair delta: runId={}, agent={}, changed={}, before={}, after={}",
                 run.getId(),
                 node.name(),
@@ -457,6 +459,7 @@ public class WorkflowNodeExecutor {
     private record RepairSnapshot(
             AgentName agentName,
             boolean active,
+            int findings,
             int evidenceSources,
             int claims,
             int artifacts,
@@ -472,6 +475,7 @@ public class WorkflowNodeExecutor {
             return new RepairSnapshot(
                     agentName,
                     active,
+                    run.getReviewFindings().size(),
                     run.getEvidenceSources().size(),
                     run.getClaims().size(),
                     run.getArtifacts().size(),
@@ -513,13 +517,13 @@ public class WorkflowNodeExecutor {
         }
 
         String shortSummary() {
-            return "evidence=%d, claims=%d, artifacts=%d, claimsFp=%s, reportFp=%s, evidenceFp=%s, profileFp=%s, factFp=%s"
-                    .formatted(evidenceSources, claims, artifacts, claimsFingerprint, reportFingerprint,
+            return "findings=%d, evidence=%d, claims=%d, artifacts=%d, claimsFp=%s, reportFp=%s, evidenceFp=%s, profileFp=%s, factFp=%s"
+                    .formatted(findings, evidenceSources, claims, artifacts, claimsFingerprint, reportFingerprint,
                             evidenceFingerprint, profileFingerprint, factFingerprint);
         }
 
         private static boolean isRepairTarget(AnalysisRun run, AgentName agentName) {
-            ReviewDecision decision = run.getReviewDecision();
+            ReviewDecision decision = run.getRepairDecisionFor(agentName);
             return decision != null
                     && decision.getAction() != ReviewAction.PASS
                     && decision.getTargetAgent() == agentName;
@@ -599,6 +603,31 @@ public class WorkflowNodeExecutor {
             return value == null ? "" : value.toLowerCase()
                     .replaceAll("\\s+", " ")
                     .trim();
+        }
+
+        private ReviewRepairDelta toDelta(RepairSnapshot after) {
+            ReviewRepairDelta delta = new ReviewRepairDelta();
+            delta.setAgentName(agentName);
+            delta.setChanged(materiallyChanged(after));
+            delta.setFindingsBefore(findings);
+            delta.setFindingsAfter(after == null ? 0 : after.findings);
+            delta.setEvidenceSourcesBefore(evidenceSources);
+            delta.setEvidenceSourcesAfter(after == null ? 0 : after.evidenceSources);
+            delta.setClaimsBefore(claims);
+            delta.setClaimsAfter(after == null ? 0 : after.claims);
+            delta.setArtifactsBefore(artifacts);
+            delta.setArtifactsAfter(after == null ? 0 : after.artifacts);
+            delta.setClaimsFingerprintBefore(claimsFingerprint);
+            delta.setClaimsFingerprintAfter(after == null ? "" : after.claimsFingerprint);
+            delta.setReportFingerprintBefore(reportFingerprint);
+            delta.setReportFingerprintAfter(after == null ? "" : after.reportFingerprint);
+            delta.setEvidenceFingerprintBefore(evidenceFingerprint);
+            delta.setEvidenceFingerprintAfter(after == null ? "" : after.evidenceFingerprint);
+            delta.setProfileFingerprintBefore(profileFingerprint);
+            delta.setProfileFingerprintAfter(after == null ? "" : after.profileFingerprint);
+            delta.setFactFingerprintBefore(factFingerprint);
+            delta.setFactFingerprintAfter(after == null ? "" : after.factFingerprint);
+            return delta;
         }
     }
 }

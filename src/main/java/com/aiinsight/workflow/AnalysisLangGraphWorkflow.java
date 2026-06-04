@@ -4,6 +4,7 @@ import com.aiinsight.agent.AgentNode;
 import com.aiinsight.exception.RunNotFoundException;
 import com.aiinsight.model.enums.AgentName;
 import com.aiinsight.model.enums.AnalysisStatus;
+import com.aiinsight.model.enums.ReviewSeverity;
 import com.aiinsight.model.run.AnalysisRun;
 import com.aiinsight.model.enums.ReviewAction;
 import com.aiinsight.model.review.ReviewDecision;
@@ -89,18 +90,22 @@ public class AnalysisLangGraphWorkflow {
         }
         prepareManualRerunReviewContext(runId, agentName);
         AnalysisRun run = null;
-        for (AgentNode cascadeNode : rerunCascade(agentName)) {
-            run = nodeExecutor.executeNode(
-                    runId,
-                    cascadeNode,
-                    "Manual cascade rerun requested from " + agentName
-            );
-            if (cascadeNode.name() == AgentName.REVIEWER) {
-                run = repository.findById(runId).orElseThrow(() -> new RunNotFoundException(runId));
-                recordTransition(run, ROUTE_FINISH, manualRerunAttempt(run), "manual-rerun-from-" + agentName);
+        try {
+            for (AgentNode cascadeNode : rerunCascade(agentName)) {
+                run = nodeExecutor.executeNode(
+                        runId,
+                        cascadeNode,
+                        "Manual cascade rerun requested from " + agentName
+                );
+                if (cascadeNode.name() == AgentName.REVIEWER) {
+                    run = repository.findById(runId).orElseThrow(() -> new RunNotFoundException(runId));
+                    recordTransition(run, ROUTE_FINISH, manualRerunAttempt(run), "manual-rerun-from-" + agentName);
+                }
             }
+        } finally {
+            clearManualRerunReviewContext(runId);
         }
-        return run == null ? repository.findById(runId).orElseThrow(() -> new RunNotFoundException(runId)) : run;
+        return repository.findById(runId).orElse(run);
     }
 
     private CompiledGraph<AnalysisGraphState> buildGraph() {
@@ -289,8 +294,9 @@ public class AnalysisLangGraphWorkflow {
             return;
         }
 
-        List<ReviewFinding> findings = manualRerunFindings(run, agentName);
-        List<ReviewRepairTask> existingTasks = existingManualRerunTasks(run, agentName);
+        List<AgentName> repairScopeAgents = manualRerunRepairScope(agentName);
+        List<ReviewFinding> findings = manualRerunFindings(run, repairScopeAgents);
+        List<ReviewRepairTask> existingTasks = existingManualRerunTasks(run, repairScopeAgents);
         if (findings.isEmpty() && existingTasks.isEmpty()) {
             return;
         }
@@ -327,7 +333,7 @@ public class AnalysisLangGraphWorkflow {
                 .collect(LinkedHashSet::new, LinkedHashSet::add, LinkedHashSet::addAll);
         findings.stream()
                 .filter(finding -> !existingFindingIds.contains(finding.getId().toString()))
-                .map(finding -> repairTaskForManualRerun(agentName, finding))
+                .map(finding -> repairTaskForManualRerun(repairTargetForManualRerun(finding, repairScopeAgents, agentName), finding))
                 .forEach(tasks::add);
         decision.setRepairTasks(tasks.stream()
                 .limit(MAX_MANUAL_RERUN_REPAIR_FINDINGS)
@@ -335,7 +341,7 @@ public class AnalysisLangGraphWorkflow {
         decision.setRepairScopeSummary("手动重跑 " + agentName + " 自动携带上一轮 Reviewer 问题："
                 + decision.getRepairTasks().size() + " 个修复任务；类别=" + decision.getFindingCategories());
         decision.setDecidedAt(Instant.now());
-        run.setReviewDecision(decision);
+        run.setManualRerunDecision(decision);
         repository.save(run);
         log.info("Prepared manual rerun review context: runId={}, agent={}, findings={}, existingTasks={}, tasks={}",
                 runId,
@@ -345,32 +351,70 @@ public class AnalysisLangGraphWorkflow {
                 decision.getRepairTasks().size());
     }
 
-    private List<ReviewFinding> manualRerunFindings(AnalysisRun run, AgentName agentName) {
+    private void clearManualRerunReviewContext(UUID runId) {
+        repository.findById(runId).ifPresent(run -> {
+            if (run.getManualRerunDecision() != null) {
+                run.setManualRerunDecision(null);
+                repository.save(run);
+            }
+        });
+    }
+
+    private List<ReviewFinding> manualRerunFindings(AnalysisRun run, List<AgentName> repairScopeAgents) {
         List<ReviewFinding> nonLowFindings = run.getReviewFindings().stream()
                 .filter(finding -> finding.getSeverity() == null || !"LOW".equals(finding.getSeverity().name()))
                 .toList();
         List<ReviewFinding> candidates = nonLowFindings.isEmpty() ? run.getReviewFindings() : nonLowFindings;
-        List<ReviewFinding> matched = candidates.stream()
-                .filter(finding -> targetAgentForFinding(finding) == agentName)
+        List<ReviewFinding> scoped = candidates.stream()
+                .filter(finding -> repairScopeAgents.contains(targetAgentForFinding(finding)))
+                .sorted((left, right) -> {
+                    int severityCompare = Integer.compare(severityRank(right), severityRank(left));
+                    if (severityCompare != 0) {
+                        return severityCompare;
+                    }
+                    return Integer.compare(
+                            repairScopeAgents.indexOf(targetAgentForFinding(left)),
+                            repairScopeAgents.indexOf(targetAgentForFinding(right))
+                    );
+                })
                 .limit(MAX_MANUAL_RERUN_REPAIR_FINDINGS)
                 .toList();
-        if (!matched.isEmpty()) {
-            return matched;
+        if (!scoped.isEmpty()) {
+            return scoped;
         }
         return candidates.stream()
                 .limit(MAX_MANUAL_RERUN_REPAIR_FINDINGS)
                 .toList();
     }
 
-    private List<ReviewRepairTask> existingManualRerunTasks(AnalysisRun run, AgentName agentName) {
+    private int severityRank(ReviewFinding finding) {
+        ReviewSeverity severity = finding == null ? null : finding.getSeverity();
+        if (severity == ReviewSeverity.HIGH) {
+            return 3;
+        }
+        if (severity == ReviewSeverity.MEDIUM) {
+            return 2;
+        }
+        if (severity == ReviewSeverity.LOW) {
+            return 1;
+        }
+        return 2;
+    }
+
+    private List<ReviewRepairTask> existingManualRerunTasks(AnalysisRun run, List<AgentName> repairScopeAgents) {
         ReviewDecision decision = run.getReviewDecision();
         if (decision == null || decision.getRepairTasks() == null || decision.getRepairTasks().isEmpty()) {
             return List.of();
         }
         return decision.getRepairTasks().stream()
-                .filter(task -> task.getTargetAgent() == agentName)
+                .filter(task -> repairScopeAgents.contains(task.getTargetAgent()))
                 .limit(MAX_MANUAL_RERUN_REPAIR_FINDINGS)
                 .toList();
+    }
+
+    private AgentName repairTargetForManualRerun(ReviewFinding finding, List<AgentName> repairScopeAgents, AgentName fallbackAgent) {
+        AgentName targetAgent = targetAgentForFinding(finding);
+        return repairScopeAgents.contains(targetAgent) ? targetAgent : fallbackAgent;
     }
 
     private ReviewRepairTask repairTaskForManualRerun(AgentName agentName, ReviewFinding finding) {
@@ -399,6 +443,17 @@ public class AnalysisLangGraphWorkflow {
             case WRITER -> ReviewAction.REVISE_REPORT;
             case EXTRACTOR, ANALYST -> ReviewAction.REWORK_ANALYSIS;
             case CLARIFIER, REVIEWER -> ReviewAction.PASS;
+        };
+    }
+
+    private List<AgentName> manualRerunRepairScope(AgentName agentName) {
+        return switch (agentName) {
+            case RESEARCHER -> List.of(AgentName.RESEARCHER, AgentName.EXTRACTOR, AgentName.ANALYST, AgentName.WRITER);
+            case EXTRACTOR -> List.of(AgentName.EXTRACTOR, AgentName.ANALYST, AgentName.WRITER);
+            case ANALYST -> List.of(AgentName.ANALYST, AgentName.WRITER);
+            case WRITER -> List.of(AgentName.WRITER);
+            case CLARIFIER -> List.of(AgentName.CLARIFIER);
+            case REVIEWER -> List.of(AgentName.REVIEWER);
         };
     }
 
@@ -433,8 +488,14 @@ public class AnalysisLangGraphWorkflow {
             return AgentName.EXTRACTOR;
         }
         if (text.contains("missing evidence")
+                || text.contains("missing_evidence")
                 || text.contains("evidence gap")
                 || text.contains("source_quality")
+                || text.contains("low_quality_source")
+                || text.contains("marketing_only_source")
+                || text.contains("snippet_only_source")
+                || text.contains("blocked_source")
+                || text.contains("fetch_failed_source")
                 || text.contains("coverage")
                 || text.contains("补证")
                 || text.contains("证据缺口")) {

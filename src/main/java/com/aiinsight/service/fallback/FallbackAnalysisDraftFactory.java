@@ -3,11 +3,13 @@ package com.aiinsight.service.fallback;
 import com.aiinsight.model.enums.AgentName;
 import com.aiinsight.model.enums.ClaimType;
 import com.aiinsight.model.enums.ConfidenceLevel;
+import com.aiinsight.model.enums.FactType;
 import com.aiinsight.model.run.AnalysisRequirement;
 import com.aiinsight.model.run.AnalysisRun;
 import com.aiinsight.model.run.EvidenceSource;
 import com.aiinsight.model.schema.AnalysisClaim;
 import com.aiinsight.model.schema.CompetitorProfile;
+import com.aiinsight.model.schema.ExtractedFact;
 import com.aiinsight.service.AnalysisDraft;
 import org.springframework.stereotype.Component;
 
@@ -71,19 +73,40 @@ public class FallbackAnalysisDraftFactory {
     }
 
     private AnalysisClaim pricingClaim(AnalysisRun run, String dimension) {
-        List<String> evidenceIds = evidenceIdsForDimension(run, dimension);
-        boolean pricingEvidencePresent = run.getCompetitorProfiles().stream()
-                .anyMatch(profile -> profile.getPricingModel() != null
-                        && !profile.getPricingModel().getEvidenceIds().isEmpty()
-                        && hasText(profile.getPricingModel().getStrategySummary())
-                        && !profile.getPricingModel().getStrategySummary().contains("待补充"));
+        List<String> evidenceIds = pricingFactEvidenceIds(run);
+        boolean pricingEvidencePresent = !evidenceIds.isEmpty();
         AnalysisClaim claim = baseClaim(run, evidenceIds);
         claim.setType(pricingEvidencePresent ? ClaimType.COMPARISON : ClaimType.RISK);
         claim.setContent(pricingEvidencePresent
-                ? "围绕%s，已具备价格页或套餐证据，可初步比较定价策略；具体金额仍应回到原始页面核验。".formatted(dimension)
-                : "围绕%s，当前价格页或套餐证据不足，定价和商业模式判断需要标注待验证。".formatted(dimension));
+                ? "围绕%s，已抽取到可追溯的价格或套餐事实，可保守比较定价策略；未抽取到的具体金额不作结论。".formatted(dimension)
+                : "围绕%s，当前结构化事实层没有可发布的价格或套餐事实，定价和商业模式判断需标注待验证。".formatted(dimension));
         claim.setConfidence(pricingEvidencePresent ? ConfidenceLevel.MEDIUM : ConfidenceLevel.LOW);
         return claim;
+    }
+
+    private List<String> pricingFactEvidenceIds(AnalysisRun run) {
+        return run.getCompetitorFactSets().stream()
+                .flatMap(factSet -> factSet.getFacts().stream())
+                .filter(fact -> fact.getFactType() == FactType.PRICING)
+                .filter(fact -> hasText(fact.getValue()))
+                .filter(fact -> !looksLikeUnverifiedOrTemplatePricingFact(fact))
+                .flatMap(fact -> fact.getEvidenceIds().stream())
+                .distinct()
+                .limit(6)
+                .toList();
+    }
+
+    private boolean looksLikeUnverifiedOrTemplatePricingFact(ExtractedFact fact) {
+        String normalized = normalize(fact.getValue());
+        return containsAny(normalized,
+                "待验证",
+                "证据不足",
+                "unknown",
+                "needs verification",
+                "公开套餐",
+                "定制方案",
+                "以价格页为准",
+                "以原始页面为准");
     }
 
     private AnalysisClaim userVoiceClaim(AnalysisRun run, String dimension) {

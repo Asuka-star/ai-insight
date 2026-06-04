@@ -605,8 +605,9 @@ class AnalysisWorkflowServiceTest {
         assertThat(finished.getCompetitorProfiles())
                 .allSatisfy(profile -> {
                     assertThat(profile.getFeatureTree().getRoots()).isNotEmpty();
-                    assertThat(profile.getPricingModel().getEvidenceIds()).isNotEmpty();
-                    assertThat(profile.getPricingModel().getPlans()).isNotEmpty();
+                    assertThat(profile.getPricingModel()).isNotNull();
+                    assertThat(profile.getPricingModel().getPlans())
+                            .noneMatch(plan -> plan.getName().contains("\u516c\u5f00\u5957\u9910"));
                     assertThat(profile.getPersonas()).isNotEmpty();
                     assertThat(profile.getEvidenceIds()).isNotEmpty();
                 });
@@ -1436,7 +1437,8 @@ class AnalysisWorkflowServiceTest {
                 new EvidenceChunkService(),
                 EvidenceEmbeddingService.disabled(),
                 new LlmSearchQueryPlanner(queryPlannerLlm, new ObjectMapper()),
-                new LlmSearchCandidateSelector(noopLlmClient(), new ObjectMapper())
+                new LlmSearchCandidateSelector(noopLlmClient(), new ObjectMapper()),
+                new EvidenceSourceLifecycleService()
         );
         AnalysisRun run = new AnalysisRun(new AnalysisRequirement(
                 "Analyze Cursor for AI coding teams.",
@@ -1542,7 +1544,8 @@ class AnalysisWorkflowServiceTest {
                 new EvidenceChunkService(),
                 EvidenceEmbeddingService.disabled(),
                 new LlmSearchQueryPlanner(autonomousResearchLlm, new ObjectMapper()),
-                new LlmSearchCandidateSelector(autonomousResearchLlm, new ObjectMapper())
+                new LlmSearchCandidateSelector(autonomousResearchLlm, new ObjectMapper()),
+                new EvidenceSourceLifecycleService()
         );
         AnalysisRun run = new AnalysisRun(new AnalysisRequirement(
                 "Analyze Cursor developer workflow.",
@@ -1668,7 +1671,8 @@ class AnalysisWorkflowServiceTest {
                 new EvidenceChunkService(),
                 EvidenceEmbeddingService.disabled(),
                 new LlmSearchQueryPlanner(autonomousResearchLlm, new ObjectMapper()),
-                new LlmSearchCandidateSelector(autonomousResearchLlm, new ObjectMapper())
+                new LlmSearchCandidateSelector(autonomousResearchLlm, new ObjectMapper()),
+                new EvidenceSourceLifecycleService()
         );
         AnalysisRun run = new AnalysisRun(new AnalysisRequirement(
                 "Analyze Cursor developer workflow.",
@@ -1760,7 +1764,8 @@ class AnalysisWorkflowServiceTest {
                 new EvidenceChunkService(),
                 EvidenceEmbeddingService.disabled(),
                 new LlmSearchQueryPlanner(autonomousResearchLlm, new ObjectMapper()),
-                new LlmSearchCandidateSelector(autonomousResearchLlm, new ObjectMapper())
+                new LlmSearchCandidateSelector(autonomousResearchLlm, new ObjectMapper()),
+                new EvidenceSourceLifecycleService()
         );
         AnalysisRun run = new AnalysisRun(new AnalysisRequirement(
                 "Analyze Cursor implementation.",
@@ -1787,7 +1792,8 @@ class AnalysisWorkflowServiceTest {
                 new EvidenceChunkService(),
                 EvidenceEmbeddingService.disabled(),
                 new LlmSearchQueryPlanner(noopLlmClient(), new ObjectMapper()),
-                new LlmSearchCandidateSelector(noopLlmClient(), new ObjectMapper())
+                new LlmSearchCandidateSelector(noopLlmClient(), new ObjectMapper()),
+                new EvidenceSourceLifecycleService()
         );
         AnalysisRun run = new AnalysisRun(new AnalysisRequirement(
                 "Analyze UnknownDoc.",
@@ -1813,7 +1819,8 @@ class AnalysisWorkflowServiceTest {
                 new EvidenceChunkService(),
                 EvidenceEmbeddingService.disabled(),
                 new LlmSearchQueryPlanner(noopLlmClient(), new ObjectMapper()),
-                new LlmSearchCandidateSelector(noopLlmClient(), new ObjectMapper())
+                new LlmSearchCandidateSelector(noopLlmClient(), new ObjectMapper()),
+                new EvidenceSourceLifecycleService()
         );
         AnalysisRun run = new AnalysisRun(new AnalysisRequirement(
                 "Compare Notion and Confluence pricing.",
@@ -2147,11 +2154,11 @@ class AnalysisWorkflowServiceTest {
                     assertThat(persona.getCompanySize()).isEqualTo("需按目标场景继续确认");
                     assertThat(persona.getPainPoints()).contains("实际使用阻力待验证");
                 });
-        assertThat(salesforce.getPricingModel().getPlans())
-                .anySatisfy(plan -> {
-                    assertThat(plan.getName()).isEqualTo("公开套餐 / 定制方案");
-                    assertThat(plan.getTargetSegment()).isEqualTo("目标用户或采购主体");
-                });
+        assertThat(salesforce.getPricingModel().getPlans()).isEmpty();
+        assertThat(run.getCompetitorFactSets())
+                .flatExtracting(factSet -> factSet.getFacts())
+                .extracting(fact -> fact.getValue())
+                .noneMatch(value -> value.contains("\u516c\u5f00\u5957\u9910") || value.contains("\u4ee5\u4ef7\u683c\u9875\u4e3a\u51c6"));
         assertThat(run.getArtifacts())
                 .filteredOn(artifact -> artifact.getType() == ArtifactType.COMPETITOR_PROFILE)
                 .last()
@@ -2457,7 +2464,7 @@ class AnalysisWorkflowServiceTest {
 
             @Override
             public AnalysisRun execute(AnalysisRun run) {
-                analystDecision.set(run.getReviewDecision());
+                analystDecision.set(run.getRepairDecisionFor(AgentName.ANALYST));
                 return run;
             }
         };
@@ -2491,6 +2498,10 @@ class AnalysisWorkflowServiceTest {
         finding.setCitationKey("S1");
         finding.setExcerpt("Cursor has enterprise governance.");
         run.getReviewFindings().add(finding);
+        run.getReviewDecision().setAction(ReviewAction.RECOLLECT_EVIDENCE);
+        run.getReviewDecision().setTargetAgent(AgentName.RESEARCHER);
+        run.getReviewDecision().setReason("Need Researcher to collect user review evidence.");
+        run.getReviewDecision().setRequiredEvidenceTypes(List.of("user_review"));
         repository.save(run);
 
         workflow.rerunAgent(run.getId(), AgentName.ANALYST);
@@ -2508,6 +2519,116 @@ class AnalysisWorkflowServiceTest {
                     assertThat(task.getCitationKey()).isEqualTo("S1");
                     assertThat(task.getInstruction()).contains("Claim C1 overstates");
                 });
+        AnalysisRun saved = repository.findById(run.getId()).orElseThrow();
+        assertThat(saved.getReviewDecision().getAction()).isEqualTo(ReviewAction.RECOLLECT_EVIDENCE);
+        assertThat(saved.getReviewDecision().getTargetAgent()).isEqualTo(AgentName.RESEARCHER);
+        assertThat(saved.getReviewDecision().getRequiredEvidenceTypes()).containsExactly("user_review");
+        assertThat(saved.getManualRerunDecision()).isNull();
+    }
+
+    @Test
+    void manualRerunFromUpstreamCarriesRepairTasksToDownstreamAgents() {
+        AnalysisRunRepository repository = new TestAnalysisRunRepository();
+        AnalysisEventBroker eventBroker = new AnalysisEventBroker();
+        WorkflowNodeExecutor nodeExecutor = new WorkflowNodeExecutor(repository, eventBroker);
+        AtomicReference<ReviewDecision> researcherDecision = new AtomicReference<>();
+        AtomicReference<ReviewDecision> analystDecision = new AtomicReference<>();
+        AgentNode researcher = new AgentNode() {
+            @Override
+            public AgentName name() {
+                return AgentName.RESEARCHER;
+            }
+
+            @Override
+            public String title() {
+                return "Researcher";
+            }
+
+            @Override
+            public AnalysisRun execute(AnalysisRun run) {
+                researcherDecision.set(run.getRepairDecisionFor(AgentName.RESEARCHER));
+                return run;
+            }
+        };
+        AgentNode analyst = new AgentNode() {
+            @Override
+            public AgentName name() {
+                return AgentName.ANALYST;
+            }
+
+            @Override
+            public String title() {
+                return "Analyst";
+            }
+
+            @Override
+            public AnalysisRun execute(AnalysisRun run) {
+                analystDecision.set(run.getRepairDecisionFor(AgentName.ANALYST));
+                return run;
+            }
+        };
+        AnalysisLangGraphWorkflow workflow = new AnalysisLangGraphWorkflow(
+                List.of(
+                        researcher,
+                        noopAgentNode(AgentName.EXTRACTOR),
+                        analyst,
+                        noopAgentNode(AgentName.WRITER),
+                        noopAgentNode(AgentName.REVIEWER)
+                ),
+                nodeExecutor,
+                repository,
+                eventBroker
+        );
+        AnalysisRun run = new AnalysisRun(new AnalysisRequirement(
+                "Analyze Cursor",
+                "AI coding tools",
+                List.of("Cursor"),
+                List.of("features"),
+                List.of(),
+                List.of()
+        ));
+        ReviewFinding evidenceGap = new ReviewFinding(
+                ReviewSeverity.MEDIUM,
+                "claim_missing_evidence",
+                "Claim C1 needs additional public evidence.",
+                "Collect official docs or public review evidence."
+        );
+        evidenceGap.setClaimId("C1");
+        ReviewFinding analystBlocker = new ReviewFinding(
+                ReviewSeverity.HIGH,
+                "claim_evidence_mismatch",
+                "Claim C2 still uses unsupported evidence.",
+                "Regenerate the claim or downgrade it."
+        );
+        analystBlocker.setClaimId("C2");
+        analystBlocker.setCitationKey("S2");
+        run.getReviewFindings().add(evidenceGap);
+        run.getReviewFindings().add(analystBlocker);
+        run.getReviewDecision().setAction(ReviewAction.RECOLLECT_EVIDENCE);
+        run.getReviewDecision().setTargetAgent(AgentName.RESEARCHER);
+        run.getReviewDecision().setReason("Need Researcher to collect missing evidence.");
+        repository.save(run);
+
+        workflow.rerunAgent(run.getId(), AgentName.RESEARCHER);
+
+        assertThat(researcherDecision.get()).isNotNull();
+        assertThat(researcherDecision.get().getAction()).isEqualTo(ReviewAction.RECOLLECT_EVIDENCE);
+        assertThat(researcherDecision.get().getTargetAgent()).isEqualTo(AgentName.RESEARCHER);
+        assertThat(researcherDecision.get().getRepairTasks())
+                .extracting(ReviewRepairTask::getFindingId)
+                .contains(evidenceGap.getId().toString());
+        assertThat(analystDecision.get()).isNotNull();
+        assertThat(analystDecision.get().getAction()).isEqualTo(ReviewAction.REWORK_ANALYSIS);
+        assertThat(analystDecision.get().getTargetAgent()).isEqualTo(AgentName.ANALYST);
+        assertThat(analystDecision.get().getRepairTasks())
+                .singleElement()
+                .satisfies(task -> {
+                    assertThat(task.getTargetAgent()).isEqualTo(AgentName.ANALYST);
+                    assertThat(task.getFindingId()).isEqualTo(analystBlocker.getId().toString());
+                    assertThat(task.getClaimId()).isEqualTo("C2");
+                    assertThat(task.getCitationKey()).isEqualTo("S2");
+                });
+        assertThat(repository.findById(run.getId()).orElseThrow().getManualRerunDecision()).isNull();
     }
 
     @Test
@@ -3861,7 +3982,8 @@ class AnalysisWorkflowServiceTest {
                 new EvidenceChunkService(),
                 EvidenceEmbeddingService.disabled(),
                 new LlmSearchQueryPlanner(llmClient, new ObjectMapper()),
-                new LlmSearchCandidateSelector(noopLlmClient(), new ObjectMapper())
+                new LlmSearchCandidateSelector(noopLlmClient(), new ObjectMapper()),
+                new EvidenceSourceLifecycleService()
         );
         return new ResearcherNode(
                 researchAgent,

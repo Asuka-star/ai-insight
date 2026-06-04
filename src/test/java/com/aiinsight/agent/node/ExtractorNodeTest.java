@@ -178,6 +178,65 @@ class ExtractorNodeTest {
     }
 
     @Test
+    void toleratesSingleStringListFieldsFromLlmWithoutFallback() {
+        LlmClient llmClient = new LlmClient() {
+            @Override
+            public boolean isAvailable() {
+                return true;
+            }
+
+            @Override
+            public String complete(ChatRequest request) {
+                return """
+                        {
+                          "profiles": [
+                            {
+                              "productName": "Cursor",
+                              "companyName": "Cursor",
+                              "positioning": "AI code editor",
+                              "targetUsers": "Developers",
+                              "features": [
+                                {"name":"Composer","description":"Multi-file code editing","evidenceIds":"S1"}
+                              ],
+                              "pricing": {
+                                "strategySummary": "待验证",
+                                "hasFreePlan": "待验证",
+                                "plans": [],
+                                "evidenceIds": []
+                              },
+                              "personas": [
+                                {
+                                  "name":"Developer",
+                                  "segment":"Engineering",
+                                  "companySize":"Any",
+                                  "jobsToBeDone":"Edit code",
+                                  "painPoints":"Context switching",
+                                  "buyingConcerns":"Price",
+                                  "evidenceIds":"S1"
+                                }
+                              ],
+                              "strengths": "Multi-file editing",
+                              "weaknesses": "待验证",
+                              "evidenceIds": "S1"
+                            }
+                          ]
+                        }
+                        """;
+            }
+        };
+        AnalysisRun run = runWithCursorEvidence();
+
+        new ExtractorNode(llmClient, new FallbackExtractionFactory()).execute(run);
+
+        assertThat(run.getRecommendedActions()).noneMatch(action -> action.contains("LLM Schema"));
+        assertThat(run.getCompetitorProfiles()).hasSize(1);
+        assertThat(run.getCompetitorProfiles().get(0).getProductName()).isEqualTo("Cursor");
+        assertThat(run.getCompetitorProfiles().get(0).getFeatureTree().getRoots())
+                .extracting(node -> node.getName())
+                .containsExactly("Composer");
+    }
+
+    @Test
     void acceptsJsonResponseWithTrailingCommentary() {
         LlmClient llmClient = new LlmClient() {
             @Override
@@ -726,6 +785,8 @@ class ExtractorNodeTest {
             }
         };
         AnalysisRun run = runWithCursorEvidence();
+        run.getEvidenceSources().get(0).setSnippet("Cursor Composer supports multi-file code edits. Risk management dashboard is documented.");
+        run.getEvidenceSources().get(0).setRawText("Cursor Composer supports multi-file code edits. Risk management dashboard is documented.");
 
         new ExtractorNode(llmClient, new FallbackExtractionFactory()).execute(run);
 
@@ -789,6 +850,159 @@ class ExtractorNodeTest {
                 .noneMatch(value -> value.contains("Invented roadmap"));
     }
 
+    @Test
+    void filtersTemplatePricingPlansBeforePublishingFacts() {
+        LlmClient llmClient = new LlmClient() {
+            @Override
+            public boolean isAvailable() {
+                return true;
+            }
+
+            @Override
+            public String complete(ChatRequest request) {
+                return """
+                        {
+                          "profiles": [
+                            {
+                              "productName": "Cursor",
+                              "companyName": "Cursor",
+                              "positioning": "AI code editor",
+                              "targetUsers": ["Developers"],
+                              "features": [
+                                {"name":"Composer","description":"Multi-file code editing","evidenceIds":["S1"]}
+                              ],
+                              "pricing": {
+                                "strategySummary": "Pricing page is available",
+                                "hasFreePlan": true,
+                                "plans": [
+                                  {
+                                    "name":"\u516c\u5f00\u5957\u9910 / \u5b9a\u5236\u65b9\u6848",
+                                    "priceText":"\u4ee5\u4ef7\u683c\u9875\u4e3a\u51c6",
+                                    "billingCycle":"\u4ee5\u539f\u59cb\u9875\u9762\u4e3a\u51c6",
+                                    "targetSegment":"\u76ee\u6807\u7528\u6237\u6216\u91c7\u8d2d\u4e3b\u4f53",
+                                    "includedFeatures":["\u5df2\u62ab\u9732\u80fd\u529b","\u9002\u7528\u8303\u56f4","\u9650\u5236\u6761\u4ef6"],
+                                    "evidenceIds":["S1"]
+                                  }
+                                ],
+                                "evidenceIds": ["S1"]
+                              },
+                              "personas": [],
+                              "strengths": ["Multi-file editing"],
+                              "weaknesses": [],
+                              "evidenceIds": ["S1"]
+                            }
+                          ]
+                        }
+                        """;
+            }
+        };
+        AnalysisRun run = runWithCursorEvidence();
+
+        new ExtractorNode(llmClient, new FallbackExtractionFactory()).execute(run);
+
+        assertThat(run.getCompetitorFactSets().get(0).getFacts())
+                .filteredOn(fact -> "pricing_plan".equals(fact.getAttribute()))
+                .isEmpty();
+        assertThat(run.getCompetitorProfiles().get(0).getPricingModel().getPlans()).isEmpty();
+        assertThat(run.getCompetitorFactSets().get(0).getFacts())
+                .extracting(fact -> fact.getValue())
+                .noneMatch(value -> value.contains("\u516c\u5f00\u5957\u9910") || value.contains("\u4ee5\u4ef7\u683c\u9875\u4e3a\u51c6"));
+    }
+
+    @Test
+    void pricingFactsOnlyBindPricingEvidence() {
+        LlmClient llmClient = new LlmClient() {
+            @Override
+            public boolean isAvailable() {
+                return true;
+            }
+
+            @Override
+            public String complete(ChatRequest request) {
+                return """
+                        {
+                          "profiles": [
+                            {
+                              "productName": "Cursor",
+                              "companyName": "Cursor",
+                              "positioning": "AI code editor",
+                              "targetUsers": ["Developers"],
+                              "features": [
+                                {"name":"Composer","description":"Multi-file code editing","evidenceIds":["S1"]}
+                              ],
+                              "pricing": {
+                                "strategySummary": "Cursor Pro costs $20/month.",
+                                "hasFreePlan": false,
+                                "plans": [
+                                  {"name":"Pro","priceText":"$20/month","billingCycle":"monthly","targetSegment":"Developers","includedFeatures":["Composer"],"evidenceIds":["S1","S2"]}
+                                ],
+                                "evidenceIds": ["S1","S2"]
+                              },
+                              "personas": [],
+                              "strengths": ["Multi-file editing"],
+                              "weaknesses": [],
+                              "evidenceIds": ["S1","S2"]
+                            }
+                          ]
+                        }
+                        """;
+            }
+        };
+        AnalysisRun run = runWithMixedPricingEvidence();
+
+        new ExtractorNode(llmClient, new FallbackExtractionFactory()).execute(run);
+
+        assertThat(run.getCompetitorFactSets().get(0).getFacts())
+                .filteredOn(fact -> "pricing_plan".equals(fact.getAttribute()))
+                .singleElement()
+                .satisfies(fact -> assertThat(fact.getEvidenceIds()).containsExactly("S2"));
+    }
+
+    @Test
+    void dropsFactsWhenBoundEvidenceDoesNotSupportValue() {
+        LlmClient llmClient = new LlmClient() {
+            @Override
+            public boolean isAvailable() {
+                return true;
+            }
+
+            @Override
+            public String complete(ChatRequest request) {
+                return """
+                        {
+                          "profiles": [
+                            {
+                              "productName": "Cursor",
+                              "companyName": "Cursor",
+                              "positioning": "AI code editor",
+                              "targetUsers": ["Developers"],
+                              "features": [
+                                {"name":"Composer","description":"Multi-file code editing","evidenceIds":["S1"]},
+                                {"name":"Enterprise security","description":"SSO and SCIM controls","evidenceIds":["S1"]}
+                              ],
+                              "pricing": {"strategySummary":"待验证","hasFreePlan":false,"plans":[],"evidenceIds":[]},
+                              "personas": [],
+                              "strengths": ["Multi-file editing"],
+                              "weaknesses": [],
+                              "evidenceIds": ["S1"]
+                            }
+                          ]
+                        }
+                        """;
+            }
+        };
+        AnalysisRun run = runWithCursorEvidence();
+
+        new ExtractorNode(llmClient, new FallbackExtractionFactory()).execute(run);
+
+        assertThat(run.getCompetitorFactSets().get(0).getFacts())
+                .extracting(fact -> fact.getValue())
+                .contains("Composer: Multi-file code editing")
+                .noneMatch(value -> value.contains("SSO") || value.contains("SCIM"));
+        assertThat(run.getCompetitorFactSets().get(0).getUnknowns())
+                .anySatisfy(unknown -> assertThat(unknown.getField()).isEqualTo("feature"));
+    }
+
     private AnalysisRun runWithCursorEvidence() {
         AnalysisRun run = new AnalysisRun(new AnalysisRequirement(
                 "Analyze Cursor",
@@ -809,6 +1023,44 @@ class ExtractorNodeTest {
                 "NONE",
                 "Cursor Composer supports multi-file code edits. Cursor Pro costs $20/month.",
                 "Cursor Composer supports multi-file code edits. Cursor Pro costs $20/month.",
+                "test evidence"
+        ));
+        return run;
+    }
+
+    private AnalysisRun runWithMixedPricingEvidence() {
+        AnalysisRun run = new AnalysisRun(new AnalysisRequirement(
+                "Analyze Cursor",
+                "AI coding tools",
+                List.of("Cursor"),
+                List.of("features", "pricing"),
+                List.of("official_site", "pricing_page"),
+                List.of()
+        ));
+        run.getEvidenceSources().add(new EvidenceSource(
+                "S1",
+                "Cursor product page",
+                "https://example.test/cursor",
+                "official_site",
+                "FETCHED",
+                "LIVE_FETCHED",
+                "HIGH",
+                "NONE",
+                "Cursor Composer supports multi-file code edits.",
+                "Cursor Composer supports multi-file code edits.",
+                "test evidence"
+        ));
+        run.getEvidenceSources().add(new EvidenceSource(
+                "S2",
+                "Cursor Pricing",
+                "https://example.test/cursor/pricing",
+                "pricing_page",
+                "FETCHED",
+                "LIVE_FETCHED",
+                "HIGH",
+                "NONE",
+                "Cursor Pro costs $20/month.",
+                "Cursor Pro costs $20/month. Composer is included.",
                 "test evidence"
         ));
         return run;

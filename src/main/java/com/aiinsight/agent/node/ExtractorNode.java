@@ -9,6 +9,7 @@ import com.aiinsight.model.enums.AgentName;
 import com.aiinsight.model.enums.ArtifactType;
 import com.aiinsight.model.enums.FactType;
 import com.aiinsight.model.enums.ReviewAction;
+import com.aiinsight.model.review.ReviewDecision;
 import com.aiinsight.model.review.ReviewRepairTask;
 import com.aiinsight.model.run.AnalysisArtifact;
 import com.aiinsight.model.run.AnalysisRun;
@@ -29,6 +30,7 @@ import com.aiinsight.service.fallback.FallbackExtractionFactory;
 import com.aiinsight.util.JsonResponseExtractor;
 import static com.aiinsight.util.AgentUtils.abbreviate;
 import static com.aiinsight.util.AgentUtils.containsAny;
+import static com.aiinsight.util.AgentUtils.containsIgnoreCase;
 import static com.aiinsight.util.AgentUtils.normalizeLower;
 import static com.aiinsight.util.AgentUtils.nullToEmpty;
 import static com.aiinsight.util.AgentUtils.safeList;
@@ -64,6 +66,42 @@ public class ExtractorNode implements AgentNode {
     private static final int RAG_CHUNKS_PER_DIMENSION = 2;
     private static final int MAX_FALLBACK_RAW_TEXT_CHARS = 300;
     private static final int MAX_RAG_CHUNK_TEXT_CHARS = 420;
+    private static final int MAX_PRICING_EVIDENCE_IDS_PER_FACT = 4;
+    private static final List<String> STRONG_TEMPLATE_PRICING_MARKERS = List.of(
+            "\u5df2\u8865\u5145\u4ef7\u683c\u9875\u8bc1\u636e",
+            "\u5177\u4f53\u91d1\u989d\u4ecd\u4ee5\u539f\u59cb\u9875\u9762\u4e3a\u51c6",
+            "\u5f53\u524d\u91c7\u96c6\u8d44\u6599\u4e0d\u8db3",
+            "\u5b9a\u4ef7\u6a21\u578b\u5f85\u8865\u5145\u4ef7\u683c\u9875\u8bc1\u636e"
+    );
+    private static final List<String> TEMPLATE_PRICING_MARKERS = List.of(
+            "\u516c\u5f00\u5957\u9910",
+            "\u5b9a\u5236\u65b9\u6848",
+            "\u4ee5\u4ef7\u683c\u9875\u4e3a\u51c6",
+            "\u4ee5\u539f\u59cb\u9875\u9762\u4e3a\u51c6",
+            "\u76ee\u6807\u7528\u6237\u6216\u91c7\u8d2d\u4e3b\u4f53",
+            "\u5df2\u62ab\u9732\u80fd\u529b",
+            "\u9002\u7528\u8303\u56f4",
+            "\u9650\u5236\u6761\u4ef6",
+            "as listed on pricing page",
+            "refer to original page",
+            "target user or buyer"
+    );
+    private static final List<String> PRICING_EVIDENCE_MARKERS = List.of(
+            "pricing", "price", "plan", "plans", "free", "paid", "subscription", "billing",
+            "$", "usd", "/month", "month", "annual", "year", "enterprise",
+            "\u4ef7\u683c", "\u5b9a\u4ef7", "\u5957\u9910", "\u514d\u8d39", "\u4ed8\u8d39",
+            "\u8ba2\u9605", "\u6708\u4ed8", "\u5e74\u4ed8", "\u4f01\u4e1a\u7248"
+    );
+    private static final Set<String> FACT_SUPPORT_STOP_WORDS = Set.of(
+            "supports", "support", "provides", "provide", "offers", "offer", "includes", "include",
+            "using", "used", "with", "without", "for", "from", "that", "this", "and", "the",
+            "feature", "features", "capability", "capabilities", "product", "users", "user",
+            "支持", "提供", "功能", "能力", "用户", "产品", "可以", "用于", "适用", "覆盖", "包括"
+    );
+    private static final Set<String> HIGH_PRECISION_SUPPORT_TERMS = Set.of(
+            "sso", "scim", "saml", "soc", "soc2", "soc 2", "rbac", "iso", "hipaa", "gdpr",
+            "bedrock", "slack", "terminal", "ide", "vscode", "github", "gitlab"
+    );
 
     private final LlmClient llmClient;
     private final FallbackExtractionFactory fallbackExtractionFactory;
@@ -390,9 +428,13 @@ public class ExtractorNode implements AgentNode {
             addUnknown(unknowns, competitorName, "pricing", "No pricing model was extracted.", List.of("pricing_page"));
             return;
         }
+        List<String> strategyEvidenceIds = pricingEvidenceIds(run, pricingModel.getEvidenceIds());
         addFactIfKnown(facts, unknowns, run, sequence, competitorName, FactType.PRICING,
-                "pricing_strategy", pricingModel.getStrategySummary(), pricingModel.getEvidenceIds(), List.of("pricing_page"));
-        for (PricingPlan plan : pricingModel.getPlans()) {
+                "pricing_strategy", pricingModel.getStrategySummary(), strategyEvidenceIds, List.of("pricing_page"));
+        for (PricingPlan plan : pricingModel.getPlans() == null ? List.<PricingPlan>of() : pricingModel.getPlans()) {
+            if (plan == null) {
+                continue;
+            }
             String value = "%s | %s | %s | %s | %s".formatted(
                     nullToEmpty(plan.getName()),
                     nullToEmpty(plan.getPriceText()),
@@ -400,8 +442,9 @@ public class ExtractorNode implements AgentNode {
                     nullToEmpty(plan.getTargetSegment()),
                     plan.getIncludedFeatures() == null ? "" : String.join(", ", plan.getIncludedFeatures())
             );
+            List<String> planEvidenceIds = pricingEvidenceIds(run, plan.getEvidenceIds());
             addFactIfKnown(facts, unknowns, run, sequence, competitorName, FactType.PRICING,
-                    "pricing_plan", value, plan.getEvidenceIds(), List.of("pricing_page"));
+                    "pricing_plan", value, planEvidenceIds, List.of("pricing_page"));
         }
     }
 
@@ -439,9 +482,20 @@ public class ExtractorNode implements AgentNode {
             addUnknown(unknowns, competitorName, attribute, "Extractor did not find explicit evidence for this field.", neededEvidenceTypes);
             return;
         }
-        List<String> knownIds = knownEvidenceIds(run, evidenceIds, List.of());
+        if (factType == FactType.PRICING && looksLikeTemplatePricingValue(value)) {
+            addUnknown(unknowns, competitorName, attribute, "Extractor produced fallback/template pricing text instead of an evidence-backed value.", neededEvidenceTypes);
+            return;
+        }
+        List<String> knownIds = supportedEvidenceIdsForFact(
+                run,
+                knownEvidenceIds(run, evidenceIds, List.of()),
+                competitorName,
+                factType,
+                attribute,
+                value
+        );
         if (knownIds.isEmpty()) {
-            addUnknown(unknowns, competitorName, attribute, "Extracted value has no valid evidence id.", neededEvidenceTypes);
+            addUnknown(unknowns, competitorName, attribute, "Extracted value has no directly supporting evidence id.", neededEvidenceTypes);
             return;
         }
         ExtractedFact fact = new ExtractedFact();
@@ -451,12 +505,33 @@ public class ExtractorNode implements AgentNode {
         fact.setAttribute(attribute);
         fact.setValue(value.trim());
         fact.setEvidenceIds(knownIds);
-        fact.setChunkKeys(chunkKeysForEvidence(run, knownIds));
+        fact.setChunkKeys(chunkKeysForEvidence(run, knownIds, fact.getFactType(), fact.getValue()));
         EvidenceSource primarySource = primarySource(run, knownIds);
         fact.setSourceAuthority(primarySource == null ? "UNKNOWN" : textOrDash(primarySource.getSourceAuthority()));
         fact.setSourceQuality(primarySource == null ? "UNKNOWN" : textOrDash(primarySource.getSourceQuality()));
         fact.setExtractionConfidence(extractionConfidence(primarySource, fact.getChunkKeys()));
         facts.add(fact);
+    }
+
+    private boolean looksLikeTemplatePricingValue(String value) {
+        String normalized = normalizeLower(value);
+        if (!StringUtils.hasText(normalized)) {
+            return false;
+        }
+        if (STRONG_TEMPLATE_PRICING_MARKERS.stream()
+                .map(this::normalizeTemplateMarker)
+                .anyMatch(normalized::contains)) {
+            return true;
+        }
+        long markerHits = TEMPLATE_PRICING_MARKERS.stream()
+                .map(this::normalizeTemplateMarker)
+                .filter(normalized::contains)
+                .count();
+        return markerHits >= 2;
+    }
+
+    private String normalizeTemplateMarker(String marker) {
+        return normalizeLower(marker);
     }
 
     private void addUnknown(List<UnknownFact> unknowns,
@@ -489,15 +564,182 @@ public class ExtractorNode implements AgentNode {
         return FactType.FEATURE;
     }
 
-    private List<String> chunkKeysForEvidence(AnalysisRun run, List<String> evidenceIds) {
+    private List<String> chunkKeysForEvidence(AnalysisRun run, List<String> evidenceIds, FactType factType, String value) {
         Set<String> accepted = new LinkedHashSet<>(evidenceIds);
         return run.getEvidenceChunks().stream()
                 .filter(chunk -> accepted.contains(chunk.getSourceCitationKey()))
+                .filter(chunk -> factType != FactType.PRICING || isPricingChunk(run, chunk))
+                .filter(chunk -> evidenceTextSupports(value, chunkText(chunk), factType))
                 .map(EvidenceChunk::getChunkKey)
                 .filter(StringUtils::hasText)
                 .distinct()
                 .limit(6)
                 .toList();
+    }
+
+    private List<String> supportedEvidenceIdsForFact(AnalysisRun run,
+                                                     List<String> evidenceIds,
+                                                     String competitorName,
+                                                     FactType factType,
+                                                     String attribute,
+                                                     String value) {
+        return evidenceIds.stream()
+                .filter(id -> evidenceSupportsFact(run, id, competitorName, factType, attribute, value))
+                .limit(6)
+                .toList();
+    }
+
+    private boolean evidenceSupportsFact(AnalysisRun run,
+                                         String citationKey,
+                                         String competitorName,
+                                         FactType factType,
+                                         String attribute,
+                                         String value) {
+        EvidenceSource source = sourceByCitationKey(run, citationKey);
+        if (source == null) {
+            return false;
+        }
+        if (factType == FactType.PRICING && !isPricingEvidence(run, citationKey)) {
+            return false;
+        }
+        if (factType == FactType.CUSTOMER_SIGNAL && !customerSignalEvidence(source)) {
+            return false;
+        }
+        String sourceText = sourceText(source);
+        if (StringUtils.hasText(competitorName) && !containsIgnoreCase(sourceText, competitorName)) {
+            boolean chunkMentionsCompetitor = run.getEvidenceChunks().stream()
+                    .filter(chunk -> citationKey.equals(chunk.getSourceCitationKey()))
+                    .anyMatch(chunk -> containsIgnoreCase(chunkText(chunk), competitorName));
+            if (!chunkMentionsCompetitor) {
+                return false;
+            }
+        }
+        String expected = "%s %s".formatted(nullToEmpty(attribute), nullToEmpty(value));
+        if (evidenceTextSupports(expected, sourceText, factType)) {
+            return true;
+        }
+        return run.getEvidenceChunks().stream()
+                .filter(chunk -> citationKey.equals(chunk.getSourceCitationKey()))
+                .anyMatch(chunk -> evidenceTextSupports(expected, chunkText(chunk), factType));
+    }
+
+    private boolean customerSignalEvidence(EvidenceSource source) {
+        String type = normalizeLower(source.getSourceType());
+        String text = normalizeLower(sourceText(source));
+        return containsAny(type, "interview", "survey", "review", "customer", "user")
+                || containsAny(text, "interview", "survey", "review", "feedback", "customer", "user", "pain", "concern",
+                "访谈", "调研", "评价", "反馈", "用户", "痛点");
+    }
+
+    private boolean evidenceTextSupports(String expected, String evidenceText, FactType factType) {
+        Set<String> expectedTerms = supportTerms(expected);
+        Set<String> evidenceTerms = supportTerms(evidenceText);
+        if (expectedTerms.isEmpty() || evidenceTerms.isEmpty()) {
+            return false;
+        }
+        String normalizedExpected = normalizeLower(expected).replaceAll("\\s+", " ").trim();
+        String normalizedEvidence = normalizeLower(evidenceText).replaceAll("\\s+", " ").trim();
+        if (normalizedExpected.length() >= 8 && normalizedEvidence.contains(normalizedExpected)) {
+            return true;
+        }
+        Set<String> preciseTerms = expectedTerms.stream()
+                .filter(HIGH_PRECISION_SUPPORT_TERMS::contains)
+                .collect(Collectors.toCollection(LinkedHashSet::new));
+        if (preciseTerms.isEmpty()) {
+            return true;
+        }
+        if (!evidenceTerms.containsAll(preciseTerms)) {
+            return false;
+        }
+        long overlap = expectedTerms.stream().filter(evidenceTerms::contains).count();
+        int required = factType == FactType.TARGET_USER || expectedTerms.size() <= 2 ? 1 : 2;
+        return overlap >= Math.min(required, expectedTerms.size());
+    }
+
+    private Set<String> supportTerms(String text) {
+        Set<String> terms = new LinkedHashSet<>();
+        if (!StringUtils.hasText(text)) {
+            return terms;
+        }
+        String normalized = normalizeLower(text)
+                .replaceAll("[^\\p{IsHan}a-z0-9]+", " ")
+                .trim();
+        for (String part : normalized.split("\\s+")) {
+            if (part.length() >= 3 && !FACT_SUPPORT_STOP_WORDS.contains(part)) {
+                terms.add(part);
+            }
+        }
+        String chineseOnly = normalized.replaceAll("[^\\p{IsHan}]", "");
+        for (int i = 0; i < chineseOnly.length() - 1; i++) {
+            String term = chineseOnly.substring(i, i + 2);
+            if (!FACT_SUPPORT_STOP_WORDS.contains(term)) {
+                terms.add(term);
+            }
+        }
+        return terms;
+    }
+
+    private String chunkText(EvidenceChunk chunk) {
+        return "%s %s %s %s %s".formatted(
+                nullToEmpty(chunk.getTitle()),
+                nullToEmpty(chunk.getUrl()),
+                chunk.getHeadingPath() == null ? "" : String.join(" ", chunk.getHeadingPath()),
+                nullToEmpty(chunk.getContentKind()),
+                nullToEmpty(chunk.getText())
+        );
+    }
+
+    private List<String> pricingEvidenceIds(AnalysisRun run, List<String> evidenceIds) {
+        return knownEvidenceIds(run, evidenceIds, List.of()).stream()
+                .filter(id -> isPricingEvidence(run, id))
+                .limit(MAX_PRICING_EVIDENCE_IDS_PER_FACT)
+                .toList();
+    }
+
+    private boolean isPricingEvidence(AnalysisRun run, String citationKey) {
+        EvidenceSource source = sourceByCitationKey(run, citationKey);
+        if (source != null && (containsPricingSignal(source.getSourceType()) || containsPricingSignal(sourceText(source)))) {
+            return true;
+        }
+        return run.getEvidenceChunks().stream()
+                .filter(chunk -> citationKey.equals(chunk.getSourceCitationKey()))
+                .anyMatch(chunk -> isPricingChunk(run, chunk));
+    }
+
+    private boolean isPricingChunk(AnalysisRun run, EvidenceChunk chunk) {
+        String text = "%s %s %s %s %s".formatted(
+                nullToEmpty(chunk.getContentKind()),
+                nullToEmpty(chunk.getSourceType()),
+                nullToEmpty(chunk.getTitle()),
+                chunk.getHeadingPath() == null ? "" : String.join(" ", chunk.getHeadingPath()),
+                nullToEmpty(chunk.getText())
+        );
+        if (containsPricingSignal(text)) {
+            return true;
+        }
+        EvidenceSource source = sourceByCitationKey(run, chunk.getSourceCitationKey());
+        return source != null && containsPricingSignal(source.getSourceType());
+    }
+
+    private EvidenceSource sourceByCitationKey(AnalysisRun run, String citationKey) {
+        return run.getEvidenceSources().stream()
+                .filter(source -> citationKey.equals(source.getCitationKey()))
+                .findFirst()
+                .orElse(null);
+    }
+
+    private boolean containsPricingSignal(String value) {
+        return containsAny(normalizeLower(value), PRICING_EVIDENCE_MARKERS.toArray(String[]::new));
+    }
+
+    private String sourceText(EvidenceSource source) {
+        return "%s %s %s %s %s".formatted(
+                nullToEmpty(source.getTitle()),
+                nullToEmpty(source.getUrl()),
+                nullToEmpty(source.getSnippet()),
+                nullToEmpty(source.getRawText()),
+                nullToEmpty(source.getComplianceNote())
+        );
     }
 
     private EvidenceSource primarySource(AnalysisRun run, List<String> evidenceIds) {
@@ -656,17 +898,18 @@ public class ExtractorNode implements AgentNode {
     }
 
     private String repairPlanBlock(AnalysisRun run) {
-        if (run.getReviewDecision() == null
-                || run.getReviewDecision().getAction() != ReviewAction.REWORK_ANALYSIS
-                || run.getReviewDecision().getTargetAgent() != AgentName.EXTRACTOR) {
+        ReviewDecision decision = run.getRepairDecisionFor(AgentName.EXTRACTOR);
+        if (decision == null
+                || decision.getAction() != ReviewAction.REWORK_ANALYSIS
+                || decision.getTargetAgent() != AgentName.EXTRACTOR) {
             return "当前不是 Extractor 复核修复模式。";
         }
-        String instructions = run.getReviewDecision().getRepairInstructions().isEmpty()
+        String instructions = decision.getRepairInstructions().isEmpty()
                 ? "暂无具体修复指令。"
-                : run.getReviewDecision().getRepairInstructions().stream()
+                : decision.getRepairInstructions().stream()
                 .map(instruction -> "- " + instruction)
                 .collect(Collectors.joining("\n"));
-        String tasks = run.getReviewDecision().getRepairTasks().stream()
+        String tasks = decision.getRepairTasks().stream()
                 .filter(task -> task.getTargetAgent() == AgentName.EXTRACTOR)
                 .map(this::repairTaskLine)
                 .collect(Collectors.joining("\n"));
@@ -677,7 +920,7 @@ public class ExtractorNode implements AgentNode {
                 结构化修复任务：
                 %s
                 """.formatted(
-                nullToEmpty(run.getReviewDecision().getRepairScopeSummary()),
+                nullToEmpty(decision.getRepairScopeSummary()),
                 instructions,
                 tasks.isBlank() ? "暂无结构化修复任务。" : tasks
         );
@@ -973,27 +1216,70 @@ public class ExtractorNode implements AgentNode {
 
     private PricingModel pricingModel(PricingDraft draft, PricingModel fallback, AnalysisRun run) {
         if (draft == null) {
-            return fallback;
+            return sanitizePricingModel(fallback, run);
         }
         PricingModel model = new PricingModel();
-        model.setStrategySummary(textOrDefault(draft.strategySummary, fallback.getStrategySummary()));
-        model.setHasFreePlan(draft.hasFreePlan == null ? fallback.isHasFreePlan() : draft.hasFreePlan);
-        model.setEvidenceIds(knownEvidenceIds(run, draft.evidenceIds, fallback.getEvidenceIds()));
+        String fallbackStrategySummary = fallback == null ? "\u5f85\u9a8c\u8bc1" : fallback.getStrategySummary();
+        List<String> fallbackEvidenceIds = fallback == null ? List.of() : fallback.getEvidenceIds();
+        List<PricingPlan> fallbackPlans = fallback == null ? List.of() : fallback.getPlans();
+        String strategySummary = textOrDefault(draft.strategySummary, fallbackStrategySummary);
+        model.setStrategySummary(looksLikeTemplatePricingValue(strategySummary) ? "\u5f85\u9a8c\u8bc1" : strategySummary);
+        model.setHasFreePlan(draft.hasFreePlan == null ? false : draft.hasFreePlan);
+        List<String> draftEvidenceIds = pricingEvidenceIds(run, draft.evidenceIds);
+        model.setEvidenceIds(draftEvidenceIds.isEmpty() ? pricingEvidenceIds(run, fallbackEvidenceIds) : draftEvidenceIds);
         List<PricingPlan> plans = (draft.plans == null ? List.<PricingPlanDraft>of() : draft.plans).stream()
                 .map(plan -> pricingPlan(plan, run))
                 .filter(plan -> plan != null)
                 .limit(6)
                 .toList();
-        model.setPlans(plans.isEmpty() ? fallback.getPlans() : plans);
+        model.setPlans(plans.isEmpty() ? sanitizedPricingPlans(fallbackPlans, run) : plans);
         return model;
     }
 
+    private PricingModel sanitizePricingModel(PricingModel fallback, AnalysisRun run) {
+        PricingModel model = new PricingModel();
+        if (fallback == null) {
+            model.setStrategySummary("\u5f85\u9a8c\u8bc1");
+            model.setHasFreePlan(false);
+            model.setEvidenceIds(List.of());
+            model.setPlans(List.of());
+            return model;
+        }
+        String strategySummary = textOrDefault(fallback.getStrategySummary(), "\u5f85\u9a8c\u8bc1");
+        model.setStrategySummary(looksLikeTemplatePricingValue(strategySummary) ? "\u5f85\u9a8c\u8bc1" : strategySummary);
+        model.setHasFreePlan(false);
+        model.setEvidenceIds(pricingEvidenceIds(run, fallback.getEvidenceIds()));
+        model.setPlans(sanitizedPricingPlans(fallback.getPlans(), run));
+        return model;
+    }
+
+    private List<PricingPlan> sanitizedPricingPlans(List<PricingPlan> plans, AnalysisRun run) {
+        return (plans == null ? List.<PricingPlan>of() : plans).stream()
+                .filter(plan -> plan != null && !looksLikeTemplatePricingPlan(plan))
+                .map(plan -> {
+                    List<String> evidenceIds = pricingEvidenceIds(run, plan.getEvidenceIds());
+                    if (evidenceIds.isEmpty()) {
+                        return null;
+                    }
+                    return new PricingPlan(
+                            textOrDefault(plan.getName(), "\u5f85\u9a8c\u8bc1"),
+                            textOrDefault(plan.getPriceText(), "\u5f85\u9a8c\u8bc1"),
+                            textOrDefault(plan.getBillingCycle(), "unknown"),
+                            textOrDefault(plan.getTargetSegment(), "\u5f85\u9a8c\u8bc1"),
+                            nonEmptyStrings(plan.getIncludedFeatures(), List.of("\u5f85\u9a8c\u8bc1")),
+                            evidenceIds
+                    );
+                })
+                .filter(plan -> plan != null)
+                .toList();
+    }
+
     private PricingPlan pricingPlan(PricingPlanDraft draft, AnalysisRun run) {
-        List<String> evidenceIds = knownEvidenceIds(run, draft.evidenceIds, List.of());
+        List<String> evidenceIds = pricingEvidenceIds(run, draft.evidenceIds);
         if (evidenceIds.isEmpty()) {
             return null;
         }
-        return new PricingPlan(
+        PricingPlan plan = new PricingPlan(
                 textOrDefault(draft.name, "未命名套餐"),
                 textOrDefault(draft.priceText, "待验证"),
                 textOrDefault(draft.billingCycle, "unknown"),
@@ -1001,6 +1287,21 @@ public class ExtractorNode implements AgentNode {
                 nonEmptyStrings(draft.includedFeatures, List.of("待验证")),
                 evidenceIds
         );
+        return looksLikeTemplatePricingPlan(plan) ? null : plan;
+    }
+
+    private boolean looksLikeTemplatePricingPlan(PricingPlan plan) {
+        if (plan == null) {
+            return false;
+        }
+        String value = "%s | %s | %s | %s | %s".formatted(
+                nullToEmpty(plan.getName()),
+                nullToEmpty(plan.getPriceText()),
+                nullToEmpty(plan.getBillingCycle()),
+                nullToEmpty(plan.getTargetSegment()),
+                plan.getIncludedFeatures() == null ? "" : String.join(", ", plan.getIncludedFeatures())
+        );
+        return looksLikeTemplatePricingValue(value);
     }
 
     private List<UserPersona> personas(List<PersonaDraft> drafts, List<UserPersona> fallback, AnalysisRun run) {
@@ -1283,6 +1584,26 @@ public class ExtractorNode implements AgentNode {
         public List<String> strengths = List.of();
         public List<String> weaknesses = List.of();
         public List<String> evidenceIds = List.of();
+
+        @JsonSetter("targetUsers")
+        public void setTargetUsers(JsonNode value) {
+            this.targetUsers = flexibleStringList(value);
+        }
+
+        @JsonSetter("strengths")
+        public void setStrengths(JsonNode value) {
+            this.strengths = flexibleStringList(value);
+        }
+
+        @JsonSetter("weaknesses")
+        public void setWeaknesses(JsonNode value) {
+            this.weaknesses = flexibleStringList(value);
+        }
+
+        @JsonSetter("evidenceIds")
+        public void setEvidenceIds(JsonNode value) {
+            this.evidenceIds = flexibleStringList(value);
+        }
     }
 
     @JsonIgnoreProperties(ignoreUnknown = true)
@@ -1290,6 +1611,11 @@ public class ExtractorNode implements AgentNode {
         public String name;
         public String description;
         public List<String> evidenceIds = List.of();
+
+        @JsonSetter("evidenceIds")
+        public void setEvidenceIds(JsonNode value) {
+            this.evidenceIds = flexibleStringList(value);
+        }
     }
 
     @JsonIgnoreProperties(ignoreUnknown = true)
@@ -1303,6 +1629,11 @@ public class ExtractorNode implements AgentNode {
         public void setHasFreePlan(JsonNode value) {
             this.hasFreePlan = flexibleBoolean(value);
         }
+
+        @JsonSetter("evidenceIds")
+        public void setEvidenceIds(JsonNode value) {
+            this.evidenceIds = flexibleStringList(value);
+        }
     }
 
     @JsonIgnoreProperties(ignoreUnknown = true)
@@ -1313,6 +1644,16 @@ public class ExtractorNode implements AgentNode {
         public String targetSegment;
         public List<String> includedFeatures = List.of();
         public List<String> evidenceIds = List.of();
+
+        @JsonSetter("includedFeatures")
+        public void setIncludedFeatures(JsonNode value) {
+            this.includedFeatures = flexibleStringList(value);
+        }
+
+        @JsonSetter("evidenceIds")
+        public void setEvidenceIds(JsonNode value) {
+            this.evidenceIds = flexibleStringList(value);
+        }
     }
 
     @JsonIgnoreProperties(ignoreUnknown = true)
@@ -1324,6 +1665,45 @@ public class ExtractorNode implements AgentNode {
         public List<String> painPoints = List.of();
         public List<String> buyingConcerns = List.of();
         public List<String> evidenceIds = List.of();
+
+        @JsonSetter("jobsToBeDone")
+        public void setJobsToBeDone(JsonNode value) {
+            this.jobsToBeDone = flexibleStringList(value);
+        }
+
+        @JsonSetter("painPoints")
+        public void setPainPoints(JsonNode value) {
+            this.painPoints = flexibleStringList(value);
+        }
+
+        @JsonSetter("buyingConcerns")
+        public void setBuyingConcerns(JsonNode value) {
+            this.buyingConcerns = flexibleStringList(value);
+        }
+
+        @JsonSetter("evidenceIds")
+        public void setEvidenceIds(JsonNode value) {
+            this.evidenceIds = flexibleStringList(value);
+        }
+    }
+
+    private static List<String> flexibleStringList(JsonNode value) {
+        if (value == null || value.isNull() || value.isMissingNode()) {
+            return List.of();
+        }
+        if (value.isArray()) {
+            List<String> values = new ArrayList<>();
+            value.forEach(item -> {
+                if (item != null && item.isValueNode() && StringUtils.hasText(item.asText())) {
+                    values.add(item.asText().trim());
+                }
+            });
+            return values.stream().distinct().toList();
+        }
+        if (value.isValueNode() && StringUtils.hasText(value.asText())) {
+            return List.of(value.asText().trim());
+        }
+        return List.of();
     }
 
     private static Boolean flexibleBoolean(JsonNode value) {

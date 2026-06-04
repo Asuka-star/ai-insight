@@ -2,7 +2,9 @@ package com.aiinsight.service;
 
 import com.aiinsight.model.run.AnalysisRequirement;
 import com.aiinsight.model.run.AnalysisRun;
+import com.aiinsight.model.enums.AgentName;
 import com.aiinsight.model.enums.ReviewAction;
+import com.aiinsight.model.review.ReviewDecision;
 import com.aiinsight.model.review.ReviewRepairTask;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
@@ -114,14 +116,15 @@ public class SearchQueryPlanner {
     }
 
     private List<SearchQueryBatch> targetedRepairBatches(AnalysisRun run, boolean recollecting, String domain) {
-        if (!recollecting || run.getReviewDecision() == null
-                || run.getReviewDecision().getAction() != ReviewAction.RECOLLECT_EVIDENCE
-                || run.getReviewDecision().getRepairTasks() == null
-                || run.getReviewDecision().getRepairTasks().isEmpty()) {
+        ReviewDecision decision = run.getRepairDecisionFor(AgentName.RESEARCHER);
+        if (!recollecting || decision == null
+                || decision.getAction() != ReviewAction.RECOLLECT_EVIDENCE
+                || decision.getRepairTasks() == null
+                || decision.getRepairTasks().isEmpty()) {
             return List.of();
         }
         LinkedHashMap<String, Set<String>> queriesByCompetitor = new LinkedHashMap<>();
-        for (ReviewRepairTask task : run.getReviewDecision().getRepairTasks()) {
+        for (ReviewRepairTask task : decision.getRepairTasks()) {
             String competitor = StringUtils.hasText(task.getCompetitorName())
                     ? task.getCompetitorName().trim()
                     : firstMentionedCompetitor(run.getRequirement(), repairTaskText(task));
@@ -179,12 +182,13 @@ public class SearchQueryPlanner {
     }
 
     private List<String> targetedEvidenceTypes(AnalysisRun run, boolean recollecting) {
-        if (!recollecting || run.getReviewDecision() == null
-                || run.getReviewDecision().getRequiredEvidenceTypes() == null
-                || run.getReviewDecision().getRequiredEvidenceTypes().isEmpty()) {
+        ReviewDecision decision = run.getRepairDecisionFor(AgentName.RESEARCHER);
+        if (!recollecting || decision == null
+                || decision.getRequiredEvidenceTypes() == null
+                || decision.getRequiredEvidenceTypes().isEmpty()) {
             return List.of();
         }
-        return run.getReviewDecision().getRequiredEvidenceTypes().stream()
+        return decision.getRequiredEvidenceTypes().stream()
                 .filter(StringUtils::hasText)
                 .distinct()
                 .limit(properties.maxSearchQueriesPerCompetitor())

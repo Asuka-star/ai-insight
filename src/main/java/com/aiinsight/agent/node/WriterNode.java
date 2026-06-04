@@ -5,6 +5,7 @@ import com.aiinsight.model.run.AnalysisArtifact;
 import com.aiinsight.model.run.AnalysisRun;
 import com.aiinsight.model.enums.ArtifactType;
 import com.aiinsight.model.enums.ReviewAction;
+import com.aiinsight.model.review.ReviewDecision;
 import com.aiinsight.model.run.EvidenceSource;
 import com.aiinsight.model.schema.CompetitorProfile;
 import com.aiinsight.llm.ChatMessage;
@@ -283,7 +284,9 @@ public class WriterNode implements AgentNode {
                 .limit(12)
                 .toList();
         if (indexedSources.isEmpty()) {
-            indexedSources = run.getEvidenceSources().stream().limit(8).toList();
+            indexedSources = run.getEvidenceSources().stream()
+                    .limit(8)
+                    .toList();
         }
         if (indexedSources.isEmpty()) {
             return "暂无可引用证据。";
@@ -303,17 +306,18 @@ public class WriterNode implements AgentNode {
     }
 
     private String repairPlanBlock(AnalysisRun run) {
-        if (run.getReviewDecision() == null || run.getReviewDecision().getAction() == ReviewAction.PASS) {
+        ReviewDecision decision = run.getRepairDecisionFor(AgentName.WRITER);
+        if (decision == null || decision.getAction() == ReviewAction.PASS) {
             return "当前不是复核修复模式。";
         }
-        String instructions = run.getReviewDecision().getRepairInstructions().isEmpty()
+        String instructions = decision.getRepairInstructions().isEmpty()
                 ? "暂无具体修复指令。"
-                : run.getReviewDecision().getRepairInstructions().stream()
+                : decision.getRepairInstructions().stream()
                 .map(instruction -> "- " + instruction)
                 .collect(Collectors.joining("\n"));
-        String tasks = run.getReviewDecision().getRepairTasks().isEmpty()
+        String tasks = decision.getRepairTasks().isEmpty()
                 ? "暂无结构化修复任务。"
-                : run.getReviewDecision().getRepairTasks().stream()
+                : decision.getRepairTasks().stream()
                 .filter(task -> task.getTargetAgent() == AgentName.WRITER)
                 .map(task -> "- action=%s claim=%s claimContent=%s citation=%s paragraph=%s excerpt=%s currentText=%s instruction=%s expectedFix=%s criteria=%s".formatted(
                         task.getAction(),
@@ -339,11 +343,11 @@ public class WriterNode implements AgentNode {
                 结构化修复任务：
                 %s
                 """.formatted(
-                run.getReviewDecision().getAction(),
-                run.getReviewDecision().getTargetAgent(),
-                textOrDefault(run.getReviewDecision().getRepairScopeSummary(), "未记录修复范围"),
-                run.getReviewDecision().getAffectedClaimIds(),
-                run.getReviewDecision().getRequiredEvidenceTypes(),
+                decision.getAction(),
+                decision.getTargetAgent(),
+                textOrDefault(decision.getRepairScopeSummary(), "未记录修复范围"),
+                decision.getAffectedClaimIds(),
+                decision.getRequiredEvidenceTypes(),
                 instructions,
                 tasks
         );

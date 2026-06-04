@@ -1,9 +1,12 @@
 package com.aiinsight.model.run;
 
 import com.aiinsight.model.enums.AnalysisStatus;
+import com.aiinsight.model.enums.AgentName;
 import com.aiinsight.model.enums.ArtifactType;
+import com.aiinsight.model.enums.ReviewAction;
 import com.aiinsight.model.review.ReviewDecision;
 import com.aiinsight.model.review.ReviewFinding;
+import com.aiinsight.model.review.ReviewRepairTask;
 import com.aiinsight.model.schema.AnalysisClaim;
 import com.aiinsight.model.schema.CompetitorFactSet;
 import com.aiinsight.model.schema.CompetitorProfile;
@@ -44,6 +47,8 @@ public class AnalysisRun {
     private List<AnalysisContextMessage> contextMessages = new ArrayList<>();
     private List<UserProvidedEvidence> userProvidedEvidence = new ArrayList<>();
     private ReviewDecision reviewDecision = new ReviewDecision();
+    private ReviewDecision manualRerunDecision;
+    private ReviewRepairDelta lastReviewRepairDelta;
     // AgentTrace 后续用于记录 Prompt、输入输出、模型和 token 消耗，支撑可观测性评分项。
     private List<AgentTrace> traces = new ArrayList<>();
     private List<WorkflowTransition> workflowTransitions = new ArrayList<>();
@@ -88,5 +93,89 @@ public class AnalysisRun {
 
     public void touch() {
         this.updatedAt = Instant.now();
+    }
+
+    public ReviewDecision getRepairDecisionFor(AgentName agentName) {
+        ReviewDecision manualDecision = manualRerunDecisionFor(agentName);
+        if (manualDecision != null) {
+            return manualDecision;
+        }
+        return reviewDecision;
+    }
+
+    private ReviewDecision manualRerunDecisionFor(AgentName agentName) {
+        if (manualRerunDecision == null
+                || manualRerunDecision.getAction() == null
+                || manualRerunDecision.getAction() == ReviewAction.PASS) {
+            return null;
+        }
+        List<ReviewRepairTask> tasks = manualRerunDecision.getRepairTasks() == null
+                ? List.of()
+                : manualRerunDecision.getRepairTasks().stream()
+                .filter(task -> task.getTargetAgent() == agentName)
+                .toList();
+        if (!isActiveDecisionFor(manualRerunDecision, agentName) && tasks.isEmpty()) {
+            return null;
+        }
+        ReviewDecision decision = new ReviewDecision();
+        decision.setAction(actionForAgent(agentName));
+        decision.setTargetAgent(agentName);
+        decision.setReason(manualRerunDecision.getReason());
+        List<String> affectedClaimIds = tasks.stream()
+                .map(ReviewRepairTask::getClaimId)
+                .filter(value -> value != null && !value.isBlank())
+                .distinct()
+                .toList();
+        List<String> findingCategories = tasks.stream()
+                .map(ReviewRepairTask::getCategory)
+                .filter(value -> value != null && !value.isBlank())
+                .distinct()
+                .toList();
+        List<String> blockingFindingIds = tasks.stream()
+                .map(ReviewRepairTask::getFindingId)
+                .filter(value -> value != null && !value.isBlank())
+                .distinct()
+                .toList();
+        List<String> requiredEvidenceTypes = new ArrayList<>(safeList(manualRerunDecision.getRequiredEvidenceTypes()));
+        tasks.stream()
+                .flatMap(task -> safeList(task.getRequiredEvidenceTypes()).stream())
+                .filter(value -> value != null && !value.isBlank())
+                .filter(value -> !requiredEvidenceTypes.contains(value))
+                .forEach(requiredEvidenceTypes::add);
+        decision.setAffectedClaimIds(affectedClaimIds.isEmpty()
+                ? new ArrayList<>(safeList(manualRerunDecision.getAffectedClaimIds()))
+                : affectedClaimIds);
+        decision.setRequiredEvidenceTypes(requiredEvidenceTypes);
+        decision.setFindingCategories(findingCategories.isEmpty()
+                ? new ArrayList<>(safeList(manualRerunDecision.getFindingCategories()))
+                : findingCategories);
+        decision.setBlockingFindingIds(blockingFindingIds.isEmpty()
+                ? new ArrayList<>(safeList(manualRerunDecision.getBlockingFindingIds()))
+                : blockingFindingIds);
+        decision.setRepairInstructions(new ArrayList<>(safeList(manualRerunDecision.getRepairInstructions())));
+        decision.setRepairTasks(tasks);
+        decision.setRepairScopeSummary(manualRerunDecision.getRepairScopeSummary());
+        decision.setDecidedAt(manualRerunDecision.getDecidedAt());
+        return decision;
+    }
+
+    private ReviewAction actionForAgent(AgentName agentName) {
+        return switch (agentName) {
+            case RESEARCHER -> ReviewAction.RECOLLECT_EVIDENCE;
+            case EXTRACTOR, ANALYST -> ReviewAction.REWORK_ANALYSIS;
+            case WRITER -> ReviewAction.REVISE_REPORT;
+            case CLARIFIER, REVIEWER -> ReviewAction.PASS;
+        };
+    }
+
+    private boolean isActiveDecisionFor(ReviewDecision decision, AgentName agentName) {
+        return decision != null
+                && decision.getAction() != null
+                && decision.getAction() != ReviewAction.PASS
+                && decision.getTargetAgent() == agentName;
+    }
+
+    private static <T> List<T> safeList(List<T> values) {
+        return values == null ? List.of() : values;
     }
 }

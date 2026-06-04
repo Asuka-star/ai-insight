@@ -359,6 +359,31 @@ class WebPageFetchServiceTest {
     }
 
     @Test
+    void fetchedPageStripsNullCharactersBeforeStorage() {
+        WebPageFetchService.FetchedPage page = WebPageFetchService.FetchedPage.success(
+                "https://example.test/page\u0000",
+                "Useful\u0000 page",
+                "This page has useful body text\u0000 with a hidden null byte.",
+                "robots checked\u0000",
+                "article\u0000",
+                "MEDIUM\u0000",
+                "NONE\u0000",
+                200,
+                "text/html\u0000"
+        );
+
+        assertThat(page.getUrl()).doesNotContain("\u0000");
+        assertThat(page.getTitle()).doesNotContain("\u0000");
+        assertThat(page.getRawText()).doesNotContain("\u0000");
+        assertThat(page.getComplianceNote()).doesNotContain("\u0000");
+        assertThat(page.getSourceType()).doesNotContain("\u0000");
+        assertThat(page.getSourceQuality()).doesNotContain("\u0000");
+        assertThat(page.getFailureReason()).doesNotContain("\u0000");
+        assertThat(page.getContentType()).doesNotContain("\u0000");
+        assertThat(page.fetchedCopy().getRawText()).doesNotContain("\u0000");
+    }
+
+    @Test
     void rechecksRobotsBeforeReturningCachedFetchedPage() throws IOException {
         AtomicBoolean disallow = new AtomicBoolean(false);
         AtomicInteger robotsRequests = new AtomicInteger();
