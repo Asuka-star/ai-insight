@@ -2,6 +2,8 @@ import { Suspense, lazy, type CSSProperties, type PointerEvent as ReactPointerEv
 import {
   Activity,
   AlertTriangle,
+  ArrowDownRight,
+  ArrowUpRight,
   BookOpenCheck,
   Clock3,
   FolderOpen,
@@ -99,6 +101,7 @@ export function App() {
   const [evidenceUrl, setEvidenceUrl] = useState("");
   const [evidenceContent, setEvidenceContent] = useState("");
   const [evidenceSensitive, setEvidenceSensitive] = useState(false);
+  const [isAddingEvidence, setIsAddingEvidence] = useState(false);
   const [documentFile, setDocumentFile] = useState<File | null>(null);
   const [documentTitle, setDocumentTitle] = useState("");
   const [documentSourceType, setDocumentSourceType] = useState("document");
@@ -762,6 +765,7 @@ export function App() {
 
   async function handleStartAnalysis() {
     if (!run) return;
+    if (runMutationDisabled) return;
     if (hasMainAnalysisStarted(run)) return;
     const requestToken = ++workspaceRequestTokenRef.current;
     setIsScopeBusy(true);
@@ -851,8 +855,9 @@ export function App() {
   }
 
   async function handleAddEvidence() {
-    if (!run || !evidenceTitle.trim() || !evidenceContent.trim()) return;
+    if (!run || runMutationDisabled || !evidenceTitle.trim() || !evidenceContent.trim()) return;
     const runId = run.id;
+    setIsAddingEvidence(true);
     setEventMessage("正在加入用户资料");
     try {
       const nextRun = await addEvidence(runId, {
@@ -872,6 +877,10 @@ export function App() {
     } catch (error) {
       if (!isCurrentWorkspaceRun(runId)) return;
       setEventMessage(error instanceof Error ? `资料加入失败：${error.message}` : "资料加入失败");
+    } finally {
+      if (isCurrentWorkspaceRun(runId)) {
+        setIsAddingEvidence(false);
+      }
     }
   }
 
@@ -927,15 +936,14 @@ export function App() {
     if (!run || runMutationDisabled || surveyBusy) return;
     const runId = run.id;
     setSurveyBusy(true);
-    setRun((current) => withOptimisticRerunStep(current, "RESEARCHER"));
-    setEventMessage("正在导入问卷结果并重跑调研链路");
+    setEventMessage("正在导入问卷结果，导入完成后需要手动应用到分析链路");
     try {
       const nextRun = await importSurveyResults(runId, file);
       if (!isCurrentWorkspaceRun(runId)) return;
       setRun(nextRun);
-      setMainView("schema");
+      setMainView("research");
       setHistoryRuns((runs) => upsertHistorySummary(runs, summaryFromRun(nextRun)));
-      setEventMessage("问卷结果已导入证据链，Researcher 及下游链路已重跑");
+      setEventMessage("问卷结果已导入为待应用调研数据，点击“应用并重跑 Extractor”后刷新分析结论");
     } catch (error) {
       if (!isCurrentWorkspaceRun(runId)) return;
       setEventMessage(error instanceof Error ? `问卷结果导入失败：${error.message}` : "问卷结果导入失败");
@@ -945,6 +953,12 @@ export function App() {
         setSurveyBusy(false);
       }
     }
+  }
+
+  async function handleApplyResearchInputs() {
+    if (!run || runMutationDisabled || surveyBusy || rerunningAgent) return;
+    setMainView("dag");
+    await handleRerun("EXTRACTOR");
   }
 
   async function handleUploadDocument() {
@@ -1061,7 +1075,8 @@ export function App() {
     totalLatencyMs: localRunMetrics.totalLatencyMs,
     highFindingCount: run?.reviewFindings.filter((finding) => finding.severity === "HIGH").length ?? 0,
     mediumFindingCount: run?.reviewFindings.filter((finding) => finding.severity === "MEDIUM").length ?? 0,
-    lowFindingCount: run?.reviewFindings.filter((finding) => finding.severity === "LOW").length ?? 0
+    lowFindingCount: run?.reviewFindings.filter((finding) => finding.severity === "LOW").length ?? 0,
+    latestImprovement: localRunMetrics.latestImprovement
   };
   const phase = String(resolveRunPhase(run));
   const userResourceSources = useMemo(
@@ -1072,6 +1087,9 @@ export function App() {
   // 资源包文件完成解析前，不允许启动/重跑/继续修改会触发 Agent 的入口。
   const runMutationDisabled = !run
     || Boolean(rerunningAgent)
+    || isAddingEvidence
+    || surveyBusy
+    || isUploadingDocument
     || processingResourceCount > 0
     || ["RUNNING", "REVIEWING", "REVISING", "CANCELLED"].includes(phase);
   const pendingClarification = isCreating
@@ -1088,6 +1106,50 @@ export function App() {
     { label: "Token", value: runMetrics.totalTokens, icon: Gauge },
     { label: "耗时", value: formatDuration(runMetrics.totalLatencyMs), icon: Clock3 }
   ];
+
+  const latestImprovement = runMetrics.latestImprovement;
+  const improvementRows = latestImprovement ? [
+    {
+      label: "证据来源",
+      before: String(latestImprovement.evidenceBefore),
+      after: String(latestImprovement.evidenceAfter),
+      deltaValue: latestImprovement.evidenceDelta,
+      delta: formatSignedDelta(latestImprovement.evidenceDelta),
+      improved: latestImprovement.evidenceDelta > 0
+    },
+    {
+      label: "覆盖缺口",
+      before: String(latestImprovement.coverageGapsBefore),
+      after: String(latestImprovement.coverageGapsAfter),
+      deltaValue: latestImprovement.coverageGapDelta,
+      delta: formatSignedDelta(latestImprovement.coverageGapDelta),
+      improved: latestImprovement.coverageGapDelta < 0
+    },
+    {
+      label: "质检问题",
+      before: String(latestImprovement.findingsBefore),
+      after: String(latestImprovement.findingsAfter),
+      deltaValue: latestImprovement.findingDelta,
+      delta: formatSignedDelta(latestImprovement.findingDelta),
+      improved: latestImprovement.findingDelta < 0
+    },
+    {
+      label: "HIGH 问题",
+      before: String(latestImprovement.highFindingsBefore),
+      after: String(latestImprovement.highFindingsAfter),
+      deltaValue: latestImprovement.highFindingDelta,
+      delta: formatSignedDelta(latestImprovement.highFindingDelta),
+      improved: latestImprovement.highFindingDelta < 0
+    },
+    {
+      label: "Claim 覆盖",
+      before: formatPercent(latestImprovement.claimCoverageBefore),
+      after: formatPercent(latestImprovement.claimCoverageAfter),
+      deltaValue: latestImprovement.claimCoverageDelta,
+      delta: formatSignedDelta(latestImprovement.claimCoverageDelta, "%"),
+      improved: latestImprovement.claimCoverageDelta > 0
+    }
+  ] : [];
 
   const mainTabs: Array<{ key: MainView; label: string }> = [
     { key: "dag", label: "Agent DAG" },
@@ -1265,9 +1327,12 @@ export function App() {
                   surveyInsights={run?.researchPackage?.surveyInsights ?? []}
                   disabled={runMutationDisabled}
                   busy={surveyBusy}
+                  pendingRevision={Boolean(run?.pendingResearchInputRevision)}
+                  pendingRevisionReason={run?.pendingResearchInputReason}
                   onDownloadTemplate={handleDownloadSurveyTemplate}
                   onSaveQuestionnaire={handleSaveQuestionnaire}
                   onImportSurveyResults={handleImportSurveyResults}
+                  onApplyResearchInputs={handleApplyResearchInputs}
                 />
               </div>
             ) : null}
@@ -1414,6 +1479,36 @@ export function App() {
                   </div>
                 );
               })}
+            </div>
+            <div className="metric-improvement">
+              <div className="metric-improvement-header">
+                <strong>最近一次重跑改善</strong>
+                <span>
+                  {latestImprovement
+                    ? `${latestImprovement.agentName ? AGENT_LABELS[latestImprovement.agentName] ?? latestImprovement.agentName : "Agent"} · ${latestImprovement.changed ? "有变化" : "无变化"}`
+                    : "暂无快照"}
+                </span>
+              </div>
+              {latestImprovement ? (
+                <div className="metric-delta-list">
+                  {improvementRows.map((row) => {
+                    const neutral = row.deltaValue === 0;
+                    const Icon = neutral ? RefreshCw : row.deltaValue > 0 ? ArrowUpRight : ArrowDownRight;
+                    return (
+                      <div className={`metric-delta-row ${row.improved ? "improved" : neutral ? "neutral" : ""}`} key={row.label}>
+                        <span>{row.label}</span>
+                        <small>{row.before} → {row.after}</small>
+                        <strong>
+                          <Icon size={14} />
+                          {row.delta}
+                        </strong>
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : (
+                <p className="metric-empty">重跑后会在这里显示证据、覆盖缺口、质检问题和 Claim 覆盖的变化。</p>
+              )}
             </div>
           </CollapsiblePanel>
         </aside>
@@ -1636,6 +1731,11 @@ function timestampValue(value?: string) {
   if (!value) return 0;
   const time = new Date(value).getTime();
   return Number.isNaN(time) ? 0 : time;
+}
+
+function formatSignedDelta(value: number, suffix = "") {
+  if (value === 0) return `0${suffix}`;
+  return `${value > 0 ? "+" : ""}${value}${suffix}`;
 }
 
 function safeParseEvent(event: MessageEvent<string>): RunEvent | null {

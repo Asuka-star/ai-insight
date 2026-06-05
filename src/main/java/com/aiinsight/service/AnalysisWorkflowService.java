@@ -24,6 +24,7 @@ import com.aiinsight.model.run.AnalysisRun;
 import com.aiinsight.model.run.ClarificationDraft;
 import com.aiinsight.model.run.EvidenceChunk;
 import com.aiinsight.model.run.EvidenceSource;
+import com.aiinsight.model.run.ReviewRepairDelta;
 import com.aiinsight.model.run.UserProvidedEvidence;
 import com.aiinsight.model.schema.CompetitorProfile;
 import com.aiinsight.model.schema.Questionnaire;
@@ -79,6 +80,7 @@ public class AnalysisWorkflowService {
     private final EvidenceEmbeddingService evidenceEmbeddingService;
     private final DocumentIngestionService documentIngestionService;
     private final ConcurrentMap<UUID, AgentName> activeReruns = new ConcurrentHashMap<>();
+    private InterviewInsightExtractor interviewInsightExtractor = new InterviewInsightExtractor();
     private SurveyInsightExtractor surveyInsightExtractor = new SurveyInsightExtractor();
     private SurveyResultImportService surveyResultImportService = new SurveyResultImportService();
 
@@ -285,7 +287,34 @@ public class AnalysisWorkflowService {
                 totalLatencyMs,
                 countFindings(run, ReviewSeverity.HIGH),
                 countFindings(run, ReviewSeverity.MEDIUM),
-                countFindings(run, ReviewSeverity.LOW)
+                countFindings(run, ReviewSeverity.LOW),
+                latestImprovement(run.getLastReviewRepairDelta())
+        );
+    }
+
+    private AnalysisRunMetrics.LatestImprovementMetrics latestImprovement(ReviewRepairDelta delta) {
+        if (delta == null) {
+            return null;
+        }
+        return new AnalysisRunMetrics.LatestImprovementMetrics(
+                delta.getAgentName(),
+                delta.isChanged(),
+                delta.getRecordedAt(),
+                delta.getEvidenceSourcesBefore(),
+                delta.getEvidenceSourcesAfter(),
+                delta.getEvidenceSourcesAfter() - delta.getEvidenceSourcesBefore(),
+                delta.getCoverageGapsBefore(),
+                delta.getCoverageGapsAfter(),
+                delta.getCoverageGapsAfter() - delta.getCoverageGapsBefore(),
+                delta.getFindingsBefore(),
+                delta.getFindingsAfter(),
+                delta.getFindingsAfter() - delta.getFindingsBefore(),
+                delta.getHighFindingsBefore(),
+                delta.getHighFindingsAfter(),
+                delta.getHighFindingsAfter() - delta.getHighFindingsBefore(),
+                delta.getClaimCoverageBefore(),
+                delta.getClaimCoverageAfter(),
+                delta.getClaimCoverageAfter() - delta.getClaimCoverageBefore()
         );
     }
 
@@ -447,6 +476,10 @@ public class AnalysisWorkflowService {
                 request.getUrl(),
                 request.isSensitive());
         String citationKey = attachUserEvidence(run, evidence);
+        if (isResearchInputType(request.getSourceType())) {
+            refreshResearchInputInsights(run);
+            markResearchInputPending(run, "新增调研资料 " + citationKey + " 待应用到分析链路");
+        }
         repository.save(run);
         eventBroker.publish(run, "evidence_added", "用户补充资料已加入证据链：" + citationKey);
         return run;
@@ -513,11 +546,11 @@ public class AnalysisWorkflowService {
         String citationKey = attachUserEvidence(run, evidence);
         resultImport.getEvidenceIds().add(citationKey);
         run.getResearchPackage().getSurveyResultImports().add(resultImport);
-        run.getResearchPackage().setSurveyInsights(surveyInsightExtractor.extract(run));
-        run.getRecommendedActions().add("Imported survey results as " + citationKey + "; rerunning Researcher with survey evidence.");
+        refreshResearchInputInsights(run);
+        markResearchInputPending(run, "Imported survey results as " + citationKey + "; click apply to rerun Extractor and downstream agents.");
         repository.save(run);
         eventBroker.publish(run, "survey_results_imported", "Survey results imported: " + citationKey);
-        return rerunAgent(runId, AgentName.RESEARCHER);
+        return run;
     }
 
     public AnalysisRun addDocument(UUID runId,
@@ -539,6 +572,7 @@ public class AnalysisWorkflowService {
         AnalysisRun run = get(runId);
         ensureEvidenceAcceptable(run);
         String citationKey = nextCitationKey(run);
+        markResearchInputPendingIfNeeded(run, sourceType, "新增调研文件 " + citationKey + " 待应用到分析链路");
         documentIngestionService.ingest(run, file, citationKey, title, sourceType, sensitive, notes, globalResource);
         if (!documentIngestionService.managesPersistence()) {
             repository.save(run);
@@ -613,6 +647,7 @@ public class AnalysisWorkflowService {
                 return run;
             }
             run.setStatus(statusAfterManualRerun(run, previousStatus, agentName));
+            clearAppliedResearchInputPending(run, agentName);
             repository.save(run);
             eventBroker.publish(run, "agent_rerun_completed", agentName + " rerun completed");
             return run;
@@ -989,6 +1024,42 @@ public class AnalysisWorkflowService {
 
     private boolean isSurveyEvidenceType(String sourceType) {
         return containsIgnoreCase(sourceType, "survey");
+    }
+
+    private void markResearchInputPendingIfNeeded(AnalysisRun run, String sourceType, String reason) {
+        if (isResearchInputType(sourceType)) {
+            markResearchInputPending(run, reason);
+        }
+    }
+
+    private void markResearchInputPending(AnalysisRun run, String reason) {
+        run.setPendingResearchInputRevision(true);
+        run.setPendingResearchInputReason(reason);
+        run.getRecommendedActions().add(reason);
+        run.touch();
+    }
+
+    private void refreshResearchInputInsights(AnalysisRun run) {
+        run.getResearchPackage().setInterviewInsights(interviewInsightExtractor.extract(run));
+        run.getResearchPackage().setSurveyInsights(surveyInsightExtractor.extract(run));
+        run.getResearchPackage().setCollectedAt(Instant.now());
+    }
+
+    private void clearAppliedResearchInputPending(AnalysisRun run, AgentName agentName) {
+        if (!run.isPendingResearchInputRevision()) {
+            return;
+        }
+        if (agentName == AgentName.RESEARCHER || agentName == AgentName.EXTRACTOR) {
+            run.setPendingResearchInputRevision(false);
+            run.setPendingResearchInputReason(null);
+            run.getRecommendedActions().add("新调研数据已通过 " + agentName.name() + " 重跑应用到分析链路。");
+            run.touch();
+        }
+    }
+
+    private boolean isResearchInputType(String sourceType) {
+        return containsIgnoreCase(sourceType, "survey")
+                || containsIgnoreCase(sourceType, "interview");
     }
 
     private boolean isUserDocumentResource(EvidenceSource source) {

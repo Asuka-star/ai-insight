@@ -82,6 +82,28 @@ export interface AnalysisRunMetrics {
   highFindingCount: number;
   mediumFindingCount: number;
   lowFindingCount: number;
+  latestImprovement?: LatestImprovementMetrics | null;
+}
+
+export interface LatestImprovementMetrics {
+  agentName?: AgentName;
+  changed: boolean;
+  recordedAt?: string;
+  evidenceBefore: number;
+  evidenceAfter: number;
+  evidenceDelta: number;
+  coverageGapsBefore: number;
+  coverageGapsAfter: number;
+  coverageGapDelta: number;
+  findingsBefore: number;
+  findingsAfter: number;
+  findingDelta: number;
+  highFindingsBefore: number;
+  highFindingsAfter: number;
+  highFindingDelta: number;
+  claimCoverageBefore: number;
+  claimCoverageAfter: number;
+  claimCoverageDelta: number;
 }
 
 export interface UpdateAnalysisRequirementRequest {
@@ -290,6 +312,26 @@ export interface ReviewRepairTask {
   dimension?: string;
   sourcePreferences?: string[];
   queries?: string[];
+}
+
+export interface ReviewRepairDelta {
+  agentName?: AgentName;
+  changed: boolean;
+  findingsBefore: number;
+  findingsAfter: number;
+  highFindingsBefore?: number;
+  highFindingsAfter?: number;
+  evidenceSourcesBefore: number;
+  evidenceSourcesAfter: number;
+  claimsBefore: number;
+  claimsAfter: number;
+  claimCoverageBefore?: number;
+  claimCoverageAfter?: number;
+  coverageGapsBefore?: number;
+  coverageGapsAfter?: number;
+  artifactsBefore: number;
+  artifactsAfter: number;
+  recordedAt?: string;
 }
 
 export interface ResearchPackage {
@@ -590,6 +632,9 @@ export interface AnalysisRun {
   traces?: AgentTrace[];
   workflowTransitions?: WorkflowTransition[];
   reviewDecision?: ReviewDecision;
+  lastReviewRepairDelta?: ReviewRepairDelta;
+  pendingResearchInputRevision?: boolean;
+  pendingResearchInputReason?: string;
   maxReviewReworkAttempts?: number;
   errorMessage?: string;
   createdAt?: string;

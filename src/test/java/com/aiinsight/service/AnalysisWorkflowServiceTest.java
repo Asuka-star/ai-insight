@@ -31,6 +31,7 @@ import com.aiinsight.model.run.EvidenceChunk;
 import com.aiinsight.model.run.AnalysisRequirement;
 import com.aiinsight.model.run.AnalysisRun;
 import com.aiinsight.model.run.EvidenceSource;
+import com.aiinsight.model.run.ReviewRepairDelta;
 import com.aiinsight.model.run.WorkflowTransition;
 import com.aiinsight.model.review.ReviewDecision;
 import com.aiinsight.model.review.ReviewFinding;
@@ -272,6 +273,30 @@ class AnalysisWorkflowServiceTest {
         assertThat(metrics.getClaimCoverage()).isBetween(0, 100);
         assertThat(metrics.getSchemaCompleteness()).isBetween(0, 100);
         assertThat(metrics.getTotalLatencyMs()).isGreaterThanOrEqualTo(0);
+
+        ReviewRepairDelta delta = new ReviewRepairDelta();
+        delta.setAgentName(AgentName.RESEARCHER);
+        delta.setChanged(true);
+        delta.setEvidenceSourcesBefore(3);
+        delta.setEvidenceSourcesAfter(5);
+        delta.setCoverageGapsBefore(4);
+        delta.setCoverageGapsAfter(1);
+        delta.setFindingsBefore(6);
+        delta.setFindingsAfter(2);
+        delta.setHighFindingsBefore(2);
+        delta.setHighFindingsAfter(0);
+        delta.setClaimCoverageBefore(40);
+        delta.setClaimCoverageAfter(80);
+        finished.setLastReviewRepairDelta(delta);
+
+        AnalysisRunMetrics rerunMetrics = service.metrics(finished.getId());
+        assertThat(rerunMetrics.getLatestImprovement()).isNotNull();
+        assertThat(rerunMetrics.getLatestImprovement().getAgentName()).isEqualTo(AgentName.RESEARCHER);
+        assertThat(rerunMetrics.getLatestImprovement().getEvidenceDelta()).isEqualTo(2);
+        assertThat(rerunMetrics.getLatestImprovement().getCoverageGapDelta()).isEqualTo(-3);
+        assertThat(rerunMetrics.getLatestImprovement().getFindingDelta()).isEqualTo(-4);
+        assertThat(rerunMetrics.getLatestImprovement().getHighFindingDelta()).isEqualTo(-2);
+        assertThat(rerunMetrics.getLatestImprovement().getClaimCoverageDelta()).isEqualTo(40);
     }
 
     @Test
@@ -614,7 +639,7 @@ class AnalysisWorkflowServiceTest {
     }
 
     @Test
-    void importsSurveyResultsAsEvidenceAndRerunsResearcher() {
+    void importsSurveyResultsAsPendingResearchInputWithoutAutoRerun() {
         TestAnalysisRunRepository repository = new TestAnalysisRunRepository();
         AnalysisWorkflowService service = newService(repository, new AnalysisEventBroker(), new TaskExecutorAdapter(Runnable::run), null);
         AnalysisRun run = new AnalysisRun(new AnalysisRequirement(
@@ -655,7 +680,17 @@ class AnalysisWorkflowServiceTest {
                     assertThat(source.getRawText()).contains("Sample size: 3");
                 });
         assertThat(imported.getResearchPackage().getSurveyInsights()).isNotEmpty();
-        assertThat(imported.getSteps()).anySatisfy(step -> assertThat(step.getAgentName()).isEqualTo(AgentName.RESEARCHER));
+        assertThat(imported.getSteps()).isEmpty();
+        assertThat(imported.isPendingResearchInputRevision()).isTrue();
+        assertThat(imported.getPendingResearchInputReason()).contains("click apply");
+
+        AnalysisRun applied = service.rerunAgent(run.getId(), AgentName.EXTRACTOR);
+
+        assertThat(applied.isPendingResearchInputRevision()).isFalse();
+        assertThat(applied.getPendingResearchInputReason()).isNull();
+        assertThat(applied.getSteps())
+                .extracting(AgentStep::getAgentName)
+                .contains(AgentName.EXTRACTOR, AgentName.ANALYST, AgentName.WRITER, AgentName.REVIEWER);
     }
 
     @Test
@@ -717,6 +752,7 @@ class AnalysisWorkflowServiceTest {
                 .singleElement()
                 .satisfies(insight -> assertThat(insight.getSampleSize()).isEqualTo("2 responses"));
         assertThat(latest.getResearchPackage().getInterviewInsights()).isNotEmpty();
+        assertThat(latest.isPendingResearchInputRevision()).isTrue();
         assertThat(latest.getUserProvidedEvidence())
                 .filteredOn(evidence -> evidence.getSourceType() != null && evidence.getSourceType().contains("survey"))
                 .singleElement()

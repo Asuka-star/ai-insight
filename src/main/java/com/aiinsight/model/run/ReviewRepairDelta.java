@@ -16,10 +16,16 @@ public class ReviewRepairDelta {
     private boolean changed;
     private int findingsBefore;
     private int findingsAfter;
+    private int highFindingsBefore;
+    private int highFindingsAfter;
     private int evidenceSourcesBefore;
     private int evidenceSourcesAfter;
     private int claimsBefore;
     private int claimsAfter;
+    private int claimCoverageBefore;
+    private int claimCoverageAfter;
+    private int coverageGapsBefore;
+    private int coverageGapsAfter;
     private int artifactsBefore;
     private int artifactsAfter;
     private String claimsFingerprintBefore;

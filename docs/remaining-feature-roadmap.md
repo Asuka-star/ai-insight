@@ -4,9 +4,18 @@
 
 本文记录 AI Insight 在当前代码基础上，为满足课题要求、MVP 演示和高分验收仍需要补齐的功能。
 
-当前项目已经具备范围确认、LangGraph4j DAG、Reviewer 条件打回、结构化 Schema、SSE 进度、Trace 数据、前端工作台和单 Agent 重跑等核心能力。后续重点不再是“从零搭链路”，而是把演示可信度、可观测细节、真实资料采集、结构化展示和答辩材料做扎实。
+当前项目已经具备范围确认、LangGraph4j DAG、Reviewer 条件打回、结构化 Schema、SSE 进度、Trace 数据、前端工作台、单 Agent 重跑、公开资料/用户资料录入、问卷结果导入和访谈/问卷洞察等核心能力。后续重点不再是“从零搭链路”，而是把演示可信度、可观测细节、调研深度和答辩材料做扎实。
 
 信息采集 Agent 的专项差距和后续优化计划见 `docs/research-agent-roadmap.md`。
+
+## 1.1 2026-06-05 状态校准
+
+前几轮 P0/P1/P2 演示能力已经基本落地，本文后续“需要实现”小节保留为实现过程记录。当前真正建议继续补强的是：
+
+- 来源质量评分：把 `sourceType/sourceQuality/complianceNote` 升级为更可解释的官方/一手/质量原因展示。
+- 访谈管理：从访谈文本抽取升级到访谈对象建议、记录模板、多份访谈聚合和敏感信息脱敏。
+- 演示稳定性：问卷/访谈资料导入后先标记为待应用，不自动触发整条链路；用户点击“应用并重跑 Extractor”后才刷新下游分析。
+- 文档持续校准：新增能力合并后，需要同步更新 README、评分映射和演示脚本，避免答辩材料落后于代码。
 
 ## 2. 当前已具备能力
 
@@ -17,6 +26,9 @@
 - `POST /api/analysis-runs/{runId}/start` 启动 Agent DAG。
 - `POST /api/analysis-runs/{runId}/context` 记录上下文补充。
 - `POST /api/analysis-runs/{runId}/evidence` 记录用户补充资料。
+- `PUT /api/analysis-runs/{runId}/surveys/questionnaire` 支持编辑问卷草案。
+- `GET /api/analysis-runs/{runId}/surveys/template` 支持下载问卷结果模板。
+- `POST /api/analysis-runs/{runId}/surveys/import` 支持导入问卷 CSV/XLSX 结果。
 - `POST /api/analysis-runs/{runId}/agents/{agentName}/rerun` 支持单 Agent 重跑。
 - `GET /api/analysis-runs/{runId}/events` 支持 SSE 进度事件。
 - `GET /api/analysis-runs/{runId}/traces` 支持 Agent Trace 查询。
@@ -25,7 +37,7 @@
 ### 2.2 多 Agent 与结构化产物
 
 - 范围确认：生成 `ClarificationDraft`，用户确认后再进入主 Agent DAG。
-- `RESEARCHER`：采集资料，生成 `ResearchPackage`、`EvidenceSource` 和 `EvidenceChunk`。
+- `RESEARCHER`：采集资料，生成 `ResearchPackage`、`EvidenceSource`、`EvidenceChunk`、问卷草案、访谈提纲、采集子任务、覆盖缺口和补采目标。
 - `EXTRACTOR`：抽取 `CompetitorProfile`、`FeatureTree`、`PricingModel`、`UserPersona`。
 - `ANALYST`：生成竞品矩阵和结构化 `AnalysisClaim`。
 - `WRITER`：生成带 citation 的报告草稿。
@@ -35,6 +47,7 @@
 
 - 左侧任务创建、范围确认、上下文补充。
 - 中间 Agent DAG、最终报告、结构化 Schema、竞品矩阵、报告版本。
+- 中间“问卷访谈”模块，展示问卷草案、结果回收、访谈提纲和结构化洞察。
 - 右侧 Agent 时间线、证据来源、Reviewer 质检和运行指标。
 - 点击报告 citation 可以选中证据来源。
 - 点击 Agent 可以打开 Trace 抽屉。
@@ -42,7 +55,7 @@
 
 ### 2.4 验证情况
 
-- `mvn test` 已通过，当前后端单测 21 个。
+- `mvn test` 已通过，当前后端单测约 300 个。
 - `npm run build` 已通过，前端 TypeScript 和 Vite 构建可用。
 - Vite 构建存在 chunk size 警告，不影响当前运行，但后续可以做代码拆分优化。
 
@@ -62,6 +75,10 @@
 | G10 | 持久化拆分 | 当前 PostgreSQL 保存 run 聚合 JSON，并同步 artifact、step、trace、evidence、chunk、review finding 明细表 | P2 | 已实现 |
 | G11 | 评测指标 | 缺少引用覆盖率、字段完整率、补采改善分等指标面板 | P2 | 已实现 |
 | G12 | 答辩材料 | 缺少架构图、演示脚本、评分点映射和合规说明文档 | P0 | 已实现 |
+| G13 | 问卷访谈 | 缺少问卷结果导入、问卷洞察和访谈提纲集中展示 | P1 | 已实现 |
+| G14 | 改善对比 | 缺少重跑前后证据数、覆盖缺口和质检问题变化快照 | P1 | 已实现 |
+| G15 | 来源质量 | 缺少独立质量评分、官方/一手解释和质量原因字段 | P2 | 待补强 |
+| G16 | 访谈管理 | 缺少访谈对象建议、记录模板、多份访谈聚合和 PII 脱敏 | P2 | 待补强 |
 
 ## 4. P0：必须优先补齐的演示能力
 

@@ -49,6 +49,8 @@ public class AnalysisRun {
     private ReviewDecision reviewDecision = new ReviewDecision();
     private ReviewDecision manualRerunDecision;
     private ReviewRepairDelta lastReviewRepairDelta;
+    private boolean pendingResearchInputRevision;
+    private String pendingResearchInputReason;
     // AgentTrace 后续用于记录 Prompt、输入输出、模型和 token 消耗，支撑可观测性评分项。
     private List<AgentTrace> traces = new ArrayList<>();
     private List<WorkflowTransition> workflowTransitions = new ArrayList<>();

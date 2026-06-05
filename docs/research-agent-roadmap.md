@@ -4,7 +4,7 @@
 
 本文记录当前信息采集 Agent 与课题要求之间的差距，以及后续可迭代的优化方向。
 
-当前系统已经能完成公开 URL 抓取、Tavily 搜索、问卷/访谈设计、用户资料录入和访谈洞察抽取。但从课题中“数字调研小组”的目标看，信息采集 Agent 还应进一步具备更强的证据规划、问卷调研执行、访谈资料归纳和来源质量评估能力。
+当前系统已经能完成公开 URL 抓取、Tavily 搜索、采集子任务规划、竞品/维度级覆盖缺口计算、问卷/访谈设计、用户资料录入、问卷结果导入、问卷洞察、访谈洞察抽取和补采/重跑前后量化对比。但从课题中“数字调研小组”的目标看，信息采集 Agent 还应进一步增强访谈管理、来源质量评分和演示稳定性。
 
 ## 2. 当前已具备能力
 
@@ -36,42 +36,33 @@
 - `InterviewInsightExtractor` 会抽取受访者角色、场景、痛点、正负反馈、采购顾虑、竞品提及、关联维度和可引用原句。
 - Extractor 会把访谈痛点和采购顾虑写入用户画像。
 
+### 2.5 问卷结果导入
+
+- Researcher 会生成问卷草案，前端“问卷访谈”模块支持用户编辑后保存。
+- 用户可以下载 CSV 模板，自行发放问卷后导入 CSV/XLSX 结果表。
+- `SurveyResultImportService` 会解析样本量、选项分布和开放反馈。
+- `SurveyInsightExtractor` 会写入 `ResearchPackage.surveyInsights`，导入后先标记为待应用，用户手动重跑 Extractor 后再刷新后续 Agent 产物。
+- 同一分析任务中，多次导入问卷结果时只保留最新问卷证据参与分析；访谈证据按多份累积。
+
+### 2.6 采集计划与覆盖缺口
+
+- `ResearchCollectionPlan` 记录采集目标、子任务、候选 URL、证据预算、覆盖缺口和补采目标。
+- `ResearchCoverageGap` 已按竞品、维度和缺失来源类型表达证据缺口。
+- `ResearchRepairTarget` 会把覆盖缺口或 Reviewer repair task 转成可展示的补采目标。
+- 前端右侧采集面板会展示 Lead 规划、子任务、覆盖缺口和补采建议。
+
 ## 3. 主要差距
 
-### 3.1 证据缺口还不够结构化
+### 3.1 覆盖缺口已有结构，但演示表达还可加强
 
-当前缺口主要是全局枚举，例如：
+当前已经有 `ResearchCoverageGap` 和 `ResearchRepairTarget`，可以表达“哪个竞品、哪个维度、缺哪些来源类型”。后续主要不是从零新增 schema，而是增强两件事：
 
-- `pricing_page`
-- `user_review`
-- `survey_result`
-- `interview_note`
-
-更符合调研工作流的方式是按竞品、维度和证据类型拆分缺口，例如：
-
-- Salesforce 缺价格页证据。
-- HubSpot 缺用户评价证据。
-- “权限治理”维度缺访谈证据。
-- “价格策略”维度缺公开来源证据。
-
-后续可新增结构：
-
-```java
-ResearchEvidenceGap {
-    String competitor;
-    String dimension;
-    String evidenceType;
-    String reason;
-    String priority;
-    List<String> suggestedQueries;
-}
-```
-
-这样 Reviewer 打回采集时，也能明确要求 Researcher 补哪类证据，而不是只给一个笼统缺口。
+- 在主工作台中更显眼地展示补采前后变化，例如证据数、覆盖缺口数、Reviewer 高危问题数。
+- 让 Reviewer repair task 与 coverage gap 的映射更可解释，减少“为什么要补这个来源”的黑箱感。
 
 ### 3.2 搜索 Query 仍可优化
 
-当前搜索已经接入真实 provider，但 query 仍有一定模板化倾向，部分场景还会带上 `AI collaboration`。
+当前搜索已经接入真实 provider，并已拆出规则/LLM query planner；但 query 仍有一定模板化倾向，部分长尾行业的维度表达还可以继续优化。
 
 问题：
 
@@ -109,25 +100,11 @@ ResearchEvidenceGap {
 
 短期只保留用户手动采集与结果导入路线，避免认证、付费和回调机制影响比赛演示。
 
-建议结构：
+已落地结构：
 
-```java
-SurveyInsight {
-    String evidenceId;
-    String sampleSize;
-    List<String> respondentSegments;
-    List<SurveyFinding> findings;
-    List<String> competitorMentions;
-    List<String> relatedDimensions;
-}
-
-SurveyFinding {
-    String question;
-    String finding;
-    String distribution;
-    List<String> evidenceIds;
-}
-```
+- `SurveyResultImport`：记录导入批次、文件名、响应数和证据 ID。
+- `SurveyInsight`：记录样本量、受访者分布、竞品提及、关联维度和 findings。
+- `SurveyFinding`：记录题目、分布、结论解释和证据 ID。
 
 ### 3.4 用户访谈还不是完整访谈流程
 
@@ -167,22 +144,19 @@ SurveyFinding {
 
 ## 4. 推荐实施优先级
 
-### P0：结构化证据缺口
+### P0：补采前后改善指标（已接入）
 
-目标：让 Researcher 明确知道“为哪个竞品、哪个维度、补什么证据”。
+目标：让评委和用户能直接看到“Agent 补采/重跑后是否真的变好”。
 
-建议实现：
+当前实现：
 
-- 新增 `ResearchEvidenceGap` schema。
-- `ResearchPackage` 增加 `evidenceGapsDetailed`。
-- Reviewer 打回时能指定具体缺口。
-- 前端 Schema 展示具体缺口。
+- `ReviewRepairDelta` 记录最近一次重跑前后的证据数、覆盖缺口、Claim 覆盖率、Reviewer 问题数和 HIGH 问题数。
+- `/metrics` 返回 `latestImprovement`，前端运行指标面板展示“重跑前 -> 重跑后”和 delta。
 
 收益：
 
-- 最贴合信息采集 Agent 的职责。
-- 能提升 Reviewer 打回采集的说服力。
-- 便于答辩时展示“Agent 有计划地采集”。
+- 直接支撑“可复核、可重跑、输出可信度提升”的评分点。
+- 比单纯展示最终报告更容易讲清楚 Agent 协作价值。
 
 ### P1：搜索 Query 泛化
 
@@ -190,10 +164,10 @@ SurveyFinding {
 
 建议实现：
 
-- 从 `SourceCollectionService` 中抽出 `SearchQueryPlanner`。
-- LLM 可用时由 LLM 生成 query。
-- LLM 不可用时使用规则模板。
-- query 记录到 `ResearchPlan.searchQueries`。
+- 继续扩展规则模板的行业词库和来源类型映射。
+- LLM query planner 输出失败时保留当前规则 fallback。
+- 在演示面板中突出实际执行 query 与采纳证据的关系。
+- 针对 CRM、BI、审批、采购等非文档协作场景补回归样例。
 
 收益：
 
@@ -201,22 +175,21 @@ SurveyFinding {
 - 避免所有行业都带 `AI collaboration`。
 - 搜索功能更像真正可用的采集能力。
 
-### P1：SurveyInsight
+### P1：访谈管理与聚合
 
-目标：稳定处理用户手动采集后导入的问卷结果。
+目标：让访谈从“文本证据录入”升级为更完整的调研流程。
 
 建议实现：
 
-- 支持 `sourceType=survey` 的用户资料进入 `SurveyInsightExtractor`。
-- 从问卷结果中抽取样本量、主要结论、选项分布、开放题观点。
-- 写入 `ResearchPackage.surveyInsights`。
-- Extractor/Analyst 可以消费问卷洞察。
+- 根据竞品和维度建议访谈对象画像。
+- 生成访谈记录模板。
+- 多份访谈记录聚合成共性痛点、分歧观点和采购顾虑。
+- 增加敏感信息脱敏提示或规则处理。
 
 收益：
 
-- 让“问卷调研”不止停留在问卷设计。
-- 避免依赖外部问卷平台权限、付费和 API 变动。
-- 适合比赛演示。
+- 更贴近“数字调研小组”的人群研究职责。
+- 能和问卷导入能力形成一手资料闭环。
 
 ### P2：访谈洞察升级为 LLM 精抽
 
@@ -269,10 +242,9 @@ SurveyFinding {
 
 ## 6. 建议下一步实现顺序
 
-1. 新增结构化 `ResearchEvidenceGap`。
-2. 优化搜索 query 规划。
-3. 新增 `SurveyInsight` 和 `SurveyInsightExtractor`。
-4. 将 `InterviewInsightExtractor` 升级为 LLM 优先、规则兜底。
-5. 增加来源质量评分。
+1. 增加来源质量评分。
+2. 将 `InterviewInsightExtractor` 升级为 LLM 优先、规则兜底。
+3. 增强访谈管理和多份访谈聚合。
+4. 继续优化搜索 query 规划和行业泛化。
 
-完成前三项后，信息采集 Agent 基本可以从“资料采集入口”升级为“可规划、可执行、可沉淀洞察的调研 Agent”。
+完成前两项后，信息采集 Agent 在答辩中会更容易体现“有计划地采集、能解释来源质量、能证明重跑改善”的价值。

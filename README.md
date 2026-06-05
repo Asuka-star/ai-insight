@@ -67,6 +67,7 @@ src/main/java/com/aiinsight
 - `docs/demo-script.md`：答辩演示脚本和讲解顺序。
 - `docs/scoring-map.md`：课题评分点与系统能力映射。
 - `docs/remaining-feature-roadmap.md`：剩余功能和优先级记录。
+- `docs/research-agent-roadmap.md`：信息采集 Agent、问卷访谈和调研能力后续路线。
 
 ## 竞品知识 Schema
 
@@ -255,13 +256,15 @@ docker exec -it ai-insight-pg psql -U ai_insight -d ai_insight -c "truncate tabl
 
 可选后续增强：
 
-- PostgreSQL + pgvector：保存资料切片、Embedding、证据引用和更细粒度的任务运行态。
+- PostgreSQL + pgvector：当前已支持 embedding 缓存和 evidence chunk 向量投影；后续可继续补分页、过滤和审计查询接口。
 - Redis：任务锁、短期事件广播、异步任务状态缓存。
 
 ## 后续增强方向
 
-- 扩展采集来源，继续补充搜索结果、问卷、访谈、更新日志和公开评价数据。
-- 使用 Spring AI 构建文档切分、Embedding、向量召回和引用绑定链路。
+- 扩展采集来源，继续增强搜索结果、问卷、访谈、更新日志和公开评价数据。
+- 强化问卷/访谈调研能力：补充访谈记录模板、多份访谈聚合、PII 脱敏和 LLM 精抽。
+- 继续增强来源质量评分和质量原因展示；补采/重跑前后改善指标已经接入运行指标面板。
+- 使用 Spring AI 继续优化文档切分、Embedding、向量召回和引用绑定链路。
 - 将前端的 trace、artifact、evidence 查询逐步切到 PostgreSQL 明细表，并补充分页与过滤。
 - 继续优化前端 Workbench 的报告对比、历史任务筛选和大包体代码拆分。
 - 扩展评测指标：补采前后评分变化、更多质量规则和跨样例 benchmark。
@@ -278,7 +281,11 @@ docker exec -it ai-insight-pg psql -U ai_insight -d ai_insight -c "truncate tabl
 - Agent Prompt、模型输出、fallback、耗时和异常 Trace
 - analysis_run PostgreSQL 持久化
 - Researcher 支持用户提供公开 URL 并沉淀为可引用证据
+- Researcher 支持问卷草案、访谈提纲、采集子任务、覆盖缺口和补采目标
+- 前端问卷访谈模块支持编辑问卷、下载结果模板、导入 CSV/XLSX 问卷结果和展示访谈提纲
+- 问卷结果会转成用户问卷证据和结构化洞察；同一任务只使用最新问卷结果，访谈证据按多份累积；导入后先标记为待应用，用户手动重跑 Extractor 后再刷新下游分析
 - EvidenceChunk 证据切片与关键词召回接口
+- 配置 embedding 后支持 evidence chunk 向量投影和语义召回，未配置时保留关键词 fallback
 - Reviewer 自动打回 Researcher、Analyst 或 Writer 的反馈闭环
 - SSE 事件推送
 - 单 Agent 重跑接口

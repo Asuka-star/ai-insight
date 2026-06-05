@@ -223,7 +223,31 @@ https://www.atlassian.com/software/confluence/pricing
 - Schema 中的 evidenceIds 可点击选中证据。
 - SWOT 表格包含 Strengths、Weaknesses、Opportunities、Threats。
 
-### 3.8 展示 Agent Trace
+### 3.8 展示问卷访谈模块
+
+操作：
+
+1. 切到“问卷访谈”。
+2. 展示 Researcher 生成的问卷草案，并说明用户可以编辑后保存。
+3. 点击“下载结果模板”，说明用户可以自行发放问卷并收集结果。
+4. 展示“导入结果表格”和“结果回收”区域，说明 CSV/XLSX 导入后会转成问卷证据和结构化洞察。
+5. 展示“新调研数据待应用”，点击“应用并重跑 Extractor”后再刷新下游分析。
+6. 展示访谈提纲和已结构化洞察。
+
+讲解要点：
+
+- 当前路线不依赖第三方问卷平台 API，避免比赛演示被付费、认证和回调机制卡住。
+- 同一任务多次导入问卷结果时只使用最新问卷证据；访谈资料可以多份累积。
+- 导入资料和刷新分析拆成两个动作，避免真实 LLM/Search/Embedding 配置下导入按钮长时间等待。
+- 问卷/访谈作为一手资料进入证据链，再参与后续竞品分析。
+
+观察点：
+
+- 问卷草案可编辑。
+- 结果回收展示导入批次、响应数和证据 ID。
+- Schema 中能看到问卷洞察和访谈洞察。
+
+### 3.9 展示 Agent Trace
 
 操作：
 
@@ -242,7 +266,7 @@ https://www.atlassian.com/software/confluence/pricing
 - TraceDrawer 中有 Prompt、输入、输出、rawModelOutput。
 - token 和 latency 可见。
 
-### 3.9 手动重跑 Agent
+### 3.10 手动重跑 Agent
 
 操作：
 
@@ -255,6 +279,7 @@ https://www.atlassian.com/software/confluence/pricing
 - 支持局部重跑，不需要整条 pipeline 从头开始。
 - Artifact 按类型自动版本化。
 - 用户可以对比版本和引用数量。
+- 右侧运行指标会记录最近一次重跑前后的改善快照。
 
 观察点：
 
@@ -262,12 +287,12 @@ https://www.atlassian.com/software/confluence/pricing
 - 报告草稿版本从 v1/v2 增加到 v3。
 - 指标面板中的步骤数、token 或耗时变化。
 
-### 3.10 展示指标面板
+### 3.11 展示指标面板
 
 操作：
 
 1. 回到左侧“运行指标”。
-2. 展示 Agent 步骤、证据来源、质检问题、引用标记、Claim 覆盖率、Schema 完整率、打回次数、Token 和耗时。
+2. 展示 Agent 步骤、证据来源、质检问题、引用标记、Claim 覆盖率、Schema 完整率、打回次数、Token、耗时和最近一次重跑改善。
 
 讲解要点：
 
@@ -300,3 +325,4 @@ AI Insight 的核心价值是把竞品分析从“一句话生成报告”升级
 - Reviewer 能生成 ReviewDecision 并触发反馈闭环。
 - 每条结论尽量绑定 citation。
 - 每个 Agent 的 Prompt、输入、输出、模型、token 和耗时可观测。
+- 问卷和访谈资料可以作为一手调研证据进入分析链路。

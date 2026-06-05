@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from "react";
-import { ClipboardList, DownloadCloud, FileSpreadsheet, MessageSquareText, Pencil, Plus, Save, Trash2, UploadCloud, X } from "lucide-react";
+import { ClipboardList, DownloadCloud, FileSpreadsheet, MessageSquareText, Pencil, Plus, RefreshCw, Save, Trash2, UploadCloud, X } from "lucide-react";
 import type { InterviewGuide, InterviewInsight, Questionnaire, SurveyInsight, SurveyQuestion, SurveyResultImport } from "../types";
 
 interface ResearchDesignPanelProps {
@@ -10,9 +10,12 @@ interface ResearchDesignPanelProps {
   surveyInsights?: SurveyInsight[];
   disabled?: boolean;
   busy?: boolean;
+  pendingRevision?: boolean;
+  pendingRevisionReason?: string;
   onDownloadTemplate?: () => void;
   onSaveQuestionnaire?: (questionnaire: Questionnaire) => void;
   onImportSurveyResults?: (file: File) => void;
+  onApplyResearchInputs?: () => void;
 }
 
 export function ResearchDesignPanel({
@@ -23,9 +26,12 @@ export function ResearchDesignPanel({
   surveyInsights = [],
   disabled,
   busy,
+  pendingRevision,
+  pendingRevisionReason,
   onDownloadTemplate,
   onSaveQuestionnaire,
-  onImportSurveyResults
+  onImportSurveyResults,
+  onApplyResearchInputs
 }: ResearchDesignPanelProps) {
   const importInputRef = useRef<HTMLInputElement>(null);
   const [editingQuestionnaire, setEditingQuestionnaire] = useState(false);
@@ -74,6 +80,18 @@ export function ResearchDesignPanel({
           />
         </div>
       </section>
+
+      {pendingRevision ? (
+        <section className="research-pending-banner">
+          <div>
+            <strong>新调研数据待应用</strong>
+            <p>{pendingRevisionReason || "已导入或新增问卷/访谈资料，当前报告还没有基于这批资料刷新。"}</p>
+          </div>
+          <button type="button" className="primary-button" onClick={onApplyResearchInputs} disabled={disabled || busy}>
+            <RefreshCw size={15} /> 应用并重跑 Extractor
+          </button>
+        </section>
+      ) : null}
 
       <div className="research-design-grid">
         <section className="research-card wide">

@@ -7,6 +7,7 @@ import com.aiinsight.model.enums.AgentName;
 import com.aiinsight.model.enums.AnalysisStatus;
 import com.aiinsight.model.enums.ArtifactType;
 import com.aiinsight.model.enums.ReviewAction;
+import com.aiinsight.model.enums.ReviewSeverity;
 import com.aiinsight.model.enums.StepStatus;
 import com.aiinsight.model.review.ReviewDecision;
 import com.aiinsight.model.run.AgentStep;
@@ -460,8 +461,11 @@ public class WorkflowNodeExecutor {
             AgentName agentName,
             boolean active,
             int findings,
+            int highFindings,
             int evidenceSources,
             int claims,
+            int claimCoverage,
+            int coverageGaps,
             int artifacts,
             String claimsFingerprint,
             String reportFingerprint,
@@ -476,8 +480,11 @@ public class WorkflowNodeExecutor {
                     agentName,
                     active,
                     run.getReviewFindings().size(),
+                    highFindings(run),
                     run.getEvidenceSources().size(),
                     run.getClaims().size(),
+                    claimCoverage(run),
+                    coverageGapCount(run),
                     run.getArtifacts().size(),
                     fingerprint(claimsText(run)),
                     fingerprint(latestArtifactContent(run, ArtifactType.REPORT_DRAFT)),
@@ -517,8 +524,8 @@ public class WorkflowNodeExecutor {
         }
 
         String shortSummary() {
-            return "findings=%d, evidence=%d, claims=%d, artifacts=%d, claimsFp=%s, reportFp=%s, evidenceFp=%s, profileFp=%s, factFp=%s"
-                    .formatted(findings, evidenceSources, claims, artifacts, claimsFingerprint, reportFingerprint,
+            return "findings=%d, highFindings=%d, evidence=%d, claims=%d, claimCoverage=%d, coverageGaps=%d, artifacts=%d, claimsFp=%s, reportFp=%s, evidenceFp=%s, profileFp=%s, factFp=%s"
+                    .formatted(findings, highFindings, evidenceSources, claims, claimCoverage, coverageGaps, artifacts, claimsFingerprint, reportFingerprint,
                             evidenceFingerprint, profileFingerprint, factFingerprint);
         }
 
@@ -534,6 +541,32 @@ public class WorkflowNodeExecutor {
                     .map(RepairSnapshot::claimText)
                     .sorted()
                     .collect(Collectors.joining("\n"));
+        }
+
+        private static int highFindings(AnalysisRun run) {
+            return (int) run.getReviewFindings().stream()
+                    .filter(finding -> finding.getSeverity() == ReviewSeverity.HIGH)
+                    .count();
+        }
+
+        private static int coverageGapCount(AnalysisRun run) {
+            if (run.getResearchPackage() == null
+                    || run.getResearchPackage().getResearchCollectionPlan() == null
+                    || run.getResearchPackage().getResearchCollectionPlan().getCoverageGaps() == null) {
+                return 0;
+            }
+            return run.getResearchPackage().getResearchCollectionPlan().getCoverageGaps().size();
+        }
+
+        private static int claimCoverage(AnalysisRun run) {
+            int claimCount = run.getClaims().size();
+            if (claimCount == 0) {
+                return 0;
+            }
+            int citedClaims = (int) run.getClaims().stream()
+                    .filter(claim -> claim.getEvidenceIds() != null && !claim.getEvidenceIds().isEmpty())
+                    .count();
+            return Math.round((citedClaims * 100f) / claimCount);
         }
 
         private static String claimText(AnalysisClaim claim) {
@@ -611,10 +644,16 @@ public class WorkflowNodeExecutor {
             delta.setChanged(materiallyChanged(after));
             delta.setFindingsBefore(findings);
             delta.setFindingsAfter(after == null ? 0 : after.findings);
+            delta.setHighFindingsBefore(highFindings);
+            delta.setHighFindingsAfter(after == null ? 0 : after.highFindings);
             delta.setEvidenceSourcesBefore(evidenceSources);
             delta.setEvidenceSourcesAfter(after == null ? 0 : after.evidenceSources);
             delta.setClaimsBefore(claims);
             delta.setClaimsAfter(after == null ? 0 : after.claims);
+            delta.setClaimCoverageBefore(claimCoverage);
+            delta.setClaimCoverageAfter(after == null ? 0 : after.claimCoverage);
+            delta.setCoverageGapsBefore(coverageGaps);
+            delta.setCoverageGapsAfter(after == null ? 0 : after.coverageGaps);
             delta.setArtifactsBefore(artifacts);
             delta.setArtifactsAfter(after == null ? 0 : after.artifacts);
             delta.setClaimsFingerprintBefore(claimsFingerprint);

@@ -1,4 +1,4 @@
-import type { AgentName, AgentStep, AnalysisArtifact, AnalysisRun, AnalysisStatus } from "./types";
+import type { AgentName, AgentStep, AnalysisArtifact, AnalysisRun, AnalysisStatus, LatestImprovementMetrics } from "./types";
 import { AGENTS } from "./constants";
 
 export function splitList(value: string): string[] {
@@ -109,7 +109,8 @@ export function calculateRunMetrics(run?: AnalysisRun | null) {
     reworkCount,
     totalTokens,
     totalLatencyMs,
-    evidencePerClaim: claims.length ? round((run?.evidenceSources.length ?? 0) / claims.length, 1) : 0
+    evidencePerClaim: claims.length ? round((run?.evidenceSources.length ?? 0) / claims.length, 1) : 0,
+    latestImprovement: latestImprovementFromDelta(run)
   };
 }
 
@@ -126,6 +127,38 @@ export function formatDuration(ms: number): string {
 function percent(part: number, total: number): number {
   if (!total) return 0;
   return Math.round((part / total) * 100);
+}
+
+function latestImprovementFromDelta(run?: AnalysisRun | null): LatestImprovementMetrics | null {
+  const delta = run?.lastReviewRepairDelta;
+  if (!delta) return null;
+  const claimCoverageBefore = delta.claimCoverageBefore ?? percentFromClaimCounts(delta.evidenceSourcesBefore, delta.claimsBefore);
+  const claimCoverageAfter = delta.claimCoverageAfter ?? percentFromClaimCounts(delta.evidenceSourcesAfter, delta.claimsAfter);
+
+  return {
+    agentName: delta.agentName,
+    changed: delta.changed,
+    recordedAt: delta.recordedAt,
+    evidenceBefore: delta.evidenceSourcesBefore,
+    evidenceAfter: delta.evidenceSourcesAfter,
+    evidenceDelta: delta.evidenceSourcesAfter - delta.evidenceSourcesBefore,
+    coverageGapsBefore: delta.coverageGapsBefore ?? 0,
+    coverageGapsAfter: delta.coverageGapsAfter ?? 0,
+    coverageGapDelta: (delta.coverageGapsAfter ?? 0) - (delta.coverageGapsBefore ?? 0),
+    findingsBefore: delta.findingsBefore,
+    findingsAfter: delta.findingsAfter,
+    findingDelta: delta.findingsAfter - delta.findingsBefore,
+    highFindingsBefore: delta.highFindingsBefore ?? 0,
+    highFindingsAfter: delta.highFindingsAfter ?? 0,
+    highFindingDelta: (delta.highFindingsAfter ?? 0) - (delta.highFindingsBefore ?? 0),
+    claimCoverageBefore,
+    claimCoverageAfter,
+    claimCoverageDelta: claimCoverageAfter - claimCoverageBefore
+  };
+}
+
+function percentFromClaimCounts(citedOrEvidenceCount: number, claimCount: number): number {
+  return percent(Math.min(citedOrEvidenceCount, claimCount), claimCount);
 }
 
 function round(value: number, precision: number): number {

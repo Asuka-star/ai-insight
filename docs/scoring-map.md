@@ -118,9 +118,13 @@ Trace 字段：
 - `POST /api/analysis-runs/{runId}/start`
 - `POST /api/analysis-runs/{runId}/context`
 - `POST /api/analysis-runs/{runId}/evidence`
+- `PUT /api/analysis-runs/{runId}/surveys/questionnaire`
+- `GET /api/analysis-runs/{runId}/surveys/template`
+- `POST /api/analysis-runs/{runId}/surveys/import`
 - `GET /api/analysis-runs/{runId}/events`
 - `GET /api/analysis-runs/{runId}/traces`
 - `GET /api/analysis-runs/{runId}/retrieval`
+- `GET /api/analysis-runs/{runId}/metrics`
 - `POST /api/analysis-runs/{runId}/agents/{agentName}/rerun`
 
 ### 3.4 持久化
@@ -130,11 +134,13 @@ Trace 字段：
 - `PostgresAnalysisRunRepository` 使用 `analysis_run` 表保存完整 run payload。
 - `jsonb` 保存聚合状态。
 - 保留 `status`、`original_prompt`、`created_at`、`updated_at` 索引字段。
+- 同步刷新 artifact、step、trace、evidence、chunk、review finding 明细表。
+- 配置 embedding 后会写入 pgvector 投影；未配置或 pgvector 不可用时保留 JSON/关键词召回 fallback。
 
 后续增强：
 
-- 拆分 artifact、trace、evidence、chunk 明细表。
-- 引入 pgvector 做语义召回。
+- 为明细表补分页、过滤和审计查询接口。
+- 将前端更多查询从聚合 payload 逐步切换到明细接口。
 
 ## 4. 业务价值与产品体验
 
@@ -158,7 +164,7 @@ Trace 字段：
 界面结构：
 
 - 左侧：任务配置、范围确认、上下文补充、补充资料、运行指标。
-- 中间：DAG、最终报告、Schema、竞品矩阵、报告版本。
+- 中间：DAG、最终报告、Schema、竞品矩阵、报告版本、问卷访谈。
 - 右侧：时间线、证据来源、质检与打回、运行指标。
 
 演示方式：
@@ -176,10 +182,17 @@ Trace 字段：
 - 引用标记。
 - Claim 覆盖率。
 - Schema 完整率。
+- 采集覆盖缺口。
+- 问卷/访谈洞察数量。
 - 打回次数。
 - 证据/Claim。
 - Token。
 - 耗时。
+- 最近一次补采/重跑前后的证据数、覆盖缺口、Reviewer 问题、HIGH 问题和 Claim 覆盖变化。
+
+待补强指标：
+
+- 来源质量评分和质量原因。
 
 演示方式：
 
