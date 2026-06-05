@@ -598,7 +598,7 @@ public class ReviewerNode implements AgentNode {
         if (blockingFindings.stream().anyMatch(this::needsAnalysisRework)) {
             decision.setAction(ReviewAction.REWORK_ANALYSIS);
             decision.setTargetAgent(AgentName.ANALYST);
-            decision.setReason("质检发现结构化分析结论存在高风险问题（%s），需要 Analyst 重新绑定证据、调整置信度或降级结论%s。".formatted(
+            decision.setReason("质检发现竞品分析结论存在高风险问题（%s），需要 Analyst 重新绑定证据、调整置信度或降级结论%s。".formatted(
                     categorySummary(blockingFindings),
                     manualOnlyEvidenceTypes.isEmpty()
                             ? ""

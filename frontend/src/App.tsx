@@ -15,8 +15,8 @@ import {
   Sparkles,
   UploadCloud
 } from "lucide-react";
-import type { AgentStep, AnalysisContextMessage, AgentName, AnalysisArtifact, AnalysisRun, AnalysisRunMetrics, AnalysisRunSummary, ContextIntent, ReviewFinding, RunEvent } from "./types";
-import { addContext, addEvidence, clarifyRequirement, createRun, deleteDocument, deleteRun, getRun, getRunMetrics, listRunSummaries, rerunAgent, startAnalysis, updateRequirement, uploadDocument } from "./api";
+import type { AgentStep, AnalysisContextMessage, AgentName, AnalysisArtifact, AnalysisRun, AnalysisRunMetrics, AnalysisRunSummary, ContextIntent, Questionnaire, ReviewFinding, RunEvent } from "./types";
+import { addContext, addEvidence, clarifyRequirement, createRun, deleteDocument, deleteRun, downloadSurveyTemplate, getRun, getRunMetrics, importSurveyResults, listRunSummaries, rerunAgent, startAnalysis, updateRequirement, updateSurveyQuestionnaire, uploadDocument } from "./api";
 import { AGENT_LABELS, ARTIFACT_LABELS } from "./constants";
 import {
   calculateRunMetrics,
@@ -34,6 +34,7 @@ import { AgentTimeline } from "./components/AgentTimeline";
 import { EvidencePanel } from "./components/EvidencePanel";
 import { ReviewPanel } from "./components/ReviewPanel";
 import { ResearchCollectionPanel } from "./components/ResearchCollectionPanel";
+import { ResearchDesignPanel } from "./components/ResearchDesignPanel";
 import { CollapsiblePanel } from "./components/CollapsiblePanel";
 import { TraceDrawer } from "./components/TraceDrawer";
 import { ScopeConfirmationPanel } from "./components/ScopeConfirmationPanel";
@@ -43,7 +44,7 @@ import { HistoryDrawer } from "./components/HistoryDrawer";
 import { DeleteHistoryDialog } from "./components/DeleteHistoryDialog";
 import { ResourcePackDrawer } from "./components/ResourcePackDrawer";
 
-type MainView = "dag" | "report" | "schema" | "matrix" | "versions";
+type MainView = "dag" | "research" | "report" | "schema" | "matrix" | "versions";
 type LeftPanelId = "scope" | "context" | "evidence";
 type RightPanelId = "timeline" | "collection" | "evidence" | "review" | "metrics";
 
@@ -92,6 +93,7 @@ export function App() {
   const [contextIntent, setContextIntent] = useState<ContextIntent>("ADJUST_SCOPE");
   const [contextTargetAgent, setContextTargetAgent] = useState<AgentName>();
   const [rerunningAgent, setRerunningAgent] = useState<AgentName | null>(null);
+  const [surveyBusy, setSurveyBusy] = useState(false);
   const [evidenceTitle, setEvidenceTitle] = useState("");
   const [evidenceSourceType, setEvidenceSourceType] = useState("note");
   const [evidenceUrl, setEvidenceUrl] = useState("");
@@ -336,6 +338,8 @@ export function App() {
       "agent_rerun_started",
       "agent_rerun_completed",
       "agent_rerun_failed",
+      "survey_questionnaire_updated",
+      "survey_results_imported",
       "research.collection.plan.updated",
       "research.repair.targets.updated",
       "review_rework_started",
@@ -871,6 +875,78 @@ export function App() {
     }
   }
 
+  async function handleDownloadSurveyTemplate() {
+    if (!run || runMutationDisabled || surveyBusy) return;
+    const runId = run.id;
+    setSurveyBusy(true);
+    setEventMessage("正在生成问卷结果模板");
+    try {
+      const blob = await downloadSurveyTemplate(runId);
+      if (!isCurrentWorkspaceRun(runId)) return;
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `survey-template-${runId.slice(0, 8)}.csv`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+      setEventMessage("问卷结果模板已下载");
+    } catch (error) {
+      if (!isCurrentWorkspaceRun(runId)) return;
+      setEventMessage(error instanceof Error ? `模板下载失败：${error.message}` : "模板下载失败");
+    } finally {
+      if (isCurrentWorkspaceRun(runId)) {
+        setSurveyBusy(false);
+      }
+    }
+  }
+
+  async function handleSaveQuestionnaire(questionnaire: Questionnaire) {
+    if (!run || runMutationDisabled || surveyBusy) return;
+    const runId = run.id;
+    setSurveyBusy(true);
+    setEventMessage("正在保存问卷草案");
+    try {
+      const nextRun = await updateSurveyQuestionnaire(runId, questionnaire);
+      if (!isCurrentWorkspaceRun(runId)) return;
+      setRun(nextRun);
+      setHistoryRuns((runs) => upsertHistorySummary(runs, summaryFromRun(nextRun)));
+      setEventMessage("问卷草案已保存，后续模板会使用新题目");
+    } catch (error) {
+      if (!isCurrentWorkspaceRun(runId)) return;
+      setEventMessage(error instanceof Error ? `问卷草案保存失败：${error.message}` : "问卷草案保存失败");
+    } finally {
+      if (isCurrentWorkspaceRun(runId)) {
+        setSurveyBusy(false);
+      }
+    }
+  }
+
+  async function handleImportSurveyResults(file: File) {
+    if (!run || runMutationDisabled || surveyBusy) return;
+    const runId = run.id;
+    setSurveyBusy(true);
+    setRun((current) => withOptimisticRerunStep(current, "RESEARCHER"));
+    setEventMessage("正在导入问卷结果并重跑调研链路");
+    try {
+      const nextRun = await importSurveyResults(runId, file);
+      if (!isCurrentWorkspaceRun(runId)) return;
+      setRun(nextRun);
+      setMainView("schema");
+      setHistoryRuns((runs) => upsertHistorySummary(runs, summaryFromRun(nextRun)));
+      setEventMessage("问卷结果已导入证据链，Researcher 及下游链路已重跑");
+    } catch (error) {
+      if (!isCurrentWorkspaceRun(runId)) return;
+      setEventMessage(error instanceof Error ? `问卷结果导入失败：${error.message}` : "问卷结果导入失败");
+    } finally {
+      if (isCurrentWorkspaceRun(runId)) {
+        refreshRun(runId).catch(() => undefined);
+        setSurveyBusy(false);
+      }
+    }
+  }
+
   async function handleUploadDocument() {
     if (!run || !documentFile || runMutationDisabled || isUploadingDocument) return;
     const runId = run.id;
@@ -1016,6 +1092,7 @@ export function App() {
   const mainTabs: Array<{ key: MainView; label: string }> = [
     { key: "dag", label: "Agent DAG" },
     { key: "report", label: "报告" },
+    { key: "research", label: "问卷访谈" },
     { key: "schema", label: "结构化 Schema" },
     { key: "matrix", label: "竞品矩阵" },
     { key: "versions", label: "全部产物" }
@@ -1176,6 +1253,23 @@ export function App() {
               <Suspense fallback={<PanelLoading label="正在加载工作流视图" />}>
                 <WorkflowGraph run={run} onSelectAgent={handleOpenAgentTrace} />
               </Suspense>
+            ) : null}
+
+            {mainView === "research" ? (
+              <div className="tab-content">
+                <ResearchDesignPanel
+                  questionnaire={run?.researchPackage?.researchPlan?.questionnaire}
+                  interviewGuide={run?.researchPackage?.researchPlan?.interviewGuide}
+                  interviewInsights={run?.researchPackage?.interviewInsights ?? []}
+                  surveyResultImports={run?.researchPackage?.surveyResultImports ?? []}
+                  surveyInsights={run?.researchPackage?.surveyInsights ?? []}
+                  disabled={runMutationDisabled}
+                  busy={surveyBusy}
+                  onDownloadTemplate={handleDownloadSurveyTemplate}
+                  onSaveQuestionnaire={handleSaveQuestionnaire}
+                  onImportSurveyResults={handleImportSurveyResults}
+                />
+              </div>
             ) : null}
 
             {mainView === "report" ? (

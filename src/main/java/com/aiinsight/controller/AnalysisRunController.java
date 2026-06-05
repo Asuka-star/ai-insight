@@ -14,12 +14,15 @@ import com.aiinsight.model.schema.ResearchCollectionPlan;
 import com.aiinsight.model.schema.ResearchCoverageGap;
 import com.aiinsight.model.schema.ResearchRepairTarget;
 import com.aiinsight.model.schema.ResearchSubtask;
+import com.aiinsight.model.schema.Questionnaire;
 import com.aiinsight.service.AnalysisEventBroker;
 import com.aiinsight.service.AnalysisWorkflowService;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -103,6 +106,25 @@ public class AnalysisRunController {
     public AnalysisRun addEvidence(@PathVariable UUID runId,
                                    @Valid @RequestBody AddUserEvidenceRequest request) {
         return workflowService.addEvidence(runId, request);
+    }
+
+    @PutMapping("/{runId}/surveys/questionnaire")
+    public AnalysisRun updateSurveyQuestionnaire(@PathVariable UUID runId,
+                                                 @RequestBody Questionnaire questionnaire) {
+        return workflowService.updateSurveyQuestionnaire(runId, questionnaire);
+    }
+
+    @GetMapping(value = "/{runId}/surveys/template", produces = "text/csv;charset=UTF-8")
+    public ResponseEntity<byte[]> surveyTemplate(@PathVariable UUID runId) {
+        return ResponseEntity.ok()
+                .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"survey-template.csv\"")
+                .body(workflowService.surveyTemplateCsv(runId));
+    }
+
+    @PostMapping(path = "/{runId}/surveys/import", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    public AnalysisRun importSurveyResults(@PathVariable UUID runId,
+                                           @RequestPart("file") MultipartFile file) {
+        return workflowService.importSurveyResults(runId, file);
     }
 
     @PostMapping(path = "/{runId}/documents", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)

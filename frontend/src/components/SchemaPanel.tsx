@@ -112,6 +112,46 @@ export function SchemaPanel({
               </section>
             </div>
           ) : null}
+          {researchPackage?.surveyInsights?.length ? (
+            <div className="schema-detail-grid research-plan-grid">
+              <section className="schema-detail wide">
+                <strong>问卷洞察</strong>
+                <div className="schema-list">
+                  {researchPackage.surveyInsights.map((insight, index) => (
+                    <div className="schema-list-item" key={insight.id ?? `${insight.evidenceId}-${index}`}>
+                      <strong>{insight.title || "问卷结果"} / {insight.sampleSize || "unknown sample"}</strong>
+                      <p>{joinOrEmpty(insight.respondentSegments)}</p>
+                      <dl className="schema-kv compact">
+                        <div>
+                          <dt>竞品</dt>
+                          <dd>{joinOrEmpty(insight.competitorMentions)}</dd>
+                        </div>
+                        <div>
+                          <dt>维度</dt>
+                          <dd>{joinOrEmpty(insight.relatedDimensions)}</dd>
+                        </div>
+                        <div>
+                          <dt>证据</dt>
+                          <dd><EvidenceChips values={insight.evidenceIds} onSelectCitation={onSelectCitation} /></dd>
+                        </div>
+                      </dl>
+                      {insight.findings?.length ? (
+                        <div className="schema-list">
+                          {insight.findings.slice(0, 3).map((finding, findingIndex) => (
+                            <div className="schema-list-item" key={`${finding.question}-${findingIndex}`}>
+                              <strong>{finding.question || "Survey finding"}</strong>
+                              <p>{finding.finding || finding.interpretation}</p>
+                              <small>{finding.distribution}</small>
+                            </div>
+                          ))}
+                        </div>
+                      ) : null}
+                    </div>
+                  ))}
+                </div>
+              </section>
+            </div>
+          ) : null}
           {researchPackage?.researchPlan ? (
             <div className="schema-detail-grid research-plan-grid">
               <section className="schema-detail wide">
@@ -166,7 +206,6 @@ export function SchemaPanel({
               <section className="schema-detail">
                 <strong>{researchPackage.researchPlan.questionnaire?.title || "问卷草案"}</strong>
                 <p>{researchPackage.researchPlan.questionnaire?.targetRespondents || "目标样本待确认。"}</p>
-                <small>{researchPackage.researchPlan.questionnaire?.recommendedSampleSize}</small>
                 <div className="schema-list">
                   {(researchPackage.researchPlan.questionnaire?.questions ?? []).map((question, index) => (
                     <div className="schema-list-item" key={`${question.dimension}-${index}`}>

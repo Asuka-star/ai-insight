@@ -6,6 +6,7 @@ import type {
   AnalysisRunMetrics,
   AnalysisRunSummary,
   CreateAnalysisRunRequest,
+  Questionnaire,
   UpdateAnalysisRequirementRequest,
   UploadDocumentRequest
 } from "./types";
@@ -74,6 +75,27 @@ export async function addEvidence(runId: string, payload: AddUserEvidenceRequest
   });
 }
 
+export async function updateSurveyQuestionnaire(runId: string, questionnaire: Questionnaire): Promise<AnalysisRun> {
+  return requestJson(`/api/analysis-runs/${runId}/surveys/questionnaire`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(questionnaire)
+  });
+}
+
+export async function downloadSurveyTemplate(runId: string): Promise<Blob> {
+  return requestBlob(`/api/analysis-runs/${runId}/surveys/template`);
+}
+
+export async function importSurveyResults(runId: string, file: File): Promise<AnalysisRun> {
+  const body = new FormData();
+  body.append("file", file);
+  return requestJson(`/api/analysis-runs/${runId}/surveys/import`, {
+    method: "POST",
+    body
+  });
+}
+
 export async function uploadDocument(runId: string, payload: UploadDocumentRequest): Promise<AnalysisRun> {
   const body = new FormData();
   body.append("file", payload.file);
@@ -109,6 +131,12 @@ async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
 async function requestVoid(path: string, init?: RequestInit): Promise<void> {
   const response = await fetch(path, init);
   await ensureOk(response);
+}
+
+async function requestBlob(path: string, init?: RequestInit): Promise<Blob> {
+  const response = await fetch(path, init);
+  await ensureOk(response);
+  return response.blob();
 }
 
 async function ensureOk(response: Response): Promise<void> {

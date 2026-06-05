@@ -21,7 +21,11 @@ const STATUS_LABELS: Record<string, string> = {
   SKIPPED: "跳过"
 };
 
-export function ResearchCollectionPanel({ plan, collapsed, onToggle }: ResearchCollectionPanelProps) {
+export function ResearchCollectionPanel({
+  plan,
+  collapsed,
+  onToggle
+}: ResearchCollectionPanelProps) {
   const subtasks = plan?.subtasks ?? [];
   const candidateUrls = plan?.candidateUrls ?? [];
   const coverageGaps = plan?.coverageGaps ?? [];

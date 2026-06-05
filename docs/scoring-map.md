@@ -18,7 +18,7 @@
 
 实现位置：
 
-- 范围确认：澄清结构化分析范围，不进入主分析 DAG。
+- 范围确认：澄清竞品分析范围，不进入主分析 DAG。
 - `ResearcherNode`：采集证据。
 - `ExtractorNode`：抽取竞品 Schema。
 - `AnalystNode`：生成矩阵、Claim 和 SWOT。

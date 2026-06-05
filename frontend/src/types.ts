@@ -299,6 +299,8 @@ export interface ResearchPackage {
   researchCollectionPlan?: ResearchCollectionPlan;
   researchPlan?: ResearchPlan;
   interviewInsights?: InterviewInsight[];
+  surveyResultImports?: SurveyResultImport[];
+  surveyInsights?: SurveyInsight[];
   collectedAt?: string;
 }
 
@@ -431,6 +433,41 @@ export interface SurveyQuestion {
   dimension?: string;
   question?: string;
   options: string[];
+}
+
+export interface SurveyResultImport {
+  id: string;
+  runId?: string;
+  batchId?: string;
+  title?: string;
+  questionnaire?: Questionnaire;
+  status?: string;
+  resultCount?: number;
+  evidenceIds?: string[];
+  fileName?: string;
+  importedAt?: string;
+}
+
+export interface SurveyInsight {
+  id?: string;
+  evidenceId?: string;
+  title?: string;
+  sampleSize?: string;
+  respondentSegments: string[];
+  findings: SurveyFinding[];
+  competitorMentions: string[];
+  relatedDimensions: string[];
+  evidenceIds: string[];
+}
+
+export interface SurveyFinding {
+  question?: string;
+  finding?: string;
+  distribution?: string;
+  interpretation?: string;
+  relatedCompetitors: string[];
+  relatedDimensions: string[];
+  evidenceIds: string[];
 }
 
 export interface InterviewGuide {

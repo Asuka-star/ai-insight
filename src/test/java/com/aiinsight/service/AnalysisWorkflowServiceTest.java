@@ -58,6 +58,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.core.task.support.TaskExecutorAdapter;
 import org.springframework.mock.web.MockMultipartFile;
 
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
@@ -610,6 +611,172 @@ class AnalysisWorkflowServiceTest {
         assertThat(updated.getEvidenceSources()).hasSize(1);
         assertThat(updated.getEvidenceSources().get(0).getCitationKey()).isEqualTo("S1");
         assertThat(updated.getEvidenceChunks()).hasSize(1);
+    }
+
+    @Test
+    void importsSurveyResultsAsEvidenceAndRerunsResearcher() {
+        TestAnalysisRunRepository repository = new TestAnalysisRunRepository();
+        AnalysisWorkflowService service = newService(repository, new AnalysisEventBroker(), new TaskExecutorAdapter(Runnable::run), null);
+        AnalysisRun run = new AnalysisRun(new AnalysisRequirement(
+                "Analyze Cursor for enterprise developers.",
+                "AI coding tools",
+                List.of("Cursor"),
+                List.of("AI search", "Permission governance", "Pricing"),
+                List.of("survey"),
+                List.of(),
+                "Product planning"
+        ));
+        run.setStatus(AnalysisStatus.SUCCEEDED);
+        run.getResearchPackage().setResearchPlan(usableResearchPlan());
+        repository.save(run);
+        MockMultipartFile file = new MockMultipartFile(
+                "file",
+                "survey-results.csv",
+                "text/csv",
+                """
+                        提交时间,受访者角色,价格是否清晰？,团队协作是否有帮助？,采购顾虑是什么？,补充反馈
+                        2026-06-01,产品经理,清晰,有,安全,需要引用证据
+                        2026-06-02,研发负责人,不清晰,有,价格,希望支持审计
+                        2026-06-03,IT 管理员,不清晰,没有,安全,权限治理很重要
+                        """.getBytes(StandardCharsets.UTF_8)
+        );
+
+        AnalysisRun imported = service.importSurveyResults(run.getId(), file);
+
+        assertThat(imported.getResearchPackage().getSurveyResultImports())
+                .anySatisfy(resultImport -> {
+                    assertThat(resultImport.getStatus()).isEqualTo("IMPORTED");
+                    assertThat(resultImport.getResultCount()).isEqualTo(3);
+                    assertThat(resultImport.getEvidenceIds()).isNotEmpty();
+                });
+        assertThat(imported.getEvidenceSources())
+                .anySatisfy(source -> {
+                    assertThat(source.getSourceType()).isEqualTo("user_survey");
+                    assertThat(source.getRawText()).contains("Sample size: 3");
+                });
+        assertThat(imported.getResearchPackage().getSurveyInsights()).isNotEmpty();
+        assertThat(imported.getSteps()).anySatisfy(step -> assertThat(step.getAgentName()).isEqualTo(AgentName.RESEARCHER));
+    }
+
+    @Test
+    void importingNewSurveyResultsReplacesOlderSurveyEvidenceButKeepsInterviews() {
+        TestAnalysisRunRepository repository = new TestAnalysisRunRepository();
+        AnalysisWorkflowService service = newService(repository, new AnalysisEventBroker(), new TaskExecutorAdapter(Runnable::run), null);
+        AnalysisRun run = new AnalysisRun(new AnalysisRequirement(
+                "Analyze Cursor for enterprise developers.",
+                "AI coding tools",
+                List.of("Cursor"),
+                List.of("Pricing"),
+                List.of("survey", "interview"),
+                List.of(),
+                "Product planning"
+        ));
+        run.setStatus(AnalysisStatus.SUCCEEDED);
+        run.getResearchPackage().setResearchPlan(usableResearchPlan());
+        repository.save(run);
+        AddUserEvidenceRequest interview = new AddUserEvidenceRequest();
+        interview.setTitle("访谈记录 - 研发负责人");
+        interview.setSourceType("interview");
+        interview.setContent("受访者认为价格和审计能力都会影响采购。");
+        service.addEvidence(run.getId(), interview);
+
+        service.importSurveyResults(run.getId(), new MockMultipartFile(
+                "file",
+                "survey-old.csv",
+                "text/csv",
+                """
+                        提交时间,受访者角色,价格是否清晰？,补充反馈
+                        2026-06-01,产品经理,清晰,旧问卷
+                        """.getBytes(StandardCharsets.UTF_8)
+        ));
+        AnalysisRun latest = service.importSurveyResults(run.getId(), new MockMultipartFile(
+                "file",
+                "survey-latest.csv",
+                "text/csv",
+                """
+                        提交时间,受访者角色,价格是否清晰？,补充反馈
+                        2026-06-02,研发负责人,不清晰,最新问卷
+                        2026-06-03,IT 管理员,不清晰,最新问卷
+                        """.getBytes(StandardCharsets.UTF_8)
+        ));
+
+        assertThat(latest.getResearchPackage().getSurveyResultImports()).hasSize(2);
+        assertThat(latest.getEvidenceSources())
+                .filteredOn(source -> source.getSourceType() != null && source.getSourceType().contains("survey"))
+                .singleElement()
+                .satisfies(source -> {
+                    assertThat(source.getUrl()).contains("survey-latest");
+                    assertThat(source.getRawText()).contains("Sample size: 2");
+                    assertThat(source.getRawText()).doesNotContain("旧问卷");
+                });
+        assertThat(latest.getEvidenceSources())
+                .filteredOn(source -> source.getSourceType() != null && source.getSourceType().contains("interview"))
+                .singleElement()
+                .satisfies(source -> assertThat(source.getRawText()).contains("价格和审计能力"));
+        assertThat(latest.getResearchPackage().getSurveyInsights())
+                .singleElement()
+                .satisfies(insight -> assertThat(insight.getSampleSize()).isEqualTo("2 responses"));
+        assertThat(latest.getResearchPackage().getInterviewInsights()).isNotEmpty();
+        assertThat(latest.getUserProvidedEvidence())
+                .filteredOn(evidence -> evidence.getSourceType() != null && evidence.getSourceType().contains("survey"))
+                .singleElement()
+                .satisfies(evidence -> assertThat(evidence.getContent()).contains("最新问卷"));
+    }
+
+    @Test
+    void updatesSurveyQuestionnaireDraftForCurrentRun() {
+        TestAnalysisRunRepository repository = new TestAnalysisRunRepository();
+        AnalysisWorkflowService service = newService(repository, new AnalysisEventBroker(), new TaskExecutorAdapter(Runnable::run), null);
+        AnalysisRun run = new AnalysisRun(new AnalysisRequirement(
+                "Analyze Cursor.",
+                "AI coding tools",
+                List.of("Cursor"),
+                List.of("pricing"),
+                List.of("survey"),
+                List.of()
+        ));
+        run.setStatus(AnalysisStatus.SUCCEEDED);
+        run.getResearchPackage().setResearchPlan(usableResearchPlan());
+        repository.save(run);
+        Questionnaire questionnaire = new Questionnaire();
+        questionnaire.setTitle("编辑后的问卷");
+        questionnaire.setTargetRespondents("评估过 Cursor 的研发负责人");
+        questionnaire.setRecommendedSampleSize("8-12 份");
+        questionnaire.getQuestions().add(new SurveyQuestion("AI 搜索", "AI 搜索是否影响采购？", List.of("影响", "不影响", "不确定")));
+
+        AnalysisRun updated = service.updateSurveyQuestionnaire(run.getId(), questionnaire);
+
+        assertThat(updated.getResearchPackage().getResearchPlan().getQuestionnaire().getTitle()).isEqualTo("编辑后的问卷");
+        assertThat(updated.getResearchPackage().getResearchPlan().getQuestionnaire().getQuestions())
+                .singleElement()
+                .satisfies(question -> {
+                    assertThat(question.getDimension()).isEqualTo("AI 搜索");
+                    assertThat(question.getQuestion()).isEqualTo("AI 搜索是否影响采购？");
+                    assertThat(question.getOptions()).containsExactly("影响", "不影响", "不确定");
+                });
+        String template = new String(service.surveyTemplateCsv(run.getId()), StandardCharsets.UTF_8);
+        assertThat(template).contains("AI 搜索是否影响采购？");
+    }
+
+    @Test
+    void surveyTemplateRejectsMissingQuestionnaireWithoutNullPointer() {
+        TestAnalysisRunRepository repository = new TestAnalysisRunRepository();
+        AnalysisWorkflowService service = newService(repository, new AnalysisEventBroker(), new TaskExecutorAdapter(Runnable::run), null);
+        AnalysisRun run = new AnalysisRun(new AnalysisRequirement(
+                "Analyze Cursor.",
+                "AI coding tools",
+                List.of("Cursor"),
+                List.of("pricing"),
+                List.of("survey"),
+                List.of()
+        ));
+        run.setStatus(AnalysisStatus.SUCCEEDED);
+        run.getResearchPackage().setResearchPlan(null);
+        repository.save(run);
+
+        assertThatThrownBy(() -> service.surveyTemplateCsv(run.getId()))
+                .isInstanceOf(InvalidRunStateException.class)
+                .hasMessageContaining("questionnaire is not ready");
     }
 
     @Test
@@ -4371,7 +4538,8 @@ class AnalysisWorkflowServiceTest {
                 llmClient,
                 new ObjectMapper(),
                 new FallbackResearchPlanFactory(),
-                new InterviewInsightExtractor()
+                new InterviewInsightExtractor(),
+                new SurveyInsightExtractor()
         );
     }
 

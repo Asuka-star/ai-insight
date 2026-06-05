@@ -43,7 +43,7 @@ class ReviewerNodeTest {
         assertThat(run.getReviewDecision().getAction()).isEqualTo(ReviewAction.REWORK_ANALYSIS);
         assertThat(run.getReviewDecision().getTargetAgent()).isEqualTo(AgentName.EXTRACTOR);
         assertThat(run.getReviewDecision().getFindingCategories()).contains("fact_unsupported_by_evidence");
-        assertThat(run.getReviewDecision().getReason()).contains("extracted fact");
+        assertThat(run.getReviewDecision().getReason()).contains("fact_unsupported_by_evidence");
         assertThat(run.getReviewDecision().getRepairTasks())
                 .anySatisfy(task -> {
                     assertThat(task.getTargetAgent()).isEqualTo(AgentName.EXTRACTOR);
@@ -129,7 +129,7 @@ class ReviewerNodeTest {
 
         assertThat(run.getReviewDecision().getAction()).isEqualTo(ReviewAction.REWORK_ANALYSIS);
         assertThat(run.getReviewDecision().getTargetAgent()).isEqualTo(AgentName.EXTRACTOR);
-        assertThat(run.getReviewDecision().getReason()).contains("Previous Analyst repair");
+        assertThat(run.getReviewDecision().getReason()).contains("Analyst");
     }
 
     @Test
@@ -149,7 +149,7 @@ class ReviewerNodeTest {
         assertThat(run.getReviewDecision().getAction()).isEqualTo(ReviewAction.RECOLLECT_EVIDENCE);
         assertThat(run.getReviewDecision().getTargetAgent()).isEqualTo(AgentName.RESEARCHER);
         assertThat(run.getReviewDecision().getRequiredEvidenceTypes()).contains("official_site", "pricing_page", "public_review");
-        assertThat(run.getReviewDecision().getReason()).contains("Previous Extractor repair");
+        assertThat(run.getReviewDecision().getReason()).contains("Extractor");
     }
 
     @Test

@@ -242,7 +242,7 @@ public class AnalysisLangGraphWorkflow {
             return ROUTE_FINISH;
         }
         // ReviewAction 是后端和前端共同理解的返工协议：
-        // 采集缺口回 Researcher，结构化分析问题回 Analyst，报告表达问题回 Writer。
+        // 采集缺口回 Researcher，竞品分析问题回 Analyst，报告表达问题回 Writer。
         ReviewAction action = run.getReviewDecision().getAction();
         if (action == ReviewAction.RECOLLECT_EVIDENCE) {
             return ROUTE_RECOLLECT;

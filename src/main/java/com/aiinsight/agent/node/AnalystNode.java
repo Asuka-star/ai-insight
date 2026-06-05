@@ -64,7 +64,7 @@ import java.util.stream.Collectors;
 @Component
 @RequiredArgsConstructor
 @Slf4j
-// Analyst 是结构化分析层：把 Extractor 沉淀的竞品画像和证据索引转化为可复核 Claims，
+// Analyst 是竞品分析层：把 Extractor 沉淀的竞品画像和证据索引转化为可复核 Claims，
 // 再基于这些 Claims 生成矩阵和 SWOT，避免 Writer 在报告阶段重新承担分析判断。
 public class AnalystNode implements AgentNode {
 
@@ -177,7 +177,7 @@ public class AnalystNode implements AgentNode {
 
     private List<AnalysisClaim> generateClaimsWithLlm(AnalystContext context) {
         String prompt = """
-                你是竞品分析工作流中的分析 Agent。请只生成结构化 claims，不要生成矩阵或 SWOT。
+                你是本工作流中的竞品分析 Agent。请只生成结构化 claims，不要生成矩阵或 SWOT。
                 你的职责是把 Extractor 生成的事实画像转化为可复核的分析断言。
                 矩阵和 SWOT 会由系统基于你生成的 claims 统一渲染。
 

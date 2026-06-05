@@ -21,5 +21,7 @@ public class ResearchPackage {
     private ResearchPlan researchPlan = new ResearchPlan();
     private ResearchCollectionPlan researchCollectionPlan = new ResearchCollectionPlan();
     private List<InterviewInsight> interviewInsights = new ArrayList<>();
+    private List<SurveyResultImport> surveyResultImports = new ArrayList<>();
+    private List<SurveyInsight> surveyInsights = new ArrayList<>();
     private Instant collectedAt = Instant.now();
 }

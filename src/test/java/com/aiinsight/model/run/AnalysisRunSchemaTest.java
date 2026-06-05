@@ -27,6 +27,8 @@ class AnalysisRunSchemaTest {
         assertThat(run.getResearchPackage().getResearchCollectionPlan().getRepairTargets()).isEmpty();
         assertThat(run.getResearchPackage().getResearchCollectionPlan().getLeadResearchPlan()).isNotNull();
         assertThat(run.getResearchPackage().getInterviewInsights()).isEmpty();
+        assertThat(run.getResearchPackage().getSurveyResultImports()).isEmpty();
+        assertThat(run.getResearchPackage().getSurveyInsights()).isEmpty();
         assertThat(run.getCompetitorProfiles()).isEmpty();
         assertThat(run.getClaims()).isEmpty();
         assertThat(run.getReviewDecision()).isNotNull();

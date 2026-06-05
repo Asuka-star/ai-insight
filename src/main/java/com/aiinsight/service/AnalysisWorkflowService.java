@@ -26,10 +26,14 @@ import com.aiinsight.model.run.EvidenceChunk;
 import com.aiinsight.model.run.EvidenceSource;
 import com.aiinsight.model.run.UserProvidedEvidence;
 import com.aiinsight.model.schema.CompetitorProfile;
+import com.aiinsight.model.schema.Questionnaire;
 import com.aiinsight.model.schema.ResearchCollectionPlan;
 import com.aiinsight.model.schema.ResearchCoverageGap;
+import com.aiinsight.model.schema.ResearchPlan;
 import com.aiinsight.model.schema.ResearchRepairTarget;
 import com.aiinsight.model.schema.ResearchSubtask;
+import com.aiinsight.model.schema.SurveyQuestion;
+import com.aiinsight.model.schema.SurveyResultImport;
 import com.aiinsight.repository.AnalysisRunRepository;
 import com.aiinsight.service.fallback.FallbackClarificationDraftFactory;
 import com.aiinsight.workflow.AnalysisLangGraphWorkflow;
@@ -75,6 +79,8 @@ public class AnalysisWorkflowService {
     private final EvidenceEmbeddingService evidenceEmbeddingService;
     private final DocumentIngestionService documentIngestionService;
     private final ConcurrentMap<UUID, AgentName> activeReruns = new ConcurrentHashMap<>();
+    private SurveyInsightExtractor surveyInsightExtractor = new SurveyInsightExtractor();
+    private SurveyResultImportService surveyResultImportService = new SurveyResultImportService();
 
     @Autowired
     public AnalysisWorkflowService(AnalysisRunRepository repository,
@@ -446,6 +452,74 @@ public class AnalysisWorkflowService {
         return run;
     }
 
+    @Autowired(required = false)
+    public void setSurveyInsightExtractor(SurveyInsightExtractor surveyInsightExtractor) {
+        if (surveyInsightExtractor != null) {
+            this.surveyInsightExtractor = surveyInsightExtractor;
+        }
+    }
+
+    @Autowired(required = false)
+    public void setSurveyResultImportService(SurveyResultImportService surveyResultImportService) {
+        if (surveyResultImportService != null) {
+            this.surveyResultImportService = surveyResultImportService;
+        }
+    }
+
+    public AnalysisRun updateSurveyQuestionnaire(UUID runId, Questionnaire questionnaire) {
+        AnalysisRun run = get(runId);
+        ensureAgentRerunnable(run);
+        ResearchPlan plan = run.getResearchPackage().getResearchPlan();
+        if (plan == null) {
+            plan = new ResearchPlan();
+            run.getResearchPackage().setResearchPlan(plan);
+        }
+        plan.setQuestionnaire(sanitizeQuestionnaire(runId, questionnaire));
+        run.getRecommendedActions().add("Survey questionnaire updated. Download a fresh template before importing new survey results.");
+        repository.save(run);
+        eventBroker.publish(run, "survey_questionnaire_updated", "Survey questionnaire updated");
+        return run;
+    }
+
+    public byte[] surveyTemplateCsv(UUID runId) {
+        AnalysisRun run = get(runId);
+        Questionnaire questionnaire = questionnaireOrNull(run);
+        if (!hasAnyUsableQuestion(questionnaire)) {
+            throw new InvalidRunStateException(runId, "questionnaire is not ready; run Researcher first");
+        }
+        return surveyResultImportService.buildTemplateCsv(run);
+    }
+
+    public AnalysisRun importSurveyResults(UUID runId, MultipartFile file) {
+        AnalysisRun run = get(runId);
+        ensureAgentRerunnable(run);
+        Questionnaire questionnaire = questionnaireOrNull(run);
+        SurveyResultBatch results = surveyResultImportService.importResults(questionnaire, file);
+        String fileName = surveyImportFileName(file);
+        SurveyResultImport resultImport = new SurveyResultImport();
+        resultImport.setRunId(run.getId());
+        resultImport.setBatchId(results.batchId());
+        resultImport.setTitle(results.title());
+        resultImport.setQuestionnaire(questionnaire);
+        resultImport.setFileName(fileName);
+        resultImport.setResultCount(results.responseCount());
+
+        UserProvidedEvidence evidence = new UserProvidedEvidence(
+                "Imported survey results - " + results.title(),
+                "survey",
+                results.rawText(),
+                "survey-import://" + fileName,
+                false);
+        String citationKey = attachUserEvidence(run, evidence);
+        resultImport.getEvidenceIds().add(citationKey);
+        run.getResearchPackage().getSurveyResultImports().add(resultImport);
+        run.getResearchPackage().setSurveyInsights(surveyInsightExtractor.extract(run));
+        run.getRecommendedActions().add("Imported survey results as " + citationKey + "; rerunning Researcher with survey evidence.");
+        repository.save(run);
+        eventBroker.publish(run, "survey_results_imported", "Survey results imported: " + citationKey);
+        return rerunAgent(runId, AgentName.RESEARCHER);
+    }
+
     public AnalysisRun addDocument(UUID runId,
                                    MultipartFile file,
                                    String title,
@@ -660,6 +734,78 @@ public class AnalysisWorkflowService {
                 .count();
     }
 
+    private Questionnaire questionnaireOrNull(AnalysisRun run) {
+        if (run.getResearchPackage() == null || run.getResearchPackage().getResearchPlan() == null) {
+            return null;
+        }
+        return run.getResearchPackage().getResearchPlan().getQuestionnaire();
+    }
+
+    private String surveyImportFileName(MultipartFile file) {
+        String fileName = file == null ? null : file.getOriginalFilename();
+        if (!StringUtils.hasText(fileName)) {
+            return "survey-results";
+        }
+        return fileName.replace('\\', '/').replaceAll("^.*/", "").trim();
+    }
+
+    private Questionnaire sanitizeQuestionnaire(UUID runId, Questionnaire questionnaire) {
+        if (questionnaire == null || !StringUtils.hasText(questionnaire.getTitle())) {
+            throw new InvalidRunStateException(runId, "questionnaire title is required");
+        }
+        Questionnaire sanitized = new Questionnaire();
+        sanitized.setTitle(questionnaire.getTitle().trim());
+        sanitized.setTargetRespondents(trimToEmpty(questionnaire.getTargetRespondents()));
+        sanitized.setRecommendedSampleSize(trimToEmpty(questionnaire.getRecommendedSampleSize()));
+        if (questionnaire.getQuestions() != null) {
+            questionnaire.getQuestions().stream()
+                    .map(this::sanitizeSurveyQuestion)
+                    .filter(this::isUsableQuestion)
+                    .limit(20)
+                    .forEach(sanitized.getQuestions()::add);
+        }
+        if (sanitized.getQuestions().isEmpty()) {
+            throw new InvalidRunStateException(runId, "questionnaire requires at least one question with two options");
+        }
+        return sanitized;
+    }
+
+    private SurveyQuestion sanitizeSurveyQuestion(SurveyQuestion question) {
+        SurveyQuestion sanitized = new SurveyQuestion();
+        if (question == null) {
+            return sanitized;
+        }
+        sanitized.setDimension(trimToEmpty(question.getDimension()));
+        sanitized.setQuestion(trimToEmpty(question.getQuestion()));
+        if (question.getOptions() != null) {
+            question.getOptions().stream()
+                    .filter(StringUtils::hasText)
+                    .map(String::trim)
+                    .distinct()
+                    .limit(12)
+                    .forEach(sanitized.getOptions()::add);
+        }
+        return sanitized;
+    }
+
+    private boolean isUsableQuestion(SurveyQuestion question) {
+        return question != null
+                && StringUtils.hasText(question.getQuestion())
+                && question.getOptions() != null
+                && question.getOptions().size() >= 2;
+    }
+
+    private String trimToEmpty(String value) {
+        return value == null ? "" : value.trim();
+    }
+
+    private boolean hasAnyUsableQuestion(Questionnaire questionnaire) {
+        return questionnaire != null
+                && StringUtils.hasText(questionnaire.getTitle())
+                && questionnaire.getQuestions() != null
+                && questionnaire.getQuestions().stream().anyMatch(this::isUsableQuestion);
+    }
+
     private int percent(int part, int total) {
         if (total == 0) {
             return 0;
@@ -803,10 +949,46 @@ public class AnalysisWorkflowService {
         EvidenceSource source = sourceCollectionService.fromUserProvidedEvidence(citationKey, evidence);
         run.getEvidenceSources().add(source);
         run.getEvidenceChunks().addAll(evidenceEmbeddingService.embedChunks(evidenceChunkService.chunk(List.of(source))));
+        if (isSurveyEvidenceType(source.getSourceType())) {
+            keepOnlyLatestSurveyEvidence(run, source, evidence);
+        }
         run.getResearchPackage().setSources(new ArrayList<>(run.getEvidenceSources()));
         run.getResearchPackage().setCollectedAt(Instant.now());
         run.getRecommendedActions().add("用户证据 " + citationKey + " 已加入。可重跑 RESEARCHER 或下游 Agent 刷新输出。");
         return citationKey;
+    }
+
+    private void keepOnlyLatestSurveyEvidence(AnalysisRun run, EvidenceSource latestSource, UserProvidedEvidence latestEvidence) {
+        Set<String> removedCitationKeys = new LinkedHashSet<>();
+        Set<String> removedUrls = new LinkedHashSet<>();
+        run.getEvidenceSources().removeIf(source -> {
+            if (source == latestSource || !isSurveyEvidenceType(source.getSourceType())) {
+                return false;
+            }
+            if (StringUtils.hasText(source.getCitationKey())) {
+                removedCitationKeys.add(source.getCitationKey());
+            }
+            if (StringUtils.hasText(source.getUrl())) {
+                removedUrls.add(source.getUrl());
+            }
+            return true;
+        });
+        if (removedCitationKeys.isEmpty() && removedUrls.isEmpty()) {
+            return;
+        }
+        run.getEvidenceChunks().removeIf(chunk ->
+                removedCitationKeys.contains(chunk.getSourceCitationKey())
+                        || removedUrls.contains(chunk.getUrl())
+                        || (isSurveyEvidenceType(chunk.getSourceType())
+                        && !latestSource.getCitationKey().equals(chunk.getSourceCitationKey())));
+        run.getResearchPackage().getSources().removeIf(source ->
+                removedCitationKeys.contains(source.getCitationKey()) || removedUrls.contains(source.getUrl()));
+        run.getUserProvidedEvidence().removeIf(item -> item != latestEvidence && isSurveyEvidenceType(item.getSourceType()));
+        run.getRecommendedActions().add("已用最新问卷结果替换旧问卷证据：" + String.join("、", removedCitationKeys));
+    }
+
+    private boolean isSurveyEvidenceType(String sourceType) {
+        return containsIgnoreCase(sourceType, "survey");
     }
 
     private boolean isUserDocumentResource(EvidenceSource source) {

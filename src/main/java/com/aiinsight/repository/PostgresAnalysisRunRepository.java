@@ -5,6 +5,7 @@ import com.aiinsight.model.enums.AnalysisStatus;
 import com.aiinsight.model.run.AnalysisRun;
 import com.aiinsight.model.run.EmbeddingCacheEntry;
 import com.aiinsight.model.run.EvidenceChunk;
+import com.aiinsight.model.run.EvidenceSource;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;

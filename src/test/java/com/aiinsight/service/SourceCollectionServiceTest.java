@@ -1659,7 +1659,9 @@ class SourceCollectionServiceTest {
 
             @Override
             public List<SearchResult> search(String query, int count) {
-                queries.add(query);
+                synchronized (queries) {
+                    queries.add(query);
+                }
                 return List.of(new SearchResult(
                         "Search result for " + query,
                         "https://search.example.test/" + query.toLowerCase().replaceAll("[^a-z0-9]+", "-"),

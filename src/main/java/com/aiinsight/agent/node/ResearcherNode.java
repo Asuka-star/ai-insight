@@ -17,8 +17,10 @@ import com.aiinsight.model.schema.InterviewInsight;
 import com.aiinsight.model.schema.Questionnaire;
 import com.aiinsight.model.schema.ResearchPlan;
 import com.aiinsight.model.schema.SurveyQuestion;
+import com.aiinsight.model.schema.SurveyInsight;
 import com.aiinsight.service.InterviewInsightExtractor;
 import com.aiinsight.service.ResearchCoverageService;
+import com.aiinsight.service.SurveyInsightExtractor;
 import com.aiinsight.service.fallback.FallbackResearchPlanFactory;
 import com.aiinsight.observability.AgentTraceContext;
 import com.aiinsight.util.JsonResponseExtractor;
@@ -54,6 +56,7 @@ public class ResearcherNode implements AgentNode {
     private final ObjectMapper objectMapper;
     private final FallbackResearchPlanFactory fallbackResearchPlanFactory;
     private final InterviewInsightExtractor interviewInsightExtractor;
+    private final SurveyInsightExtractor surveyInsightExtractor;
     private ResearchCoverageService researchCoverageService = new ResearchCoverageService();
     private Executor researcherLlmExecutor = ForkJoinPool.commonPool();
 
@@ -95,6 +98,7 @@ public class ResearcherNode implements AgentNode {
         run.getResearchPackage().setMissingEvidenceTypes(new ArrayList<>(researchResult.missingEvidenceTypes()));
         run.getResearchPackage().setResearchPlan(buildResearchPlan(run, recollecting));
         run.getResearchPackage().setInterviewInsights(interviewInsightExtractor.extract(run));
+        run.getResearchPackage().setSurveyInsights(surveyInsightExtractor.extract(run));
         run.getResearchPackage().setCollectedAt(Instant.now());
         researchCoverageService.refreshCoverage(run);
         AgentTraceContext.recordProcessSummary(researchResult.traceMarkdown());
@@ -111,6 +115,7 @@ public class ResearcherNode implements AgentNode {
                 researchPlanMarkdown(
                         run.getResearchPackage().getResearchPlan(),
                         run.getResearchPackage().getInterviewInsights(),
+                        run.getResearchPackage().getSurveyInsights(),
                         run.getResearchPackage().getActualSearchQueries()
                 ),
                 run.getEvidenceSources().stream().map(EvidenceSource::getCitationKey).toList()
@@ -442,11 +447,12 @@ public class ResearcherNode implements AgentNode {
     }
 
     private String researchPlanMarkdown(ResearchPlan plan, List<InterviewInsight> interviewInsights) {
-        return researchPlanMarkdown(plan, interviewInsights, List.of());
+        return researchPlanMarkdown(plan, interviewInsights, List.of(), List.of());
     }
 
     private String researchPlanMarkdown(ResearchPlan plan,
                                         List<InterviewInsight> interviewInsights,
+                                        List<SurveyInsight> surveyInsights,
                                         List<String> actualSearchQueries) {
         String actualQueries = actualSearchQueries == null || actualSearchQueries.isEmpty()
                 ? "暂无实际执行搜索 query。"
@@ -478,6 +484,15 @@ public class ResearcherNode implements AgentNode {
                         insight.getPainPoints().isEmpty() ? "待补充" : String.join(" / ", insight.getPainPoints()),
                         String.join(" / ", insight.getBuyingConcerns()),
                         insight.getCompetitorMentions().isEmpty() ? "未显式提及" : String.join(" / ", insight.getCompetitorMentions())
+                ))
+                .collect(Collectors.joining("\n"));
+        String surveyInsightsText = surveyInsights.stream()
+                .map(insight -> "- [%s] %s | sample=%s | segments=%s | findings=%d".formatted(
+                        insight.getEvidenceId(),
+                        insight.getTitle(),
+                        insight.getSampleSize(),
+                        insight.getRespondentSegments().isEmpty() ? "pending" : String.join(" / ", insight.getRespondentSegments()),
+                        insight.getFindings().size()
                 ))
                 .collect(Collectors.joining("\n"));
         return """
@@ -516,6 +531,10 @@ public class ResearcherNode implements AgentNode {
                 ## 访谈洞察
 
                 %s
+
+                ## Survey Insights
+
+                %s
                 """.formatted(
                 plan.getObjective(),
                 plan.getEvidenceGaps().isEmpty() ? "暂无关键缺口。" : String.join("、", plan.getEvidenceGaps()),
@@ -528,7 +547,8 @@ public class ResearcherNode implements AgentNode {
                 questions,
                 String.join("、", plan.getInterviewGuide().getTargetRoles()),
                 interviewQuestions,
-                interviewInsights.isEmpty() ? "暂无已结构化访谈洞察。" : insights
+                interviewInsights.isEmpty() ? "暂无已结构化访谈洞察。" : insights,
+                surveyInsights.isEmpty() ? "No structured survey insight yet." : surveyInsightsText
         );
     }
 }
