@@ -1,6 +1,7 @@
 package com.aiinsight.model.review;
 
 import com.aiinsight.model.enums.ReviewSeverity;
+import com.aiinsight.model.enums.AgentName;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
 import lombok.Setter;
@@ -14,6 +15,7 @@ public class ReviewFinding {
 
     private UUID id = UUID.randomUUID();
     private ReviewSeverity severity;
+    private AgentName targetAgent;
     private String category;
     private String message;
     private String recommendation;

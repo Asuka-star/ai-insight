@@ -546,6 +546,9 @@ public class SourceCollectionService {
         }
         String host = normalizeText(parts.host());
         String path = normalizeText(parts.path());
+        if (host.endsWith("claude.com") && path.matches("/(documentation|docs|help|guide|guides|features|security|trust|privacy|case-studies|solutions|changelog|release-notes|releases|updates|plans)(/.*)?")) {
+            return true;
+        }
         if (host.endsWith("claude.com") && path.matches("/cn/(docs|documentation|help|guide|guides|security|pricing|plans|changelog|release-notes|releases|updates)(/.*)?")) {
             return true;
         }

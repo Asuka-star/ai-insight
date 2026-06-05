@@ -20,6 +20,9 @@ public class ExtractedFact {
     private String value;
     private List<String> evidenceIds = new ArrayList<>();
     private List<String> chunkKeys = new ArrayList<>();
+    private String supportQuote;
+    private String supportStrength;
+    private String riskLevel;
     private String sourceAuthority;
     private String sourceQuality;
     private String extractionConfidence;

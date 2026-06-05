@@ -497,7 +497,26 @@ public class ExtractorNode implements AgentNode {
                 value
         );
         if (knownIds.isEmpty()) {
+            if (conservativeFallbackPositioning(factType, attribute, value)) {
+                knownIds = knownEvidenceIds(run, evidenceIds, List.of()).stream()
+                        .filter(StringUtils::hasText)
+                        .distinct()
+                        .limit(3)
+                        .toList();
+            }
+        }
+        if (knownIds.isEmpty()) {
             addUnknown(unknowns, competitorName, attribute, "Extracted value has no directly supporting evidence id.", neededEvidenceTypes);
+            return;
+        }
+        List<String> chunkKeys = chunkKeysForEvidence(run, knownIds, factType == null ? FactType.UNKNOWN : factType, value);
+        if (highRiskFact(factType, attribute, value) && !run.getEvidenceChunks().isEmpty() && chunkKeys.isEmpty()) {
+            addUnknown(unknowns, competitorName, attribute, "High-risk extracted value needs a directly supporting evidence chunk.", neededEvidenceTypes);
+            return;
+        }
+        if (highRiskFact(factType, attribute, value) && knownIds.stream()
+                .noneMatch(id -> riskCompatibleEvidence(run, id, factType, attribute, value))) {
+            addUnknown(unknowns, competitorName, attribute, "High-risk extracted value is bound to evidence with an incompatible source type.", neededEvidenceTypes);
             return;
         }
         ExtractedFact fact = new ExtractedFact();
@@ -507,12 +526,66 @@ public class ExtractorNode implements AgentNode {
         fact.setAttribute(attribute);
         fact.setValue(value.trim());
         fact.setEvidenceIds(knownIds);
-        fact.setChunkKeys(chunkKeysForEvidence(run, knownIds, fact.getFactType(), fact.getValue()));
+        fact.setChunkKeys(chunkKeys);
+        fact.setSupportQuote(supportQuoteForChunks(run, chunkKeys));
+        fact.setSupportStrength(supportStrengthForFact(fact.getFactType(), fact.getChunkKeys()));
+        fact.setRiskLevel(riskLevelForFact(fact.getFactType(), attribute, value));
         EvidenceSource primarySource = primarySource(run, knownIds);
         fact.setSourceAuthority(primarySource == null ? "UNKNOWN" : textOrDash(primarySource.getSourceAuthority()));
         fact.setSourceQuality(primarySource == null ? "UNKNOWN" : textOrDash(primarySource.getSourceQuality()));
         fact.setExtractionConfidence(extractionConfidence(primarySource, fact.getChunkKeys()));
         facts.add(fact);
+    }
+
+    private boolean conservativeFallbackPositioning(FactType factType, String attribute, String value) {
+        return factType == FactType.POSITIONING
+                && "positioning".equals(attribute)
+                && containsAny(normalizeLower(value), "需结合证据继续验证", "继续验证", "待验证", "needs verification");
+    }
+
+    private boolean highRiskFact(FactType factType, String attribute, String value) {
+        return !"NORMAL".equals(riskLevelForFact(factType, attribute, value));
+    }
+
+    private String riskLevelForFact(FactType factType, String attribute, String value) {
+        String text = normalizeLower("%s %s %s".formatted(factType, nullToEmpty(attribute), nullToEmpty(value)));
+        if (factType == FactType.PRICING || containsAny(text, "pricing", "price", "plan", "subscription", "$", "价格", "定价", "套餐", "订阅", "付费")) {
+            return "PRICING";
+        }
+        if (factType == FactType.SECURITY || containsAny(text, "security", "compliance", "privacy", "安全", "合规", "隐私", "审计", "soc", "saml", "sso")) {
+            return "SECURITY";
+        }
+        if (factType == FactType.PERMISSION || containsAny(text, "permission", "rbac", "scim", "权限", "角色", "治理")) {
+            return "PERMISSION";
+        }
+        if (containsAny(text, "deployment", "deploy", "bedrock", "proxy", "vpc", "部署", "代理")) {
+            return "DEPLOYMENT";
+        }
+        if (factType == FactType.CUSTOMER_SIGNAL) {
+            return "CUSTOMER_SIGNAL";
+        }
+        return "NORMAL";
+    }
+
+    private String supportStrengthForFact(FactType factType, List<String> chunkKeys) {
+        if (chunkKeys == null || chunkKeys.isEmpty()) {
+            return highRiskFact(factType, "", "") ? "UNSUPPORTED" : "WEAK";
+        }
+        return highRiskFact(factType, "", "") ? "DIRECT" : "PARTIAL";
+    }
+
+    private String supportQuoteForChunks(AnalysisRun run, List<String> chunkKeys) {
+        if (chunkKeys == null || chunkKeys.isEmpty()) {
+            return "";
+        }
+        Set<String> accepted = new LinkedHashSet<>(chunkKeys);
+        return run.getEvidenceChunks().stream()
+                .filter(chunk -> accepted.contains(chunk.getChunkKey()))
+                .map(EvidenceChunk::getText)
+                .filter(StringUtils::hasText)
+                .map(text -> abbreviate(text.replaceAll("\\s+", " ").trim(), 120))
+                .findFirst()
+                .orElse("");
     }
 
     private boolean looksLikeTemplatePricingValue(String value) {
@@ -570,7 +643,7 @@ public class ExtractorNode implements AgentNode {
         Set<String> accepted = new LinkedHashSet<>(evidenceIds);
         return run.getEvidenceChunks().stream()
                 .filter(chunk -> accepted.contains(chunk.getSourceCitationKey()))
-                .filter(chunk -> factType != FactType.PRICING || isPricingChunk(run, chunk))
+                .filter(chunk -> riskCompatibleChunk(run, chunk, factType, "", value))
                 .filter(chunk -> evidenceTextSupports(value, chunkText(chunk), factType))
                 .map(EvidenceChunk::getChunkKey)
                 .filter(StringUtils::hasText)
@@ -601,10 +674,7 @@ public class ExtractorNode implements AgentNode {
         if (source == null) {
             return false;
         }
-        if (factType == FactType.PRICING && !isPricingEvidence(run, citationKey)) {
-            return false;
-        }
-        if (factType == FactType.CUSTOMER_SIGNAL && !customerSignalEvidence(source)) {
+        if (!riskCompatibleEvidence(run, citationKey, factType, attribute, value)) {
             return false;
         }
         String sourceText = sourceText(source);
@@ -622,7 +692,84 @@ public class ExtractorNode implements AgentNode {
         }
         return run.getEvidenceChunks().stream()
                 .filter(chunk -> citationKey.equals(chunk.getSourceCitationKey()))
+                .filter(chunk -> riskCompatibleChunk(run, chunk, factType, attribute, value))
                 .anyMatch(chunk -> evidenceTextSupports(expected, chunkText(chunk), factType));
+    }
+
+    private boolean riskCompatibleEvidence(AnalysisRun run,
+                                           String citationKey,
+                                           FactType factType,
+                                           String attribute,
+                                           String value) {
+        String risk = riskLevelForFact(factType, attribute, value);
+        EvidenceSource source = sourceByCitationKey(run, citationKey);
+        if (source == null) {
+            return false;
+        }
+        if ("NORMAL".equals(risk)) {
+            return true;
+        }
+        if ("PRICING".equals(risk)) {
+            return isPricingEvidence(run, citationKey);
+        }
+        if ("CUSTOMER_SIGNAL".equals(risk)) {
+            return customerSignalEvidence(source);
+        }
+        if (riskCompatibleSourceType(source, risk) && sourceTextHasRiskSignal(sourceText(source), risk)) {
+            return true;
+        }
+        return run.getEvidenceChunks().stream()
+                .filter(chunk -> citationKey.equals(chunk.getSourceCitationKey()))
+                .anyMatch(chunk -> riskCompatibleChunk(run, chunk, factType, attribute, value));
+    }
+
+    private boolean riskCompatibleChunk(AnalysisRun run,
+                                        EvidenceChunk chunk,
+                                        FactType factType,
+                                        String attribute,
+                                        String value) {
+        String risk = riskLevelForFact(factType, attribute, value);
+        if ("NORMAL".equals(risk)) {
+            return true;
+        }
+        if ("PRICING".equals(risk)) {
+            return isPricingChunk(run, chunk);
+        }
+        String text = chunkText(chunk);
+        EvidenceSource source = sourceByCitationKey(run, chunk.getSourceCitationKey());
+        boolean compatibleType = source == null || riskCompatibleSourceType(source, risk);
+        return compatibleType && sourceTextHasRiskSignal(text, risk);
+    }
+
+    private boolean riskCompatibleSourceType(EvidenceSource source, String risk) {
+        String sourceType = normalizeLower(source.getSourceType());
+        return switch (risk) {
+            case "SECURITY", "PERMISSION" ->
+                    containsAny(sourceType, "security", "docs", "product", "official", "trust", "privacy");
+            case "DEPLOYMENT" ->
+                    containsAny(sourceType, "docs", "product", "official", "security", "integration");
+            case "CUSTOMER_SIGNAL" -> customerSignalEvidence(source);
+            default -> true;
+        };
+    }
+
+    private boolean sourceTextHasRiskSignal(String text, String risk) {
+        String normalized = normalizeLower(text);
+        return switch (risk) {
+            case "SECURITY" -> containsAny(normalized,
+                    "security", "permission", "compliance", "privacy", "trust", "sso", "scim", "saml", "soc",
+                    "安全", "权限", "合规", "隐私", "审计");
+            case "PERMISSION" -> containsAny(normalized,
+                    "permission", "rbac", "role", "admin", "sso", "scim", "saml",
+                    "权限", "角色", "管理员", "单点登录");
+            case "DEPLOYMENT" -> containsAny(normalized,
+                    "deployment", "deploy", "bedrock", "proxy", "vpc", "cloud",
+                    "部署", "代理", "云");
+            case "CUSTOMER_SIGNAL" -> containsAny(normalized,
+                    "review", "feedback", "customer", "user", "survey", "interview",
+                    "评价", "反馈", "用户", "调研", "访谈");
+            default -> true;
+        };
     }
 
     private boolean customerSignalEvidence(EvidenceSource source) {
@@ -812,14 +959,17 @@ public class ExtractorNode implements AgentNode {
             return "- No evidence-bound facts extracted.";
         }
         return facts.stream()
-                .map(fact -> "- %s %s.%s: %s evidence=%s chunks=%s confidence=%s".formatted(
+                .map(fact -> "- %s %s.%s: %s evidence=%s chunks=%s confidence=%s support=%s risk=%s quote=%s".formatted(
                         fact.getId(),
                         fact.getFactType(),
                         fact.getAttribute(),
                         abbreviate(fact.getValue(), 180),
                         fact.getEvidenceIds(),
                         fact.getChunkKeys(),
-                        fact.getExtractionConfidence()
+                        fact.getExtractionConfidence(),
+                        textOrDash(fact.getSupportStrength()),
+                        textOrDash(fact.getRiskLevel()),
+                        abbreviate(fact.getSupportQuote(), 120)
                 ))
                 .collect(Collectors.joining("\n"));
     }

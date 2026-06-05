@@ -77,11 +77,35 @@ public final class LlmSubtaskSupport {
     public static void recordSubtaskTrace(String label, List<LlmSubtaskResult<?>> results) {
         String summary = results.stream()
                 .map(result -> "%s=%s%s".formatted(
-                        result.name(),
-                        result.succeeded() ? "succeeded" : "failed",
-                        result.succeeded() ? "" : " (" + result.errorMessage() + ")"
+                        subtaskLabel(result.name()),
+                        result.succeeded() ? "成功" : "失败",
+                        result.succeeded() ? "" : "（" + result.errorMessage() + "）"
                 ))
                 .collect(Collectors.joining("\n"));
-        AgentTraceContext.recordProcessSummary(label + ":\n" + summary);
+        AgentTraceContext.recordProcessSummary(traceBatchLabel(label) + "：\n" + summary);
+    }
+
+    private static String traceBatchLabel(String label) {
+        return switch (label) {
+            case "Parallel Researcher LLM subtasks" -> "Researcher 并行调研子任务";
+            case "Analyst LLM subtasks" -> "Analyst 分析子任务";
+            case "Parallel Reviewer LLM subtasks" -> "Reviewer 并行质检子任务";
+            default -> label;
+        };
+    }
+
+    private static String subtaskLabel(String name) {
+        return switch (name) {
+            case "research-strategy" -> "调研策略";
+            case "questionnaire" -> "问卷设计";
+            case "interview-guide" -> "访谈提纲";
+            case "claims" -> "结论生成";
+            case "claim-evidence" -> "结论证据质检";
+            case "report-overclaim" -> "报告过度推断质检";
+            case "schema-consistency" -> "结构一致性质检";
+            case "source-quality" -> "来源质量质检";
+            case "report-actionability" -> "报告可执行性质检";
+            default -> name;
+        };
     }
 }

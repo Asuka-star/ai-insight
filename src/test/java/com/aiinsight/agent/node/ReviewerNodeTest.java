@@ -13,6 +13,7 @@ import com.aiinsight.model.run.AnalysisRun;
 import com.aiinsight.model.run.EvidenceChunk;
 import com.aiinsight.model.run.EvidenceSource;
 import com.aiinsight.model.run.ReviewRepairDelta;
+import com.aiinsight.model.review.ReviewDecision;
 import com.aiinsight.model.schema.AnalysisClaim;
 import com.aiinsight.model.schema.CompetitorFactSet;
 import com.aiinsight.model.schema.ExtractedFact;
@@ -38,12 +39,18 @@ class ReviewerNodeTest {
         AnalysisClaim claim = claim("Cursor includes SOC 2 enterprise compliance controls.", List.of("S30"), List.of("F30"));
         run.getClaims().add(claim);
 
-        new ReviewerNode(new CitationCoverageEvaluator(), noopLlmClient(), new FallbackReviewReportFactory()).execute(run);
+        new ReviewerNode(new CitationCoverageEvaluator(), highFactFindingLlmClient(claim.getId(), "F30", "S30-C1", "S30"), new FallbackReviewReportFactory()).execute(run);
 
         assertThat(run.getReviewDecision().getAction()).isEqualTo(ReviewAction.REWORK_ANALYSIS);
         assertThat(run.getReviewDecision().getTargetAgent()).isEqualTo(AgentName.EXTRACTOR);
         assertThat(run.getReviewDecision().getFindingCategories()).contains("fact_unsupported_by_evidence");
-        assertThat(run.getReviewDecision().getReason()).contains("fact_unsupported_by_evidence");
+        assertThat(run.getReviewDecision().getReason()).contains("事实未被证据支撑");
+        assertThat(run.getReviewFindings())
+                .allSatisfy(finding -> assertThat(finding.getTargetAgent()).isNotNull())
+                .anySatisfy(finding -> {
+                    assertThat(finding.getCategory()).isEqualTo("fact_unsupported_by_evidence");
+                    assertThat(finding.getTargetAgent()).isEqualTo(AgentName.EXTRACTOR);
+                });
         assertThat(run.getReviewDecision().getRepairTasks())
                 .anySatisfy(task -> {
                     assertThat(task.getTargetAgent()).isEqualTo(AgentName.EXTRACTOR);
@@ -68,13 +75,14 @@ class ReviewerNodeTest {
         AnalysisClaim claim = claim("Cursor includes SOC 2 enterprise compliance controls.", List.of("S32"), List.of("F32"));
         run.getClaims().add(claim);
 
-        new ReviewerNode(new CitationCoverageEvaluator(), highClaimFindingLlmClient(claim.getId()), new FallbackReviewReportFactory()).execute(run);
+        new ReviewerNode(new CitationCoverageEvaluator(), highFactAndClaimFindingLlmClient(claim.getId(), "F32", "S32-C1", "S32"), new FallbackReviewReportFactory()).execute(run);
 
         assertThat(run.getReviewFindings())
                 .anySatisfy(finding -> {
                     assertThat(finding.getSeverity()).isEqualTo(com.aiinsight.model.enums.ReviewSeverity.HIGH);
                     assertThat(finding.getCategory()).isEqualTo("claim_weak_support");
                     assertThat(finding.getClaimId()).isEqualTo(claim.getId());
+                    assertThat(finding.getTargetAgent()).isEqualTo(AgentName.ANALYST);
                 });
         assertThat(run.getReviewDecision().getTargetAgent()).isEqualTo(AgentName.EXTRACTOR);
         assertThat(run.getReviewDecision().getRepairTasks())
@@ -99,7 +107,7 @@ class ReviewerNodeTest {
         AnalysisClaim claim = claim("Cursor is the best enterprise governance platform.", List.of("S31"), List.of("F31"));
         run.getClaims().add(claim);
 
-        new ReviewerNode(new CitationCoverageEvaluator(), noopLlmClient(), new FallbackReviewReportFactory()).execute(run);
+        new ReviewerNode(new CitationCoverageEvaluator(), claimFactMismatchLlmClient(claim.getId(), "F31", "S31"), new FallbackReviewReportFactory()).execute(run);
 
         assertThat(run.getReviewDecision().getAction()).isEqualTo(ReviewAction.REWORK_ANALYSIS);
         assertThat(run.getReviewDecision().getTargetAgent()).isEqualTo(AgentName.ANALYST);
@@ -125,11 +133,35 @@ class ReviewerNodeTest {
         run.getClaims().add(claim);
         run.setLastReviewRepairDelta(unchangedUpstreamDelta(AgentName.ANALYST, 1));
 
-        new ReviewerNode(new CitationCoverageEvaluator(), noopLlmClient(), new FallbackReviewReportFactory()).execute(run);
+        new ReviewerNode(new CitationCoverageEvaluator(), claimFactMismatchLlmClient(claim.getId(), "F33", "S33"), new FallbackReviewReportFactory()).execute(run);
 
         assertThat(run.getReviewDecision().getAction()).isEqualTo(ReviewAction.REWORK_ANALYSIS);
         assertThat(run.getReviewDecision().getTargetAgent()).isEqualTo(AgentName.EXTRACTOR);
         assertThat(run.getReviewDecision().getReason()).contains("Analyst");
+    }
+
+    @Test
+    void doesNotEscalateCascadedManualResearcherRerunFromAnalystDelta() {
+        AnalysisRun run = new AnalysisRun();
+        run.addArtifact(new AnalysisArtifact(ArtifactType.REPORT_DRAFT, "draft", "Summary only.", List.of()));
+        run.getEvidenceSources().add(source("S35", "Cursor Composer supports multi-file code editing."));
+        run.getEvidenceChunks().add(chunk("S35-C1", "S35", "feature", "Cursor Composer supports multi-file code editing."));
+        ExtractedFact fact = fact("F35", FactType.FEATURE, "composer",
+                "Cursor Composer supports multi-file code editing.", List.of("S35"), List.of("S35-C1"));
+        run.getCompetitorFactSets().add(factSet(fact));
+        AnalysisClaim claim = claim("Cursor is the best enterprise governance platform.", List.of("S35"), List.of("F35"));
+        run.getClaims().add(claim);
+        ReviewDecision manualDecision = new ReviewDecision();
+        manualDecision.setAction(ReviewAction.RECOLLECT_EVIDENCE);
+        manualDecision.setTargetAgent(AgentName.RESEARCHER);
+        run.setManualRerunDecision(manualDecision);
+        run.setLastReviewRepairDelta(unchangedUpstreamDelta(AgentName.ANALYST, 1));
+
+        new ReviewerNode(new CitationCoverageEvaluator(), claimFactMismatchLlmClient(claim.getId(), "F35", "S35"), new FallbackReviewReportFactory()).execute(run);
+
+        assertThat(run.getReviewDecision().getAction()).isEqualTo(ReviewAction.REWORK_ANALYSIS);
+        assertThat(run.getReviewDecision().getTargetAgent()).isEqualTo(AgentName.ANALYST);
+        assertThat(run.getReviewDecision().getReason()).contains("结构化分析层");
     }
 
     @Test
@@ -144,7 +176,7 @@ class ReviewerNodeTest {
         run.getClaims().add(claim("Cursor includes SOC 2 enterprise compliance controls.", List.of("S34"), List.of("F34")));
         run.setLastReviewRepairDelta(unchangedUpstreamDelta(AgentName.EXTRACTOR, 1));
 
-        new ReviewerNode(new CitationCoverageEvaluator(), noopLlmClient(), new FallbackReviewReportFactory()).execute(run);
+        new ReviewerNode(new CitationCoverageEvaluator(), highFactFindingLlmClient(run.getClaims().get(0).getId(), "F34", "S34-C1", "S34"), new FallbackReviewReportFactory()).execute(run);
 
         assertThat(run.getReviewDecision().getAction()).isEqualTo(ReviewAction.RECOLLECT_EVIDENCE);
         assertThat(run.getReviewDecision().getTargetAgent()).isEqualTo(AgentName.RESEARCHER);
@@ -343,6 +375,85 @@ class ReviewerNodeTest {
                           ]
                         }
                         """.formatted(claimId);
+            }
+        };
+    }
+
+    private LlmClient highFactFindingLlmClient(String claimId, String factId, String chunkKey, String citationKey) {
+        return fixedLlmFinding("""
+                {
+                  "severity": "HIGH",
+                  "category": "fact_unsupported_by_evidence",
+                  "claimId": "%s",
+                  "factId": "%s",
+                  "chunkKey": "%s",
+                  "citationKey": "%s",
+                  "message": "Extracted fact is not supported by its bound evidence.",
+                  "recommendation": "Regenerate the extracted fact or move it to unknown facts."
+                }
+                """.formatted(claimId, factId, chunkKey, citationKey));
+    }
+
+    private LlmClient claimFactMismatchLlmClient(String claimId, String factId, String citationKey) {
+        return fixedLlmFinding("""
+                {
+                  "severity": "HIGH",
+                  "category": "claim_fact_mismatch",
+                  "claimId": "%s",
+                  "factId": "%s",
+                  "citationKey": "%s",
+                  "message": "Claim over-interprets the bound extracted fact.",
+                  "recommendation": "Rewrite the claim from the bound fact or downgrade confidence."
+                }
+                """.formatted(claimId, factId, citationKey));
+    }
+
+    private LlmClient highFactAndClaimFindingLlmClient(String claimId, String factId, String chunkKey, String citationKey) {
+        return fixedLlmFindings(
+                """
+                        {
+                          "severity": "HIGH",
+                          "category": "fact_unsupported_by_evidence",
+                          "claimId": "%s",
+                          "factId": "%s",
+                          "chunkKey": "%s",
+                          "citationKey": "%s",
+                          "message": "Extracted fact is not supported by its bound evidence.",
+                          "recommendation": "Regenerate the extracted fact or move it to unknown facts."
+                        }
+                        """.formatted(claimId, factId, chunkKey, citationKey),
+                """
+                        {
+                          "severity": "HIGH",
+                          "category": "claim_weak_support",
+                          "claimId": "%s",
+                          "citationKey": "%s",
+                          "message": "Claim cites weak evidence and should be repaired by Analyst.",
+                          "recommendation": "Rebind the claim to stronger evidence or downgrade confidence."
+                        }
+                        """.formatted(claimId, citationKey)
+        );
+    }
+
+    private LlmClient fixedLlmFinding(String findingJson) {
+        return fixedLlmFindings(findingJson);
+    }
+
+    private LlmClient fixedLlmFindings(String... findingsJson) {
+        return new LlmClient() {
+            @Override
+            public boolean isAvailable() {
+                return true;
+            }
+
+            @Override
+            public String complete(ChatRequest request) {
+                return """
+                        {
+                          "summary": "reviewed",
+                          "findings": [%s]
+                        }
+                        """.formatted(String.join(",", findingsJson));
             }
         };
     }

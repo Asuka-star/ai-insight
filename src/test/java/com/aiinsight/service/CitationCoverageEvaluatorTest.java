@@ -84,17 +84,13 @@ class CitationCoverageEvaluatorTest {
     }
 
     @Test
-    void flagsWeakCitationSupportWhenEvidenceDoesNotMatchClaim() {
+    void leavesWeakCitationSupportToLlmReviewer() {
         AnalysisRun run = runWithEvidence();
         String report = "机会点是强化权限审计和企业安全治理 [S1]。";
 
         var findings = evaluator.evaluate(report, run);
 
-        assertThat(findings)
-                .anySatisfy(finding -> {
-                    assertThat(finding.getCategory()).isEqualTo("citation_weak_support");
-                    assertThat(finding.getCitationKey()).isEqualTo("S1");
-                });
+        assertThat(findings).isEmpty();
     }
 
     @Test
@@ -168,29 +164,18 @@ class CitationCoverageEvaluatorTest {
     }
 
     @Test
-    void flagsHighConfidenceClaimUsingSnippetOnlyEvidence() {
+    void leavesSnippetOnlyEvidenceQualityToLlmReviewer() {
         AnalysisRun run = runWithSnippetOnlyEvidence();
         AnalysisClaim claim = claim("机会点是优化价格策略和套餐比较。", ConfidenceLevel.HIGH, List.of("S2"));
         run.getClaims().add(claim);
 
         var findings = evaluator.evaluate("机会点是优化价格策略和套餐比较 [S2]。", run);
 
-        assertThat(findings)
-                .anySatisfy(finding -> {
-                    assertThat(finding.getSeverity()).isEqualTo(ReviewSeverity.MEDIUM);
-                    assertThat(finding.getCategory()).isEqualTo("claim_high_confidence_low_quality_source");
-                    assertThat(finding.getClaimId()).isEqualTo(claim.getId());
-                    assertThat(finding.getCitationKey()).isEqualTo("S2");
-                });
-        assertThat(findings)
-                .anySatisfy(finding -> {
-                    assertThat(finding.getCategory()).isEqualTo("citation_snippet_only");
-                    assertThat(finding.getCitationKey()).isEqualTo("S2");
-                });
+        assertThat(findings).isEmpty();
     }
 
     @Test
-    void flagsMarketingOnlySourceAsWeakSupport() {
+    void leavesMarketingOnlySourceQualityToLlmReviewer() {
         AnalysisRun run = new AnalysisRun();
         run.getEvidenceSources().add(new EvidenceSource(
                 "S3",
@@ -214,16 +199,11 @@ class CitationCoverageEvaluatorTest {
 
         var findings = evaluator.evaluate("机会点是优化价格策略和套餐比较 [S3]。", run);
 
-        assertThat(findings)
-                .anySatisfy(finding -> {
-                    assertThat(finding.getSeverity()).isEqualTo(ReviewSeverity.LOW);
-                    assertThat(finding.getCategory()).isEqualTo("citation_marketing_only_source");
-                    assertThat(finding.getCitationKey()).isEqualTo("S3");
-                });
+        assertThat(findings).isEmpty();
     }
 
     @Test
-    void flagsRegionUnavailableSourceAsHighRiskSupport() {
+    void leavesRegionUnavailableSourceQualityToLlmReviewer() {
         AnalysisRun run = new AnalysisRun();
         run.getEvidenceSources().add(new EvidenceSource(
                 "S4",
@@ -241,16 +221,11 @@ class CitationCoverageEvaluatorTest {
 
         var findings = evaluator.evaluate("风险在于 Claude Code 存在区域可用性限制 [S4]。", run);
 
-        assertThat(findings)
-                .anySatisfy(finding -> {
-                    assertThat(finding.getSeverity()).isEqualTo(ReviewSeverity.HIGH);
-                    assertThat(finding.getCategory()).isEqualTo("citation_region_unavailable_source");
-                    assertThat(finding.getCitationKey()).isEqualTo("S4");
-                });
+        assertThat(findings).isEmpty();
     }
 
     @Test
-    void flagsPricingClaimUsingThirdPartyPricingWhenOfficialPricingExists() {
+    void leavesPricingSourceStrengthToLlmReviewer() {
         AnalysisRun run = new AnalysisRun();
         EvidenceSource officialPricing = source(
                 "S10",
@@ -276,13 +251,7 @@ class CitationCoverageEvaluatorTest {
 
         var findings = evaluator.evaluate("## Report\n\nSummary only.", run);
 
-        assertThat(findings)
-                .anySatisfy(finding -> {
-                    assertThat(finding.getSeverity()).isEqualTo(ReviewSeverity.HIGH);
-                    assertThat(finding.getCategory()).isEqualTo("claim_weak_pricing_source");
-                    assertThat(finding.getClaimId()).isEqualTo(claim.getId());
-                    assertThat(finding.getCitationKey()).isEqualTo("S11");
-                });
+        assertThat(findings).isEmpty();
     }
 
     @Test
@@ -309,7 +278,7 @@ class CitationCoverageEvaluatorTest {
     }
 
     @Test
-    void flagsHighConfidenceSecurityClaimBackedOnlyByCommunityEvidence() {
+    void leavesSecuritySourceStrengthToLlmReviewer() {
         AnalysisRun run = new AnalysisRun();
         EvidenceSource community = source(
                 "S13",
@@ -326,12 +295,7 @@ class CitationCoverageEvaluatorTest {
 
         var findings = evaluator.evaluate("## Report\n\nSummary only.", run);
 
-        assertThat(findings)
-                .anySatisfy(finding -> {
-                    assertThat(finding.getSeverity()).isEqualTo(ReviewSeverity.HIGH);
-                    assertThat(finding.getCategory()).isEqualTo("claim_weak_security_source");
-                    assertThat(finding.getClaimId()).isEqualTo(claim.getId());
-                });
+        assertThat(findings).isEmpty();
     }
 
     @Test
@@ -357,7 +321,7 @@ class CitationCoverageEvaluatorTest {
     }
 
     @Test
-    void flagsUserSentimentClaimBackedOnlyByOfficialMarketingPage() {
+    void leavesUserSentimentSourceTypeToLlmReviewer() {
         AnalysisRun run = new AnalysisRun();
         EvidenceSource official = source(
                 "S15",
@@ -374,16 +338,11 @@ class CitationCoverageEvaluatorTest {
 
         var findings = evaluator.evaluate("## Report\n\nSummary only.", run);
 
-        assertThat(findings)
-                .anySatisfy(finding -> {
-                    assertThat(finding.getCategory()).isEqualTo("claim_missing_sentiment_source");
-                    assertThat(finding.getClaimId()).isEqualTo(claim.getId());
-                    assertThat(finding.getCitationKey()).isEqualTo("S15");
-                });
+        assertThat(findings).isEmpty();
     }
 
     @Test
-    void flagsPublicMarketClaimBackedOnlyByInternalDocument() {
+    void leavesInternalEvidenceWordingToLlmReviewer() {
         AnalysisRun run = new AnalysisRun();
         EvidenceSource internal = source(
                 "S16",
@@ -406,13 +365,7 @@ class CitationCoverageEvaluatorTest {
 
         var findings = evaluator.evaluate("## Report\n\nSummary only.", run);
 
-        assertThat(findings)
-                .anySatisfy(finding -> {
-                    assertThat(finding.getSeverity()).isEqualTo(ReviewSeverity.HIGH);
-                    assertThat(finding.getCategory()).isEqualTo("claim_internal_evidence_presented_as_public");
-                    assertThat(finding.getClaimId()).isEqualTo(claim.getId());
-                    assertThat(finding.getCitationKey()).isEqualTo("S16");
-                });
+        assertThat(findings).isEmpty();
     }
 
     @Test
@@ -482,7 +435,7 @@ class CitationCoverageEvaluatorTest {
     }
 
     @Test
-    void flagsReportParagraphPresentingInternalDocumentAsPublicEvidence() {
+    void leavesReportInternalEvidenceWordingToLlmReviewer() {
         AnalysisRun run = new AnalysisRun();
         EvidenceSource internal = source(
                 "S23",
@@ -502,16 +455,11 @@ class CitationCoverageEvaluatorTest {
                 run
         );
 
-        assertThat(findings)
-                .anySatisfy(finding -> {
-                    assertThat(finding.getSeverity()).isEqualTo(ReviewSeverity.MEDIUM);
-                    assertThat(finding.getCategory()).isEqualTo("citation_internal_evidence_presented_as_public");
-                    assertThat(finding.getCitationKey()).isEqualTo("S23");
-                });
+        assertThat(findings).isEmpty();
     }
 
     @Test
-    void flagsExtractedFactUnsupportedByBoundEvidence() {
+    void leavesExtractedFactSupportToLlmReviewer() {
         AnalysisRun run = new AnalysisRun();
         run.getEvidenceSources().add(source(
                 "S20",
@@ -532,19 +480,11 @@ class CitationCoverageEvaluatorTest {
 
         var findings = evaluator.evaluate("## Report\n\nSummary only.", run);
 
-        assertThat(findings)
-                .anySatisfy(finding -> {
-                    assertThat(finding.getSeverity()).isEqualTo(ReviewSeverity.HIGH);
-                    assertThat(finding.getCategory()).isEqualTo("fact_unsupported_by_evidence");
-                    assertThat(finding.getClaimId()).isEqualTo(claim.getId());
-                    assertThat(finding.getFactId()).isEqualTo("F20");
-                    assertThat(finding.getChunkKey()).isEqualTo("S20-C1");
-                    assertThat(finding.getCitationKey()).isEqualTo("S20");
-                });
+        assertThat(findings).isEmpty();
     }
 
     @Test
-    void flagsUnsupportedExtractedFactEvenWhenNoClaimReferencesIt() {
+    void leavesUnreferencedExtractedFactSupportToLlmReviewer() {
         AnalysisRun run = new AnalysisRun();
         run.getEvidenceSources().add(source(
                 "S22",
@@ -562,19 +502,11 @@ class CitationCoverageEvaluatorTest {
 
         var findings = evaluator.evaluate("## Report\n\nSummary only.", run);
 
-        assertThat(findings)
-                .anySatisfy(finding -> {
-                    assertThat(finding.getSeverity()).isEqualTo(ReviewSeverity.HIGH);
-                    assertThat(finding.getCategory()).isEqualTo("fact_unsupported_by_evidence");
-                    assertThat(finding.getClaimId()).isNull();
-                    assertThat(finding.getFactId()).isEqualTo("F22");
-                    assertThat(finding.getChunkKey()).isEqualTo("S22-C1");
-                    assertThat(finding.getCitationKey()).isEqualTo("S22");
-                });
+        assertThat(findings).isEmpty();
     }
 
     @Test
-    void groupsUnsupportedExtractedFactAcrossMultipleWeakEvidenceBindings() {
+    void doesNotGroupSemanticFactSupportIssuesInRuleLayer() {
         AnalysisRun run = new AnalysisRun();
         run.getEvidenceSources().add(source(
                 "S40",
@@ -602,17 +534,11 @@ class CitationCoverageEvaluatorTest {
 
         var findings = evaluator.evaluate("## Report\n\nSummary only.", run);
 
-        var unsupportedFactFindings = findings.stream()
-                .filter(finding -> "fact_unsupported_by_evidence".equals(finding.getCategory()))
-                .filter(finding -> "F40".equals(finding.getFactId()))
-                .toList();
-        assertThat(unsupportedFactFindings).hasSize(1);
-        assertThat(unsupportedFactFindings.get(0).getSeverity()).isEqualTo(ReviewSeverity.HIGH);
-        assertThat(unsupportedFactFindings.get(0).getMessage()).contains("S40", "S41");
+        assertThat(findings).isEmpty();
     }
 
     @Test
-    void downgradesExtraWeakFactEvidenceWhenAnotherBindingSupportsTheFact() {
+    void leavesPartialWeakFactBindingToLlmReviewer() {
         AnalysisRun run = new AnalysisRun();
         run.getEvidenceSources().add(source(
                 "S42",
@@ -640,20 +566,35 @@ class CitationCoverageEvaluatorTest {
 
         var findings = evaluator.evaluate("## Report\n\nSummary only.", run);
 
-        assertThat(findings)
-                .noneMatch(finding -> "fact_unsupported_by_evidence".equals(finding.getCategory())
-                        && "F42".equals(finding.getFactId()));
-        assertThat(findings)
-                .anySatisfy(finding -> {
-                    assertThat(finding.getSeverity()).isEqualTo(ReviewSeverity.MEDIUM);
-                    assertThat(finding.getCategory()).isEqualTo("fact_partial_evidence_binding_weak");
-                    assertThat(finding.getFactId()).isEqualTo("F42");
-                    assertThat(finding.getCitationKey()).isEqualTo("S43");
-                });
+        assertThat(findings).isEmpty();
     }
 
     @Test
-    void flagsHighConfidenceClaimThatOverInterpretsBoundFacts() {
+    void acceptsCrossLingualOfficialEvidenceForChineseExtractedFact() {
+        AnalysisRun run = new AnalysisRun();
+        run.getEvidenceSources().add(source(
+                "S7",
+                "Claude Code product page",
+                "https://claude.com/product/claude-code",
+                "official_site",
+                "FIRST_PARTY_OFFICIAL",
+                "Build, debug, and ship from your terminal, IDE, Slack, or the web."
+        ));
+        run.getEvidenceChunks().add(chunk("S7-C1", "S7", "feature", "FIRST_PARTY_OFFICIAL",
+                "Build, debug, and ship from your terminal, IDE, Slack, or the web."));
+        ExtractedFact fact = fact("F7", "Claude Code", FactType.FEATURE,
+                "integration", "终端和IDE集成: 支持从终端和IDE直接使用Claude Code构建、调试和部署。", List.of("S7"), List.of("S7-C1"));
+        run.getCompetitorFactSets().add(factSet("Claude Code", fact));
+
+        var findings = evaluator.evaluate("## Report\n\nSummary only.", run);
+
+        assertThat(findings)
+                .noneMatch(finding -> "fact_unsupported_by_evidence".equals(finding.getCategory())
+                        && "F7".equals(finding.getFactId()));
+    }
+
+    @Test
+    void leavesClaimFactOverInterpretationToLlmReviewer() {
         AnalysisRun run = new AnalysisRun();
         run.getEvidenceSources().add(source(
                 "S21",
@@ -674,12 +615,7 @@ class CitationCoverageEvaluatorTest {
 
         var findings = evaluator.evaluate("## Report\n\nSummary only.", run);
 
-        assertThat(findings)
-                .anySatisfy(finding -> {
-                    assertThat(finding.getSeverity()).isEqualTo(ReviewSeverity.HIGH);
-                    assertThat(finding.getCategory()).isEqualTo("claim_fact_mismatch");
-                    assertThat(finding.getClaimId()).isEqualTo(claim.getId());
-                });
+        assertThat(findings).isEmpty();
     }
 
     private AnalysisRun runWithEvidence() {

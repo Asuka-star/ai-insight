@@ -2,7 +2,7 @@ import { Background, Controls, Handle, MarkerType, Position, ReactFlow, type Edg
 import { GitBranch } from "lucide-react";
 import type { AgentName, AnalysisRun, StepStatus } from "../types";
 import { AGENTS, AGENT_LABELS, AGENT_STAGE } from "../constants";
-import { latestStepByAgent, statusClass } from "../utils";
+import { displayRunPhase, latestStepByAgent, statusClass } from "../utils";
 
 interface WorkflowGraphProps {
   run: AnalysisRun | null;
@@ -44,9 +44,9 @@ export function WorkflowGraph({ run, onSelectAgent }: WorkflowGraphProps) {
     edge("EXTRACTOR", "ANALYST"),
     edge("ANALYST", "WRITER"),
     edge("WRITER", "REVIEWER"),
-    edge("REVIEWER", "RESEARCHER", "recollect", "feedback"),
-    edge("REVIEWER", "ANALYST", "reanalyze", "feedback"),
-    edge("REVIEWER", "WRITER", "revise", "feedback")
+    edge("REVIEWER", "RESEARCHER", "补采", "feedback"),
+    edge("REVIEWER", "ANALYST", "重分析", "feedback"),
+    edge("REVIEWER", "WRITER", "修订报告", "feedback")
   ];
 
   return (
@@ -73,8 +73,8 @@ function AgentNode({ data }: NodeProps<Node<AgentNodeData>>) {
       <Handle type="target" position={Position.Left} />
       <span className="flow-icon"><GitBranch size={14} /></span>
       <strong>{data.label}</strong>
-      <small>{data.agent}</small>
-      <em>{data.count > 1 ? `${data.count} runs` : data.status}</em>
+      <small>{data.stage}</small>
+      <em>{data.count > 1 ? `${data.count} 次` : displayRunPhase(data.status)}</em>
       <Handle type="source" position={Position.Right} />
     </button>
   );

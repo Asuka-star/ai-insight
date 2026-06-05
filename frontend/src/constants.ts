@@ -19,12 +19,12 @@ export const AGENT_LABELS: Record<AgentName, string> = {
 };
 
 export const AGENT_STAGE: Record<AgentName, string> = {
-  CLARIFIER: "scope",
-  RESEARCHER: "research",
-  EXTRACTOR: "schema",
-  ANALYST: "analysis",
-  WRITER: "report",
-  REVIEWER: "review"
+  CLARIFIER: "范围确认",
+  RESEARCHER: "资料采集",
+  EXTRACTOR: "结构化抽取",
+  ANALYST: "竞品分析",
+  WRITER: "报告撰写",
+  REVIEWER: "事实质检"
 };
 
 export const ARTIFACT_LABELS: Record<ArtifactType, string> = {
@@ -32,7 +32,7 @@ export const ARTIFACT_LABELS: Record<ArtifactType, string> = {
   SOURCE_LIST: "资料清单",
   RESEARCH_PLAN: "调研计划",
   FACT_EXTRACTION: "事实抽取",
-  COMPETITOR_PROFILE: "竞品 Schema",
+  COMPETITOR_PROFILE: "竞品 结构化信息",
   COMPETITIVE_MATRIX: "横向矩阵",
   SWOT_ANALYSIS: "SWOT 分析",
   REPORT_DRAFT: "报告草稿",

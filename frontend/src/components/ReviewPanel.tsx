@@ -27,14 +27,16 @@ const TEXT = {
   manualReview: "\u590d\u6838",
   noTarget: "\u65e0\u9700\u6253\u56de",
   waitingReason: "\u7b49\u5f85\u590d\u6838 Agent \u7ed9\u51fa\u7ed3\u6784\u5316\u51b3\u7b56",
-  affectedClaim: "\u5f71\u54cd Claim",
-  noClaim: "\u65e0\u6307\u5b9a Claim",
+  affectedClaim: "\u5f71\u54cd\u7ed3\u8bba",
+  noClaim: "\u65e0\u6307\u5b9a\u7ed3\u8bba",
   requiredEvidence: "\u9700\u8865\u8bc1\u636e",
   noEvidenceType: "\u65e0\u6307\u5b9a\u8bc1\u636e\u7c7b\u578b",
   decisionTime: "\u51b3\u7b56\u65f6\u95f4",
   waitingRecord: "\u7b49\u5f85\u8bb0\u5f55",
   noHighRisk: "\u6682\u65e0\u9ad8\u98ce\u9669\u8d28\u68c0\u95ee\u9898",
   paragraph: "\u6bb5\u843d",
+  claim: "\u7ed3\u8bba",
+  evidence: "\u8bc1\u636e",
   excerpt: "\u6458\u5f55",
   expand: "\u5c55\u5f00",
   collapse: "\u6536\u8d77",
@@ -101,7 +103,7 @@ export function ReviewPanel({
             <span>{reworkLimit ? "已封版需人工处理" : decisionActionLabel(decisionAction)}</span>
             {targetAgent ? <strong>{AGENT_LABELS[targetAgent] ?? targetAgent}</strong> : <strong>{TEXT.noTarget}</strong>}
           </div>
-          <small className="decision-action-code">{decisionAction}</small>
+          <small className="decision-action-code">状态：{decisionActionLabel(decisionAction)}</small>
           {reworkLimit ? <p className="decision-warning">{reworkLimit}</p> : null}
           <p>{localizeReviewText(decision.reason) || TEXT.waitingReason}</p>
           <div className="decision-meta-grid">
@@ -175,21 +177,22 @@ function DecisionMeta({ label, values, empty }: { label: string; values?: string
 }
 
 function FindingItem({ finding, onLocateFinding }: { finding: ReviewFinding; onLocateFinding?: (finding: ReviewFinding) => void }) {
+  const citationKey = citationKeyFromFinding(finding);
   return (
     <div className={`finding-item ${finding.severity.toLowerCase()}`}>
       <div className="finding-heading">
-        <span>{finding.severity}</span>
+        <span>{severity_LABELS[finding.severity]}</span>
         <strong>{findingCategoryLabel(finding.category)}</strong>
       </div>
-      <small className="finding-category">类别：{findingCategoryLabel(finding.category)}</small>
       <p>{localizeReviewText(finding.message)}</p>
       <small>{localizeReviewText(finding.recommendation)}</small>
       <div className="finding-meta">
-        {finding.claimId ? <span>Claim {finding.claimId}</span> : null}
-        {finding.citationKey ? <span>[{finding.citationKey}]</span> : null}
-        {finding.paragraphIndex !== undefined ? <span>{TEXT.paragraph} {finding.paragraphIndex}</span> : null}
+        {finding.claimId ? <span>{TEXT.claim} {finding.claimId}</span> : null}
+        {citationKey ? <span>{TEXT.evidence} [{citationKey}]</span> : null}
+        {hasParagraphIndex(finding) ? <span>{TEXT.paragraph} {finding.paragraphIndex}</span> : null}
+        {finding.targetAgent ? <span>建议处理 {AGENT_LABELS[finding.targetAgent] ?? finding.targetAgent}</span> : null}
       </div>
-      {finding.excerpt ? <small className="finding-excerpt">{TEXT.excerpt}: {finding.excerpt}</small> : null}
+      {finding.excerpt ? <small className="finding-excerpt">{TEXT.excerpt}: {localizeReviewText(finding.excerpt)}</small> : null}
       {finding.claimId || finding.citationKey || finding.artifactId ? (
         <button className="finding-locate" type="button" onClick={() => onLocateFinding?.(finding)}>
           <LocateFixed size={13} /> {locateLabel(finding)}
@@ -197,6 +200,15 @@ function FindingItem({ finding, onLocateFinding }: { finding: ReviewFinding; onL
       ) : null}
     </div>
   );
+}
+
+function hasParagraphIndex(finding: ReviewFinding) {
+  return typeof finding.paragraphIndex === "number" && Number.isFinite(finding.paragraphIndex);
+}
+
+function citationKeyFromFinding(finding: ReviewFinding) {
+  if (finding.citationKey) return finding.citationKey;
+  return /\[(S\d+)]/.exec(`${finding.message} ${finding.excerpt ?? ""}`)?.[1];
 }
 
 const severity_LABELS: Record<ReviewFinding["severity"], string> = {
@@ -284,44 +296,84 @@ function rerunLabel(agent: AgentName) {
 }
 
 function locateLabel(finding: ReviewFinding) {
-  if (finding.claimId) return "\u5b9a\u4f4d Claim";
+  if (finding.claimId) return "\u5b9a\u4f4d\u7ed3\u8bba";
   if (finding.citationKey) return "\u5b9a\u4f4d\u8bc1\u636e";
   return "\u5b9a\u4f4d\u62a5\u544a";
 }
 
 function findingCategoryLabel(category: string) {
-  const labels: Record<string, string> = {
-    citation_missing: "\u7f3a\u5c11\u5f15\u7528",
-    citation_unknown: "\u672a\u77e5\u5f15\u7528",
-    citation_weak_support: "\u5f15\u7528\u5f31\u652f\u6491",
-    citation_snippet_only: "\u641c\u7d22\u6458\u8981\u6765\u6e90",
-    citation_blocked_source: "\u6765\u6e90\u53d7\u9650",
-    citation_thin_source: "\u6765\u6e90\u8fc7\u8584",
-    citation_internal_evidence_presented_as_public: "\u5185\u90e8\u8d44\u6599\u88ab\u8868\u8ff0\u4e3a\u516c\u5f00\u8bc1\u636e",
-    citation_region_unavailable_source: "\u6765\u6e90\u4e0d\u53ef\u7528",
-    citation_marketing_only_source: "\u8425\u9500\u578b\u6765\u6e90",
-    claim_missing_evidence: "Claim \u7f3a\u8bc1\u636e",
-    claim_unknown_evidence: "Claim \u5f15\u7528\u672a\u77e5\u8bc1\u636e",
-    claim_weak_support: "Claim \u5f31\u652f\u6491",
-    claim_high_confidence_low_quality_source: "\u9ad8\u7f6e\u4fe1\u4f4e\u8d28\u91cf\u6765\u6e90",
-    claim_confidence_mismatch: "\u7f6e\u4fe1\u5ea6\u4e0d\u4e00\u81f4",
-    claim_missing_fact_binding: "Claim \u7f3a\u5c11\u4e8b\u5b9e\u7ed1\u5b9a",
-    claim_unknown_fact: "Claim \u5f15\u7528\u672a\u77e5\u4e8b\u5b9e",
-    claim_fact_mismatch: "Claim \u4e0e\u4e8b\u5b9e\u4e0d\u4e00\u81f4",
-    claim_internal_evidence_presented_as_public: "\u5185\u90e8\u8d44\u6599\u88ab\u8868\u8ff0\u4e3a\u516c\u5f00\u8bc1\u636e",
-    claim_weak_pricing_source: "\u5b9a\u4ef7\u6765\u6e90\u504f\u5f31",
-    claim_missing_pricing_source: "\u7f3a\u5c11\u5b9a\u4ef7\u6765\u6e90",
-    claim_weak_security_source: "\u5b89\u5168/\u6743\u9650\u6765\u6e90\u504f\u5f31",
-    claim_missing_sentiment_source: "\u7f3a\u5c11\u7528\u6237\u53e3\u7891\u6765\u6e90",
-    fact_missing_evidence: "\u4e8b\u5b9e\u7f3a\u5c11\u8bc1\u636e",
-    fact_unknown_chunk: "\u4e8b\u5b9e\u5f15\u7528\u672a\u77e5\u5207\u7247",
-    fact_unknown_evidence: "\u4e8b\u5b9e\u5f15\u7528\u672a\u77e5\u8bc1\u636e",
-    fact_partial_evidence_binding_weak: "\u4e8b\u5b9e\u90e8\u5206\u8bc1\u636e\u504f\u5f31",
-    fact_unsupported_by_evidence: "\u4e8b\u5b9e\u672a\u88ab\u8bc1\u636e\u652f\u6491",
-    llm_overclaim: "\u8bed\u4e49\u8fc7\u5ea6\u63a8\u65ad",
-    llm_semantic_review: "\u8bed\u4e49\u8d28\u68c0"
-  };
-  return labels[category] ?? category;
+  const normalized = normalizeCategoryKey(category);
+  return REVIEW_CATEGORY_LABELS[normalized] ?? fallbackCategoryLabel(normalized);
+}
+
+const REVIEW_CATEGORY_LABELS: Record<string, string> = {
+  citation_missing: "缺少引用",
+  missing_citation: "缺少引用",
+  citation_unknown: "未知引用",
+  citation_weak_support: "引用支撑不足",
+  citation_support_mismatch: "引用支撑不一致",
+  citation_snippet_only: "搜索摘要来源",
+  snippet_only_source: "搜索摘要来源",
+  citation_blocked_source: "来源受限",
+  blocked_source: "来源受限",
+  fetch_failed_source: "来源抓取失败",
+  citation_thin_source: "来源内容过薄",
+  thin_source: "来源内容过薄",
+  citation_internal_evidence_presented_as_public: "内部资料被表述为公开证据",
+  citation_region_unavailable_source: "来源区域不可用",
+  region_unavailable_source: "来源区域不可用",
+  citation_marketing_only_source: "营销型来源",
+  marketing_only_source: "营销型来源",
+  low_quality_source: "低质量来源",
+  claim_missing_evidence: "结论缺少证据",
+  claim_unknown_evidence: "结论引用未知证据",
+  claim_evidence_mismatch: "结论与证据不一致",
+  claim_weak_support: "结论支撑不足",
+  claim_high_confidence_low_quality_source: "高置信结论依赖低质量来源",
+  claim_confidence_mismatch: "置信度不一致",
+  claim_missing_fact_binding: "结论缺少事实绑定",
+  claim_unknown_fact: "结论引用未知事实",
+  claim_fact_mismatch: "结论与事实不一致",
+  claim_internal_evidence_presented_as_public: "内部资料被表述为公开证据",
+  claim_weak_pricing_source: "定价来源偏弱",
+  claim_missing_pricing_source: "缺少定价来源",
+  claim_weak_security_source: "安全/权限来源偏弱",
+  claim_missing_sentiment_source: "缺少用户口碑来源",
+  fact_missing_evidence: "事实缺少证据",
+  fact_unknown_chunk: "事实引用未知切片",
+  fact_unknown_evidence: "事实引用未知证据",
+  fact_partial_evidence_binding_weak: "事实部分证据偏弱",
+  fact_unsupported_by_evidence: "事实未被证据支撑",
+  fact_extraction_mismatch: "事实抽取不一致",
+  extracted_fact_mismatch: "抽取事实不一致",
+  report_overclaim: "报告过度推断",
+  llm_overclaim: "语义过度推断",
+  report_quality_insufficient: "报告质量不足",
+  report_missing_decision_summary: "报告缺少决策摘要",
+  report_dimension_coverage_gap: "报告维度覆盖不足",
+  report_actionability_gap: "报告行动建议不足",
+  report_actionability_insufficient: "报告可执行性不足",
+  unsupported_recommendation: "建议缺少支撑",
+  schema_consistency: "结构化信息不一致",
+  matrix_claim_conflict: "矩阵与结论冲突",
+  swot_claim_conflict: "SWOT 与结论冲突",
+  llm_semantic_review: "语义质检"
+};
+
+function normalizeCategoryKey(category?: string) {
+  return (category ?? "").trim().toLowerCase().replace(/-/g, "_");
+}
+
+function fallbackCategoryLabel(category: string) {
+  if (!category) return "未分类质检项";
+  if (category.includes("citation") || category.includes("reference")) return "引用问题";
+  if (category.includes("overclaim")) return "过度推断";
+  if (category.includes("source")) return "来源质量问题";
+  if (category.includes("fact")) return "事实抽取问题";
+  if (category.includes("claim")) return "结论支撑问题";
+  if (category.includes("schema") || category.includes("matrix") || category.includes("swot")) return "结构化一致性问题";
+  if (category.includes("report")) return "报告质量问题";
+  return "质检问题";
 }
 
 function localizeReviewText(value?: string) {
@@ -344,8 +396,8 @@ function localizeReviewText(value?: string) {
     "Rerun Analyst to rewrite the claim from bound facts, bind more relevant facts, or downgrade confidence.":
       "请重跑 Analyst，基于绑定事实改写该 claim；也可以绑定更相关的事实，或降低置信度。"
   };
-  if (exact[value]) return exact[value];
-  return value
+  if (exact[value]) return localizeReviewDisplayTokens(localizeCategoryTokens(exact[value]));
+  return localizeReviewDisplayTokens(localizeCategoryTokens(value
     .replace(
       /^Extracted fact has no evidenceIds: (.+)$/,
       "抽取事实缺少 evidenceIds: $1"
@@ -389,7 +441,37 @@ function localizeReviewText(value?: string) {
     .replace(
       /^Previous Analyst repair changed claims but did not reduce blocking findings while evidence, profiles, and facts stayed unchanged; rerun Extractor to rebuild upstream fact\/evidence bindings before analyzing again\.$/,
       "上一轮 Analyst 返工虽然改动了 claims，但阻断问题没有减少，且证据、画像和事实层没有变化；需要先重跑 Extractor 重建上游事实/证据绑定，再继续分析。"
-    );
+    )));
+}
+
+function localizeCategoryTokens(value: string) {
+  return Object.entries(REVIEW_CATEGORY_LABELS)
+    .sort(([left], [right]) => right.length - left.length)
+    .reduce((text, [category, label]) => {
+      const pattern = new RegExp(escapeRegExp(category).replace(/_/g, "[-_]"), "g");
+      return text.replace(pattern, label);
+    }, value);
+}
+
+function localizeReviewDisplayTokens(value: string) {
+  return value
+    .replace(/ParagraphIndex=(\d+)/g, "段落 $1")
+    .replace(/\bHIGH\b/g, "阻断问题")
+    .replace(/\bMEDIUM\b/g, "质量提醒")
+    .replace(/\bLOW\b/g, "人工复核")
+    .replace(/\bExtractor\b/g, "结构化抽取")
+    .replace(/\bResearcher\b/g, "资料采集")
+    .replace(/\bAnalyst\b/g, "竞品分析")
+    .replace(/\bWriter\b/g, "报告撰写")
+    .replace(/\bReviewer\b/g, "事实质检")
+    .replace(/\bClaims\b/g, "结论")
+    .replace(/\bclaims\b/g, "结论")
+    .replace(/\bClaim\b/g, "结论")
+    .replace(/\bclaim\b/g, "结论");
+}
+
+function escapeRegExp(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function formatTime(value: string) {

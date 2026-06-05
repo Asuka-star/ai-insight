@@ -59,7 +59,7 @@ import java.util.stream.Collectors;
 @Component
 @RequiredArgsConstructor
 @Slf4j
-// Reviewer 是可信度防线：先跑确定性规则，再让 LLM 做更语义化的质检。
+// Reviewer 是可信度防线：确定性层只做结构完整性检查，语义质检交给 LLM。
 // ReviewDecision 会驱动工作流打回采集或修订节点，形成可观测反馈闭环。
 public class ReviewerNode implements AgentNode {
 
@@ -108,7 +108,7 @@ public class ReviewerNode implements AgentNode {
         ReviewDecision previousDecision = run.getReviewDecision();
         run.getReviewFindings().clear();
         if (draft != null) {
-            // 规则结果进入结构化 finding，不能只存在于 LLM 文本回复里。
+            // 结构完整性结果进入 finding；证据是否真正支撑结论由 LLM 子任务判断。
             run.getReviewFindings().addAll(citationCoverageEvaluator.evaluate(draft.getContent(), run));
             enrichFindingLocations(run, draft);
         }
@@ -141,6 +141,7 @@ public class ReviewerNode implements AgentNode {
             deterministicFallback = true;
         }
         applyRepairVerificationScope(run, previousDecision);
+        assignFindingTargetAgents(run);
         run.setReviewDecision(buildDecision(run));
         researchCoverageService.enrichRepairTasks(run);
         researchCoverageService.refreshRepairTargets(run);
@@ -179,6 +180,14 @@ public class ReviewerNode implements AgentNode {
                 && previousDecision.getAction() != ReviewAction.PASS
                 && previousDecision.getRepairTasks() != null
                 && !previousDecision.getRepairTasks().isEmpty();
+    }
+
+    private void assignFindingTargetAgents(AnalysisRun run) {
+        for (ReviewFinding finding : run.getReviewFindings()) {
+            if (finding.getTargetAgent() == null) {
+                finding.setTargetAgent(targetAgentForFinding(finding));
+            }
+        }
     }
 
     private boolean matchesPreviousRepairTask(ReviewFinding finding, List<ReviewRepairTask> repairTasks) {
@@ -326,7 +335,7 @@ public class ReviewerNode implements AgentNode {
         }
         blockingFindings.stream()
                 .limit(3)
-                .map(finding -> "修复问题：" + finding.getCategory() + " - " + finding.getRecommendation())
+                .map(finding -> "修复问题：" + categoryLabel(finding.getCategory()) + " - " + finding.getRecommendation())
                 .forEach(instructions::add);
         return instructions;
     }
@@ -364,7 +373,7 @@ public class ReviewerNode implements AgentNode {
 
     private ReviewRepairTask repairTask(AnalysisRun run, ReviewDecision decision, ReviewFinding finding) {
         ReviewRepairTask task = new ReviewRepairTask();
-        task.setTargetAgent(decision.getTargetAgent());
+        task.setTargetAgent(finding.getTargetAgent() == null ? decision.getTargetAgent() : finding.getTargetAgent());
         task.setFindingId(finding.getId() == null ? null : finding.getId().toString());
         task.setArtifactId(finding.getArtifactId());
         task.setClaimId(finding.getClaimId());
@@ -530,7 +539,7 @@ public class ReviewerNode implements AgentNode {
         return "目标 Agent=%s；阻断问题=%d；问题类别=%s；Claim=%s；证据类型=%s。".formatted(
                 decision.getTargetAgent() == null ? "无需自动修复" : decision.getTargetAgent(),
                 blockingFindings.size(),
-                String.join("、", decision.getFindingCategories()),
+                decision.getFindingCategories().stream().map(this::categoryLabel).collect(Collectors.joining("、")),
                 claims,
                 evidenceTypes
         );
@@ -626,6 +635,7 @@ public class ReviewerNode implements AgentNode {
         ReviewRepairDelta delta = run.getLastReviewRepairDelta();
         return delta != null
                 && delta.getAgentName() == AgentName.ANALYST
+                && allowsRepeatedRepairEscalation(run, AgentName.ANALYST)
                 && delta.findingsDidNotImprove(run.getReviewFindings().size())
                 && delta.evidenceUnchanged()
                 && delta.extractedStateUnchanged()
@@ -636,9 +646,15 @@ public class ReviewerNode implements AgentNode {
         ReviewRepairDelta delta = run.getLastReviewRepairDelta();
         return delta != null
                 && delta.getAgentName() == AgentName.EXTRACTOR
+                && allowsRepeatedRepairEscalation(run, AgentName.EXTRACTOR)
                 && delta.findingsDidNotImprove(run.getReviewFindings().size())
                 && delta.evidenceUnchanged()
                 && blockingFindings.stream().anyMatch(this::needsExtractionRework);
+    }
+
+    private boolean allowsRepeatedRepairEscalation(AnalysisRun run, AgentName agentName) {
+        ReviewDecision manualDecision = run.getManualRerunDecision();
+        return manualDecision == null || manualDecision.getTargetAgent() == agentName;
     }
 
     private List<String> repairEvidenceTypesForEscalation(AnalysisRun run) {
@@ -724,6 +740,9 @@ public class ReviewerNode implements AgentNode {
     }
 
     private AgentName targetAgentForFinding(ReviewFinding finding) {
+        if (finding.getTargetAgent() != null) {
+            return finding.getTargetAgent();
+        }
         // finding category 是 Reviewer 和返工路由之间的契约；新增 category 时优先在这里明确归属。
         if (needsExtractionRework(finding)) {
             return AgentName.EXTRACTOR;
@@ -771,7 +790,69 @@ public class ReviewerNode implements AgentNode {
                 .map(ReviewFinding::getCategory)
                 .filter(StringUtils::hasText)
                 .distinct()
+                .map(this::categoryLabel)
                 .collect(Collectors.joining("、"));
+    }
+
+    private String categoryLabel(String category) {
+        String normalized = normalizeLower(category).replace('-', '_');
+        return switch (normalized) {
+            case "citation_missing", "missing_citation" -> "缺少引用";
+            case "citation_unknown" -> "未知引用";
+            case "citation_weak_support" -> "引用支撑不足";
+            case "citation_support_mismatch" -> "引用支撑不一致";
+            case "citation_snippet_only", "snippet_only_source" -> "搜索摘要来源";
+            case "citation_blocked_source", "blocked_source" -> "来源受限";
+            case "fetch_failed_source" -> "来源抓取失败";
+            case "citation_thin_source", "thin_source" -> "来源内容过薄";
+            case "citation_internal_evidence_presented_as_public",
+                 "claim_internal_evidence_presented_as_public" -> "内部资料被表述为公开证据";
+            case "citation_region_unavailable_source", "region_unavailable_source" -> "来源区域不可用";
+            case "citation_marketing_only_source", "marketing_only_source" -> "营销型来源";
+            case "low_quality_source" -> "低质量来源";
+            case "claim_missing_evidence" -> "结论缺少证据";
+            case "claim_unknown_evidence" -> "结论引用未知证据";
+            case "claim_evidence_mismatch" -> "结论与证据不一致";
+            case "claim_weak_support" -> "结论支撑不足";
+            case "claim_high_confidence_low_quality_source" -> "高置信结论依赖低质量来源";
+            case "claim_confidence_mismatch" -> "置信度不一致";
+            case "claim_missing_fact_binding" -> "结论缺少事实绑定";
+            case "claim_unknown_fact" -> "结论引用未知事实";
+            case "claim_fact_mismatch" -> "结论与事实不一致";
+            case "claim_weak_pricing_source" -> "定价来源偏弱";
+            case "claim_missing_pricing_source" -> "缺少定价来源";
+            case "claim_weak_security_source" -> "安全/权限来源偏弱";
+            case "claim_missing_sentiment_source" -> "缺少用户口碑来源";
+            case "fact_missing_evidence" -> "事实缺少证据";
+            case "fact_unknown_chunk" -> "事实引用未知切片";
+            case "fact_unknown_evidence" -> "事实引用未知证据";
+            case "fact_partial_evidence_binding_weak" -> "事实部分证据偏弱";
+            case "fact_unsupported_by_evidence" -> "事实未被证据支撑";
+            case "fact_extraction_mismatch", "extracted_fact_mismatch" -> "事实抽取不一致";
+            case "report_overclaim", "llm_overclaim" -> "报告过度推断";
+            case "report_quality_insufficient" -> "报告质量不足";
+            case "report_missing_decision_summary" -> "报告缺少决策摘要";
+            case "report_dimension_coverage_gap" -> "报告维度覆盖不足";
+            case "report_actionability_gap", "report_actionability_insufficient" -> "报告行动建议不足";
+            case "unsupported_recommendation" -> "建议缺少支撑";
+            case "schema_consistency" -> "结构化信息不一致";
+            case "matrix_claim_conflict" -> "矩阵与结论冲突";
+            case "swot_claim_conflict" -> "SWOT 与结论冲突";
+            case "llm_semantic_review" -> "语义质检";
+            default -> fallbackCategoryLabel(normalized);
+        };
+    }
+
+    private String fallbackCategoryLabel(String category) {
+        if (!StringUtils.hasText(category)) return "未分类质检项";
+        if (category.contains("citation") || category.contains("reference")) return "引用问题";
+        if (category.contains("overclaim")) return "过度推断";
+        if (category.contains("source")) return "来源质量问题";
+        if (category.contains("fact")) return "事实抽取问题";
+        if (category.contains("claim")) return "结论支撑问题";
+        if (category.contains("schema") || category.contains("matrix") || category.contains("swot")) return "结构化一致性问题";
+        if (category.contains("report")) return "报告质量问题";
+        return "质检问题";
     }
 
     private String reviewWithLlm(AnalysisRun run, AnalysisArtifact draft) {
@@ -784,11 +865,9 @@ public class ReviewerNode implements AgentNode {
         CompletableFuture<LlmSubtaskResult<?>> schemaConsistencyTask = CompletableFuture.supplyAsync(
                 AgentTraceContext.wrap(() -> LlmSubtaskSupport.runSubtask("Reviewer", "schema-consistency", () -> reviewSchemaConsistencyWithLlm(run)))
         );
-        CompletableFuture<LlmSubtaskResult<?>> sourceQualityTask = sourceQualityNeedsSemanticReview(run)
-                ? CompletableFuture.supplyAsync(
+        CompletableFuture<LlmSubtaskResult<?>> sourceQualityTask = CompletableFuture.supplyAsync(
                 AgentTraceContext.wrap(() -> LlmSubtaskSupport.runSubtask("Reviewer", "source-quality", () -> reviewSourceQualityWithLlm(run)))
-        )
-                : CompletableFuture.completedFuture(skippedReviewSubtask("source-quality", "No weak source signals detected."));
+        );
         CompletableFuture<LlmSubtaskResult<?>> reportActionabilityTask = CompletableFuture.supplyAsync(
                 AgentTraceContext.wrap(() -> LlmSubtaskSupport.runSubtask("Reviewer", "report-actionability", () -> reviewReportActionabilityWithLlm(run, draft)))
         );
@@ -854,14 +933,14 @@ public class ReviewerNode implements AgentNode {
                 3. findings 最多 5 项，每项必须包含 severity、category、message、recommendation。
                 4. category 优先使用 claim_evidence_mismatch、claim_weak_support、claim_confidence_mismatch。
                 5. severity 只能是 HIGH、MEDIUM、LOW；证据完全不支撑高置信 claim 时用 HIGH。
-                6. 必须尽量填写 claimId 和 citationKey；message 和 recommendation 各不超过 80 字。
-                7. 不要复述规则引擎已有问题，只补充语义层面的不一致。
+                6. 必须尽量填写 claimId、factId、chunkKey、citationKey；message 和 recommendation 各不超过 80 字。
+                7. 不要复述结构完整性问题（例如未知 citation/evidence/fact id），只补充语义层面的不一致。
                 8. supportStatus=UNVERIFIED 或 recommendedPlacement=VALIDATION_BACKLOG/NONE 的 claim 是已降级待验证项，不要因为缺证据或弱证据再报 claim_evidence_mismatch；只有它被写入报告主结论、矩阵或 SWOT 时才报告。
 
                 Claim 与证据:
                 %s
 
-                规则引擎摘要:
+                结构完整性检查摘要:
                 %s
                 """.formatted(
                 claimEvidencePairs(run),
@@ -947,7 +1026,7 @@ public class ReviewerNode implements AgentNode {
                 来源质量摘要:
                 %s
 
-                规则引擎摘要:
+                结构完整性检查摘要:
                 %s
                 """.formatted(
                 sourceQualityBlock(run),
@@ -993,7 +1072,7 @@ public class ReviewerNode implements AgentNode {
     private LlmReviewResult completeReviewSubtask(String subtaskName, String prompt) {
         String raw = llmClient.complete(new ChatRequest(
                 List.of(
-                        ChatMessage.system("You are a fact-checking and citation-coverage Reviewer Agent. Treat deterministic rule findings as hints, not final truth. Only report issues that affect factual reliability, evidence support, schema consistency, or decision quality. Do not flag report scaffolding, transition sentences, section introductions, or generic action-introduction lines as missing citations."),
+                        ChatMessage.system("You are a fact-checking and citation-coverage Reviewer Agent. Deterministic findings only cover structural integrity such as unknown IDs; make semantic judgments yourself from the report, claims, and evidence. Only report issues that affect factual reliability, evidence support, schema consistency, or decision quality. Do not flag report scaffolding, transition sentences, section introductions, or generic action-introduction lines as missing citations."),
                         ChatMessage.user(prompt)
                 ),
                 ChatOptions.reviewer()
@@ -1023,7 +1102,7 @@ public class ReviewerNode implements AgentNode {
     }
 
     private int mergeLlmFindings(AnalysisRun run, List<LlmFindingDraft> drafts) {
-        // LLM 语义质检是规则质检的增量补充。合并时按 severity/category/claim/citation/message
+        // LLM 语义质检是主要质量判断来源。合并时按 severity/category/claim/citation/message
         // 去重，避免模型复述规则问题导致前端重复展示。
         Set<String> existing = run.getReviewFindings().stream()
                 .map(this::findingSignature)
@@ -1064,6 +1143,8 @@ public class ReviewerNode implements AgentNode {
                         : "请人工复核该问题并补充证据或修订报告。"
         );
         finding.setClaimId(blankToNull(draft.claimId));
+        finding.setFactId(blankToNull(draft.factId));
+        finding.setChunkKey(blankToNull(draft.chunkKey));
         finding.setCitationKey(sanitizeCitationKey(draft.citationKey));
         finding.setParagraphIndex(draft.paragraphIndex);
         finding.setExcerpt(blankToNull(abbreviate(draft.excerpt, MAX_LLM_FINDING_EXCERPT_LENGTH)));
@@ -1072,6 +1153,8 @@ public class ReviewerNode implements AgentNode {
 
     private boolean hasFindingLocation(LlmFindingDraft draft) {
         return StringUtils.hasText(draft.claimId)
+                || StringUtils.hasText(draft.factId)
+                || StringUtils.hasText(draft.chunkKey)
                 || StringUtils.hasText(draft.citationKey)
                 || StringUtils.hasText(draft.excerpt)
                 || draft.paragraphIndex != null;
@@ -1473,6 +1556,8 @@ public class ReviewerNode implements AgentNode {
         public String message;
         public String recommendation;
         public String claimId;
+        public String factId;
+        public String chunkKey;
         public String citationKey;
         public Integer paragraphIndex;
         public String excerpt;

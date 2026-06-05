@@ -80,10 +80,14 @@ public class ResearchAgent {
                 beforeSources,
                 collectedSources
         );
-        if (replacementResult.replacedBindings() > 0 || replacementResult.prunedBindings() > 0) {
+        if (replacementResult.replacedBindings() > 0 || replacementResult.prunedBindings() > 0
+                || replacementResult.prunedSources() > 0) {
             run.getRecommendedActions().add(
-                    "已执行证据绑定修复：替换绑定=%d，移除弱绑定=%d。旧来源仍保留用于审计和背景参考，但不再支撑对应结论。"
-                            .formatted(replacementResult.replacedBindings(), replacementResult.prunedBindings()));
+                    "已执行证据池整理：替换绑定=%d，移除弱绑定=%d，裁剪历史未引用来源=%d。被替换且需要审计的旧来源会保留，但不再支撑对应结论。"
+                            .formatted(
+                                    replacementResult.replacedBindings(),
+                                    replacementResult.prunedBindings(),
+                                    replacementResult.prunedSources()));
         }
         replaceRunSources(run, collectedSources);
         List<EvidenceChunk> chunks = evidenceEmbeddingService.embedChunks(evidenceChunkService.chunk(collectedSources));

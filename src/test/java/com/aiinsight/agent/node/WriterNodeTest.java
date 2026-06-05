@@ -2,6 +2,7 @@ package com.aiinsight.agent.node;
 
 import com.aiinsight.llm.ChatRequest;
 import com.aiinsight.llm.LlmClient;
+import com.aiinsight.model.enums.ArtifactType;
 import com.aiinsight.model.enums.ClaimType;
 import com.aiinsight.model.enums.ConfidenceLevel;
 import com.aiinsight.model.run.AnalysisRequirement;
@@ -71,5 +72,115 @@ class WriterNodeTest {
                 .contains("quality=INTERNAL_ONLY")
                 .contains("只能写成“用户提供资料/内部资料显示”")
                 .contains("不要写成“公开资料显示”“市场证据显示”或“外部验证显示”");
+    }
+
+    @Test
+    void writerAddsCitationToUncitedCompetitiveJudgmentFromEligibleClaim() {
+        LlmClient llmClient = new LlmClient() {
+            @Override
+            public boolean isAvailable() {
+                return true;
+            }
+
+            @Override
+            public String complete(ChatRequest request) {
+                return "# Report\n\nCursor 与 Claude Code 在 AI 编程助手的核心能力上路径分明。";
+            }
+        };
+        WriterNode writer = new WriterNode(llmClient, new FallbackReportDraftFactory());
+        AnalysisRun run = new AnalysisRun(new AnalysisRequirement(
+                "Analyze AI coding tools",
+                "developer tools",
+                List.of("Cursor", "Claude Code"),
+                List.of("core capabilities"),
+                List.of("official_site"),
+                List.of()
+        ));
+        run.getEvidenceSources().add(new EvidenceSource(
+                "S1",
+                "AI coding tools overview",
+                "https://example.test/ai-coding",
+                "official_site",
+                "FETCHED",
+                "LIVE_FETCHED",
+                "HIGH",
+                "NONE",
+                "Cursor and Claude Code have distinct core capability paths for AI coding assistants.",
+                "Cursor and Claude Code have distinct core capability paths for AI coding assistants.",
+                "test evidence"
+        ));
+        AnalysisClaim claim = new AnalysisClaim();
+        claim.setType(ClaimType.COMPARISON);
+        claim.setContent("Cursor 与 Claude Code 在 AI 编程助手的核心能力上路径分明。");
+        claim.setConfidence(ConfidenceLevel.MEDIUM);
+        claim.setSupportStatus("SUPPORTED");
+        claim.setRecommendedPlacement("MATRIX");
+        claim.setEligibleForMainReport(true);
+        claim.setEvidenceIds(List.of("S1"));
+        run.getClaims().add(claim);
+
+        writer.execute(run);
+
+        String report = run.getArtifacts().stream()
+                .filter(artifact -> artifact.getType() == ArtifactType.REPORT_DRAFT)
+                .reduce((first, second) -> second)
+                .orElseThrow()
+                .getContent();
+        assertThat(report).contains("路径分明。 [S1]");
+    }
+
+    @Test
+    void writerDowngradesCitedImpactClaimWithoutClaimSupport() {
+        LlmClient llmClient = new LlmClient() {
+            @Override
+            public boolean isAvailable() {
+                return true;
+            }
+
+            @Override
+            public String complete(ChatRequest request) {
+                return "# Report\n\nCursor 的集成方式能直接提升开发者工作流效率。 [S1]";
+            }
+        };
+        WriterNode writer = new WriterNode(llmClient, new FallbackReportDraftFactory());
+        AnalysisRun run = new AnalysisRun(new AnalysisRequirement(
+                "Analyze AI coding tools",
+                "developer tools",
+                List.of("Cursor"),
+                List.of("integration"),
+                List.of("official_site"),
+                List.of()
+        ));
+        run.getEvidenceSources().add(new EvidenceSource(
+                "S1",
+                "Cursor docs",
+                "https://example.test/cursor",
+                "official_site",
+                "FETCHED",
+                "LIVE_FETCHED",
+                "HIGH",
+                "NONE",
+                "Cursor provides IDE integration and CLI support.",
+                "Cursor provides IDE integration and CLI support.",
+                "test evidence"
+        ));
+        AnalysisClaim claim = new AnalysisClaim();
+        claim.setType(ClaimType.COMPARISON);
+        claim.setContent("Cursor provides IDE integration and CLI support.");
+        claim.setConfidence(ConfidenceLevel.MEDIUM);
+        claim.setSupportStatus("SUPPORTED");
+        claim.setRecommendedPlacement("MATRIX");
+        claim.setEligibleForMainReport(true);
+        claim.setEvidenceIds(List.of("S1"));
+        run.getClaims().add(claim);
+
+        writer.execute(run);
+
+        String report = run.getArtifacts().stream()
+                .filter(artifact -> artifact.getType() == ArtifactType.REPORT_DRAFT)
+                .reduce((first, second) -> second)
+                .orElseThrow()
+                .getContent();
+        assertThat(report).contains("待验证：Cursor 的集成方式能直接提升开发者工作流效率。 [S1]");
     }
 }

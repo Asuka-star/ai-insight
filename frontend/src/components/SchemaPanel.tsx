@@ -27,7 +27,7 @@ export function SchemaPanel({
     <section className={embedded ? "schema-panel embedded" : "panel schema-panel"}>
       <div className="section-title">
         <div>
-          <p className="eyebrow">Schema</p>
+          <p className="eyebrow">结构化信息</p>
           <h2>结构化状态</h2>
         </div>
         <Boxes size={18} />

@@ -1116,15 +1116,15 @@ export function App() {
   const pendingClarification = isCreating
     || Boolean(run?.id && pendingClarificationRunId === run.id && !isClarificationSettled(run));
   const metricCards = [
-    { label: "Agent 步骤", value: runMetrics.agentStepCount, icon: Activity },
+    { label: "智能体步骤", value: runMetrics.agentStepCount, icon: Activity },
     { label: "证据来源", value: runMetrics.evidenceCount, icon: Search },
     { label: "质检问题", value: runMetrics.reviewFindingCount, icon: ShieldCheck },
     { label: "引用标记", value: runMetrics.citationMentionCount, icon: BookOpenCheck },
-    { label: "Claim 覆盖", value: formatPercent(runMetrics.claimCoverage), icon: ShieldCheck },
-    { label: "Schema 完整", value: formatPercent(runMetrics.schemaCompleteness), icon: BookOpenCheck },
+    { label: "结论覆盖", value: formatPercent(runMetrics.claimCoverage), icon: ShieldCheck },
+    { label: "结构化完整度", value: formatPercent(runMetrics.schemaCompleteness), icon: BookOpenCheck },
     { label: "打回次数", value: runMetrics.reworkCount, icon: RefreshCw },
-    { label: "证据/Claim", value: runMetrics.evidencePerClaim, icon: Search },
-    { label: "Token", value: runMetrics.totalTokens, icon: Gauge },
+    { label: "证据/结论", value: runMetrics.evidencePerClaim, icon: Search },
+    { label: "令牌", value: runMetrics.totalTokens, icon: Gauge },
     { label: "耗时", value: formatDuration(runMetrics.totalLatencyMs), icon: Clock3 }
   ];
 
@@ -1155,7 +1155,7 @@ export function App() {
       improved: latestImprovement.findingDelta < 0
     },
     {
-      label: "HIGH 问题",
+      label: "阻断问题",
       before: String(latestImprovement.highFindingsBefore),
       after: String(latestImprovement.highFindingsAfter),
       deltaValue: latestImprovement.highFindingDelta,
@@ -1163,7 +1163,7 @@ export function App() {
       improved: latestImprovement.highFindingDelta < 0
     },
     {
-      label: "Claim 覆盖",
+      label: "结论覆盖",
       before: formatPercent(latestImprovement.claimCoverageBefore),
       after: formatPercent(latestImprovement.claimCoverageAfter),
       deltaValue: latestImprovement.claimCoverageDelta,
@@ -1173,10 +1173,10 @@ export function App() {
   ] : [];
 
   const mainTabs: Array<{ key: MainView; label: string }> = [
-    { key: "dag", label: "Agent DAG" },
+    { key: "dag", label: "智能体流程" },
     { key: "report", label: "报告" },
     { key: "research", label: "问卷访谈" },
-    { key: "schema", label: "结构化 Schema" },
+    { key: "schema", label: "结构化信息" },
     { key: "matrix", label: "竞品矩阵" },
     { key: "versions", label: "全部产物" }
   ];
@@ -1486,7 +1486,7 @@ export function App() {
             eyebrow="指标"
             title="运行指标"
             icon={<Gauge size={18} />}
-            summary={`${runMetrics.highFindingCount} HIGH · ${formatDuration(runMetrics.totalLatencyMs)}`}
+            summary={`${runMetrics.highFindingCount} 阻断 · ${formatDuration(runMetrics.totalLatencyMs)}`}
             collapsed={collapsedRightPanels.metrics}
             onToggle={() => toggleRightPanel("metrics")}
           >
@@ -1529,7 +1529,7 @@ export function App() {
                   })}
                 </div>
               ) : (
-                <p className="metric-empty">重跑后会在这里显示证据、覆盖缺口、质检问题和 Claim 覆盖的变化。</p>
+                <p className="metric-empty">重跑后会在这里显示证据、覆盖缺口、质检问题和 结论覆盖的变化。</p>
               )}
             </div>
           </CollapsiblePanel>

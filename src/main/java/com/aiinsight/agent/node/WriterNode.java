@@ -3,10 +3,12 @@ package com.aiinsight.agent.node;
 import com.aiinsight.model.enums.AgentName;
 import com.aiinsight.model.run.AnalysisArtifact;
 import com.aiinsight.model.run.AnalysisRun;
+import com.aiinsight.model.enums.ConfidenceLevel;
 import com.aiinsight.model.enums.ArtifactType;
 import com.aiinsight.model.enums.ReviewAction;
 import com.aiinsight.model.review.ReviewDecision;
 import com.aiinsight.model.run.EvidenceSource;
+import com.aiinsight.model.schema.AnalysisClaim;
 import com.aiinsight.model.schema.CompetitorProfile;
 import com.aiinsight.llm.ChatMessage;
 import com.aiinsight.llm.ChatOptions;
@@ -17,6 +19,7 @@ import com.aiinsight.observability.AgentTraceContext;
 import com.aiinsight.util.AgentUtils;
 import static com.aiinsight.util.AgentUtils.CITATION_PATTERN;
 import static com.aiinsight.util.AgentUtils.abbreviate;
+import static com.aiinsight.util.AgentUtils.containsAny;
 import static com.aiinsight.util.AgentUtils.hasText;
 import static com.aiinsight.util.AgentUtils.knownCitationKeys;
 import static com.aiinsight.util.AgentUtils.latestArtifact;
@@ -29,6 +32,7 @@ import org.springframework.stereotype.Component;
 
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -187,7 +191,125 @@ public class WriterNode implements AgentNode {
         }
         String cleaned = removeReportMetadata(text);
         cleaned = removeInternalClaimReferences(cleaned);
-        return sanitizeCitationText(run, cleaned);
+        cleaned = sanitizeCitationText(run, cleaned);
+        return enforceCitationDiscipline(run, cleaned);
+    }
+
+    private String enforceCitationDiscipline(AnalysisRun run, String text) {
+        return text.lines()
+                .map(line -> enforceLineCitation(run, line))
+                .collect(Collectors.joining("\n"))
+                .trim();
+    }
+
+    private String enforceLineCitation(AnalysisRun run, String line) {
+        if (CITATION_PATTERN.matcher(line).find()) {
+            return needsOverclaimDowngrade(run, line) ? prefixUnverified(line) : line;
+        }
+        if (!needsClaimCitation(run, line)) {
+            return line;
+        }
+        List<String> citations = citationsForLine(run, line);
+        if (!citations.isEmpty()) {
+            return line.stripTrailing() + " " + citations.stream()
+                    .limit(3)
+                    .map("[%s]"::formatted)
+                    .collect(Collectors.joining(""));
+        }
+        return prefixUnverified(line);
+    }
+
+    private String prefixUnverified(String line) {
+        String trimmed = line.trim();
+        if (trimmed.startsWith("待验证") || trimmed.startsWith("- 待验证") || trimmed.startsWith("* 待验证")) {
+            return line;
+        }
+        if (trimmed.startsWith("- ") || trimmed.startsWith("* ")) {
+            return line.replaceFirst("^(\\s*[-*]\\s*)", "$1待验证：");
+        }
+        return line.replaceFirst("^(\\s*)", "$1待验证：");
+    }
+
+    private boolean needsOverclaimDowngrade(AnalysisRun run, String line) {
+        if (!hasText(line)) {
+            return false;
+        }
+        String normalized = normalizeText(line);
+        boolean unsupportedImpactLanguage = containsAny(normalized,
+                "直接提升", "提升效率", "效率提升", "工作流效率", "生产力", "roi", "降本", "提效",
+                "适合借鉴", "满足平台", "适用于", "最佳选择", "优先采用");
+        if (!unsupportedImpactLanguage) {
+            return false;
+        }
+        Set<String> lineTerms = supportTerms(line);
+        return run.getClaims().stream()
+                .filter(this::mainReportClaim)
+                .noneMatch(claim -> claimMatchesLine(claim, lineTerms)
+                        && containsAny(normalizeText(claim.getContent()),
+                        "直接提升", "提升效率", "效率提升", "工作流效率", "生产力", "roi", "降本", "提效",
+                        "适合借鉴", "满足平台", "适用于", "最佳选择", "优先采用"));
+    }
+
+    private boolean needsClaimCitation(AnalysisRun run, String line) {
+        if (!hasText(line)) {
+            return false;
+        }
+        String trimmed = line.trim();
+        if (trimmed.startsWith("#") || trimmed.startsWith("|") || trimmed.matches("^[-:| ]+$")) {
+            return false;
+        }
+        if (trimmed.length() < 18) {
+            return false;
+        }
+        String normalized = normalizeText(trimmed);
+        boolean mentionsCompetitor = run.getRequirement() != null && run.getRequirement().getCompetitors().stream()
+                .filter(AgentUtils::hasText)
+                .anyMatch(competitor -> normalized.contains(normalizeText(competitor)));
+        boolean judgment = containsAny(normalized,
+                "相比", "对比", "路径", "侧重", "优先", "建议", "风险", "机会", "更适合", "更强", "更弱", "领先", "不足",
+                "显示", "表明", "判断", "推荐", "应该", "需要", "可以",
+                "compare", "compared", "better", "stronger", "weaker", "recommend", "risk", "opportunity");
+        return mentionsCompetitor && judgment;
+    }
+
+    private List<String> citationsForLine(AnalysisRun run, String line) {
+        Set<String> lineTerms = supportTerms(line);
+        return run.getClaims().stream()
+                .filter(this::mainReportClaim)
+                .filter(claim -> claimMatchesLine(claim, lineTerms))
+                .flatMap(claim -> claim.getEvidenceIds().stream())
+                .filter(knownCitationKeys(run)::contains)
+                .distinct()
+                .limit(3)
+                .toList();
+    }
+
+    private boolean claimMatchesLine(AnalysisClaim claim, Set<String> lineTerms) {
+        if (lineTerms.isEmpty()) {
+            return false;
+        }
+        Set<String> claimTerms = supportTerms(claim.getContent());
+        long overlap = lineTerms.stream().filter(claimTerms::contains).count();
+        return overlap >= Math.min(2, Math.min(lineTerms.size(), claimTerms.size()));
+    }
+
+    private Set<String> supportTerms(String text) {
+        Set<String> terms = new LinkedHashSet<>();
+        String normalized = normalizeText(text).replaceAll("[^\\p{IsHan}a-z0-9]+", " ").trim();
+        for (String part : normalized.split("\\s+")) {
+            if (part.length() >= 3) {
+                terms.add(part);
+            }
+        }
+        String chineseOnly = normalized.replaceAll("[^\\p{IsHan}]", "");
+        for (int i = 0; i < chineseOnly.length() - 1; i++) {
+            terms.add(chineseOnly.substring(i, i + 2));
+        }
+        return terms;
+    }
+
+    private String normalizeText(String value) {
+        return value == null ? "" : value.toLowerCase(Locale.ROOT);
     }
 
     private String removeInternalClaimReferences(String text) {
@@ -229,19 +351,55 @@ public class WriterNode implements AgentNode {
         if (run.getClaims().isEmpty()) {
             return "暂无结构化结论。";
         }
-        return run.getClaims().stream()
-                .map(claim -> "- id=%s type=%s confidence=%s status=%s placement=%s dimension=%s competitors=%s evidence=%s content=%s".formatted(
-                        claim.getId(),
-                        claim.getType(),
-                        claim.getConfidence(),
-                        textOrDefault(claim.getSupportStatus(), "-"),
-                        textOrDefault(claim.getRecommendedPlacement(), "-"),
-                        textOrDefault(claim.getDimension(), "-"),
-                        claim.getCompetitorNames(),
-                        claim.getEvidenceIds(),
-                        claim.getContent()
-                ))
+        String mainClaims = run.getClaims().stream()
+                .filter(this::mainReportClaim)
+                .map(this::claimLine)
                 .collect(Collectors.joining("\n"));
+        String backlogClaims = run.getClaims().stream()
+                .filter(claim -> !mainReportClaim(claim))
+                .map(this::claimLine)
+                .collect(Collectors.joining("\n"));
+        return """
+                主报告可用结论（只能从这里写主结论、建议优先级和正向判断）:
+                %s
+
+                待验证或弱支撑结论（只能写入风险与证据缺口/下一步补证，不得改写成确定判断）:
+                %s
+                """.formatted(
+                mainClaims.isBlank() ? "- 暂无主报告可用结论。" : mainClaims,
+                backlogClaims.isBlank() ? "- 暂无待验证结论。" : backlogClaims
+        );
+    }
+
+    private boolean mainReportClaim(AnalysisClaim claim) {
+        if (claim == null) {
+            return false;
+        }
+        if (claim.getEligibleForMainReport() != null) {
+            return Boolean.TRUE.equals(claim.getEligibleForMainReport());
+        }
+        return claim.getConfidence() != ConfidenceLevel.LOW
+                && claim.getEvidenceIds() != null
+                && !claim.getEvidenceIds().isEmpty()
+                && !"UNVERIFIED".equalsIgnoreCase(textOrDefault(claim.getSupportStatus(), ""))
+                && !"VALIDATION_BACKLOG".equalsIgnoreCase(textOrDefault(claim.getRecommendedPlacement(), ""))
+                && !"NONE".equalsIgnoreCase(textOrDefault(claim.getRecommendedPlacement(), ""));
+    }
+
+    private String claimLine(AnalysisClaim claim) {
+        return "- id=%s type=%s confidence=%s status=%s placement=%s eligibleMain=%s dimension=%s competitors=%s evidence=%s reason=%s content=%s".formatted(
+                claim.getId(),
+                claim.getType(),
+                claim.getConfidence(),
+                textOrDefault(claim.getSupportStatus(), "-"),
+                textOrDefault(claim.getRecommendedPlacement(), "-"),
+                claim.getEligibleForMainReport(),
+                textOrDefault(claim.getDimension(), "-"),
+                claim.getCompetitorNames(),
+                claim.getEvidenceIds(),
+                textOrDefault(claim.getPlacementReason(), "-"),
+                claim.getContent()
+        );
     }
 
     private String competitorProfileBlock(AnalysisRun run) {

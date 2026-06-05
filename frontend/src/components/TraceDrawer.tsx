@@ -12,10 +12,10 @@ interface TraceDrawerProps {
 }
 
 const TEXT = {
-  aria: "\u0041\u0067\u0065\u006e\u0074 \u6267\u884c\u8f68\u8ff9",
+  aria: "智能体执行轨迹",
   eyebrow: "\u8f68\u8ff9",
-  close: "\u5173\u95ed Trace",
-  traceTitle: "\u6a21\u578b Trace",
+  close: "关闭轨迹",
+  traceTitle: "模型调用轨迹",
   unknownModel: "\u672a\u77e5\u6a21\u578b",
   noRecord: "\u6682\u65e0\u8bb0\u5f55",
   noTrace: "\u540e\u7aef\u5c1a\u672a\u5199\u5165 AgentTrace",
@@ -26,7 +26,7 @@ const TEXT = {
   processSnapshot: "\u8fc7\u7a0b\u6458\u8981",
   inputSnapshot: "\u8f93\u5165\u6458\u8981",
   outputSnapshot: "\u8f93\u51fa\u6458\u8981",
-  fullPrompt: "Prompt",
+  fullPrompt: "完整提示词",
   rawOutput: "\u6a21\u578b\u8f93\u51fa",
   error: "\u5f02\u5e38",
   expandTrace: "\u5c55\u5f00 Trace",
@@ -125,28 +125,28 @@ function TraceCard({ trace, expanded, onToggle }: { trace: AgentTrace; expanded:
         <span className="trace-card-title">
           <strong>{trace.modelName || TEXT.unknownModel}</strong>
           <small>
-            {formatTime(startedAt)} - {formatTime(completedAt)} · {totalTokens} tokens · {formatLatencySeconds(trace.latencyMs)}
+            {formatTime(startedAt)} - {formatTime(completedAt)} · {totalTokens} 令牌 · {formatLatencySeconds(trace.latencyMs)}
           </small>
         </span>
         <span className={trace.fallbackUsed ? "trace-pill fallback" : "trace-pill"}>
-          {trace.fallbackUsed ? "fallback" : status}
+          {trace.fallbackUsed ? "降级" : traceStatusLabel(status)}
         </span>
       </button>
       {expanded ? (
         <div className="trace-card-body">
           <div className="trace-metrics">
-            <TraceMetric icon={<MessageSquareText size={13} />} label="Prompt" value={trace.promptTokens ?? 0} />
+            <TraceMetric icon={<MessageSquareText size={13} />} label="提示词" value={trace.promptTokens ?? 0} />
             <TraceMetric icon={<FileOutput size={13} />} label={TEXT.output} value={trace.completionTokens ?? 0} />
             <TraceMetric icon={<Gauge size={13} />} label={TEXT.total} value={totalTokens} />
             <TraceMetric icon={<Clock size={13} />} label={TEXT.latency} value={formatLatencySeconds(trace.latencyMs)} />
           </div>
-          <TraceField icon={<Gauge size={14} />} label={TEXT.decision} value={trace.decisionSummary} />
-          {trace.processSnapshot ? <TraceDisclosure title={TEXT.processSnapshot} value={trace.processSnapshot} /> : null}
-          <TraceDisclosure title={TEXT.inputSnapshot} value={trace.inputSnapshot} />
-          <TraceDisclosure title={TEXT.outputSnapshot} value={trace.outputSnapshot} />
-          <TraceDisclosure title={TEXT.fullPrompt} value={trace.prompt} />
-          <TraceDisclosure title={TEXT.rawOutput} value={trace.rawModelOutput} />
-          {trace.errorMessage ? <TraceField label={TEXT.error} value={trace.errorMessage} danger /> : null}
+          <TraceField icon={<Gauge size={14} />} label={TEXT.decision} value={localizeTraceText(trace.decisionSummary)} />
+          {trace.processSnapshot ? <TraceDisclosure title={TEXT.processSnapshot} value={localizeTraceText(trace.processSnapshot)} /> : null}
+          <TraceDisclosure title={TEXT.inputSnapshot} value={localizeTraceText(trace.inputSnapshot)} />
+          <TraceDisclosure title={TEXT.outputSnapshot} value={localizeTraceText(trace.outputSnapshot)} />
+          <TraceDisclosure title={TEXT.fullPrompt} value={localizeTraceText(trace.prompt)} />
+          <TraceDisclosure title={TEXT.rawOutput} value={localizeTraceText(trace.rawModelOutput)} />
+          {trace.errorMessage ? <TraceField label={TEXT.error} value={localizeTraceText(trace.errorMessage)} danger /> : null}
         </div>
       ) : null}
     </div>
@@ -167,6 +167,44 @@ function formatLatencySeconds(latencyMs?: number) {
   if (!latencyMs) return "0s";
   return `${(latencyMs / 1000).toFixed(2)}s`;
 }
+
+function traceStatusLabel(status: string) {
+  const normalized = status.trim().toUpperCase();
+  const labels: Record<string, string> = {
+    TRACE: "记录",
+    PENDING: "待执行",
+    RUNNING: "运行中",
+    SUCCEEDED: "成功",
+    SUCCESS: "成功",
+    COMPLETED: "完成",
+    FAILED: "失败",
+    CANCELLED: "已取消"
+  };
+  return labels[normalized] ?? status;
+}
+
+function localizeTraceText(value?: string) {
+  if (!value) return value;
+  return Object.entries(TRACE_TEXT_REPLACEMENTS)
+    .reduce((text, [source, target]) => text.replaceAll(source, target), value);
+}
+
+const TRACE_TEXT_REPLACEMENTS: Record<string, string> = {
+  "Parallel Researcher LLM subtasks": "Researcher 并行调研子任务",
+  "Analyst LLM subtasks": "Analyst 分析子任务",
+  "Parallel Reviewer LLM subtasks": "Reviewer 并行质检子任务",
+  "research-strategy": "调研策略",
+  "questionnaire": "问卷设计",
+  "interview-guide": "访谈提纲",
+  "claim-evidence": "结论证据质检",
+  "report-overclaim": "报告过度推断质检",
+  "schema-consistency": "结构一致性质检",
+  "source-quality": "来源质量质检",
+  "report-actionability": "报告可执行性质检",
+  "succeeded": "成功",
+  "failed": "失败",
+  "fallback": "降级"
+};
 
 function TraceField({
   icon,

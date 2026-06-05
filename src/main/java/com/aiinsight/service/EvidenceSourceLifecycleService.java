@@ -40,7 +40,8 @@ public class EvidenceSourceLifecycleService {
         repairClaimBindings(run, sourcesByKey, stats);
         repairFactBindings(run, sourcesByKey, stats);
         repairProfileBindings(run, sourcesByKey, stats);
-        return new EvidenceReplacementResult(stats.replacedBindings, stats.prunedBindings);
+        stats.prunedSources += pruneInactiveHistoricalSources(run, beforeSources == null ? List.of() : beforeSources, sources);
+        return new EvidenceReplacementResult(stats.replacedBindings, stats.prunedBindings, stats.prunedSources);
     }
 
     private void retainReferencedSourcesForAudit(AnalysisRun run, List<EvidenceSource> beforeSources, List<EvidenceSource> currentSources) {
@@ -55,6 +56,55 @@ public class EvidenceSourceLifecycleService {
                 .filter(source -> referenced.contains(source.getCitationKey()))
                 .filter(source -> currentKeys.add(source.getCitationKey()))
                 .forEach(currentSources::add);
+    }
+
+    private int pruneInactiveHistoricalSources(AnalysisRun run,
+                                               List<EvidenceSource> beforeSources,
+                                               List<EvidenceSource> currentSources) {
+        if (currentSources == null || currentSources.isEmpty() || beforeSources == null || beforeSources.isEmpty()) {
+            return 0;
+        }
+        Set<String> beforeKeys = beforeSources.stream()
+                .filter(source -> source != null)
+                .map(EvidenceSource::getCitationKey)
+                .filter(StringUtils::hasText)
+                .collect(Collectors.toCollection(LinkedHashSet::new));
+        if (beforeKeys.isEmpty()) {
+            return 0;
+        }
+        Set<String> referenced = referencedCitationKeys(run);
+        int before = currentSources.size();
+        currentSources.removeIf(source -> inactiveHistoricalSource(source, beforeKeys, referenced));
+        return before - currentSources.size();
+    }
+
+    private boolean inactiveHistoricalSource(EvidenceSource source, Set<String> beforeKeys, Set<String> referenced) {
+        if (source == null || !StringUtils.hasText(source.getCitationKey())) {
+            return false;
+        }
+        if (!beforeKeys.contains(source.getCitationKey()) || referenced.contains(source.getCitationKey())) {
+            return false;
+        }
+        return !userControlledSource(source) && !auditRetainedSource(source);
+    }
+
+    private boolean userControlledSource(EvidenceSource source) {
+        String sourceType = normalizeLower(source.getSourceType());
+        String url = normalizeLower(source.getUrl());
+        String freshness = normalizeUpper(source.getFreshness());
+        return source.isGlobalResource()
+                || sourceType.startsWith("user_")
+                || "USER_PROVIDED".equals(freshness)
+                || "INTERNAL_ONLY".equals(freshness)
+                || url.startsWith("user-evidence://")
+                || url.startsWith("global-document://");
+    }
+
+    private boolean auditRetainedSource(EvidenceSource source) {
+        String note = text(source.getComplianceNote());
+        return note.contains("旧来源仍保留用于审计")
+                || note.contains("已从")
+                || note.contains("证据绑定中移除");
     }
 
     private void repairClaimBindings(AnalysisRun run,
@@ -472,6 +522,7 @@ public class EvidenceSourceLifecycleService {
     private static class BindingRepairStats {
         private int replacedBindings;
         private int prunedBindings;
+        private int prunedSources;
     }
 
     private record BindingContext(String label, String text, List<String> competitors, String need) {
@@ -577,6 +628,10 @@ public class EvidenceSourceLifecycleService {
         }
     }
 
-    public record EvidenceReplacementResult(int replacedBindings, int prunedBindings) {
+    public record EvidenceReplacementResult(int replacedBindings, int prunedBindings, int prunedSources) {
+
+        public EvidenceReplacementResult(int replacedBindings, int prunedBindings) {
+            this(replacedBindings, prunedBindings, 0);
+        }
     }
 }

@@ -3439,12 +3439,12 @@ class AnalysisWorkflowServiceTest {
                     assertThat(task.getRequiredEvidenceTypes()).containsExactly("pricing_page");
                     assertThat(task.getAcceptanceCriteria()).contains("pricing_page");
                 });
-        assertThat(run.getReviewDecision().getReason()).contains("claim_missing_pricing_source", "pricing_page");
+        assertThat(run.getReviewDecision().getReason()).contains("缺少定价来源", "pricing_page");
         assertThat(run.getArtifacts())
                 .filteredOn(artifact -> artifact.getType() == ArtifactType.REVIEW_FINDINGS)
                 .last()
                 .satisfies(artifact -> assertThat(artifact.getContent())
-                        .contains("可信度状态", "定向修复计划", "结构化修复任务", "阻断问题", "claim_missing_pricing_source"));
+                        .contains("可信度状态", "定向修复计划", "结构化修复任务", "阻断问题", "缺少定价来源"));
     }
 
     @Test
@@ -3548,7 +3548,7 @@ class AnalysisWorkflowServiceTest {
                     assertThat(task.getClaimId()).isEqualTo(claim.getId());
                     assertThat(task.getAcceptanceCriteria()).contains("evidenceIds");
                 });
-        assertThat(run.getReviewDecision().getReason()).contains("claim_missing_evidence", "Analyst");
+        assertThat(run.getReviewDecision().getReason()).contains("结论缺少证据", "Analyst");
     }
 
     @Test
@@ -3686,7 +3686,7 @@ class AnalysisWorkflowServiceTest {
         assertThat(run.getArtifacts())
                 .filteredOn(artifact -> artifact.getType() == ArtifactType.REVIEW_FINDINGS)
                 .last()
-                .satisfies(artifact -> assertThat(artifact.getContent()).contains("结构化新增问题：1", "llm_overclaim"));
+                .satisfies(artifact -> assertThat(artifact.getContent()).contains("结构化新增问题：1", "报告过度推断"));
     }
 
     @Test

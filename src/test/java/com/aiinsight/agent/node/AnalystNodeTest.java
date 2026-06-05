@@ -74,8 +74,8 @@ class AnalystNodeTest {
                 "LIVE_FETCHED",
                 "HIGH",
                 "NONE",
-                "Cursor Composer supports multi-file code edits.",
-                "Cursor Composer supports multi-file code edits.",
+                "Cursor Composer supports multi-file editing workflow and can be used as a benchmark.",
+                "Cursor Composer supports multi-file editing workflow and can be used as a benchmark.",
                 "test evidence"
         ));
         run.getEvidenceSources().get(0).setSourceAuthority("FIRST_PARTY_OFFICIAL");
@@ -85,7 +85,7 @@ class AnalystNodeTest {
                 1,
                 "Cursor product page",
                 "https://example.test/cursor",
-                "Cursor Composer supports multi-file code edits."
+                "Cursor Composer supports multi-file editing workflow and can be used as a benchmark."
         );
         run.getEvidenceChunks().add(chunk);
         run.getCompetitorFactSets().add(cursorFactSet());
@@ -408,7 +408,7 @@ class AnalystNodeTest {
         String matrix = latestArtifact(run, ArtifactType.COMPETITIVE_MATRIX);
         assertThat(matrix)
                 .doesNotContain("| Cursor | FACT: " + claimText)
-                .contains("| FACT | LOW | UNVERIFIED | VALIDATION_BACKLOG")
+                .doesNotContain("| FACT | LOW | UNVERIFIED | VALIDATION_BACKLOG")
                 .contains("## 待验证结论", claimText);
     }
 
@@ -651,6 +651,69 @@ class AnalystNodeTest {
                     assertThat(claim.getConfidence()).isEqualTo(ConfidenceLevel.LOW);
                     assertThat(claim.getEvidenceIds()).isEmpty();
                     assertThat(claim.getContent()).contains("SSO", "SCIM");
+                });
+    }
+
+    @Test
+    void downgradesSecurityClaimBoundOnlyToPricingEvidence() {
+        LlmClient llmClient = new LlmClient() {
+            @Override
+            public boolean isAvailable() {
+                return true;
+            }
+
+            @Override
+            public String complete(com.aiinsight.llm.ChatRequest request) {
+                return """
+                        {
+                          "claims": [
+                            {
+                              "type": "RISK",
+                              "content": "Cursor provides SAML security controls for enterprise governance.",
+                              "confidence": "HIGH",
+                              "supportStatus": "SUPPORTED",
+                              "recommendedPlacement": "SWOT",
+                              "competitorNames": ["Cursor"],
+                              "evidenceIds": ["S1"]
+                            }
+                          ]
+                        }
+                        """;
+            }
+        };
+        AnalysisRun run = new AnalysisRun(new AnalysisRequirement(
+                "Analyze Cursor",
+                "AI coding tools",
+                List.of("Cursor"),
+                List.of("security"),
+                List.of("official_site"),
+                List.of()
+        ));
+        run.getEvidenceSources().add(new EvidenceSource(
+                "S1",
+                "Cursor pricing",
+                "https://cursor.com/pricing",
+                "pricing_page",
+                "FETCHED",
+                "LIVE_FETCHED",
+                "HIGH",
+                "NONE",
+                "Cursor pricing page lists enterprise plans and billing options.",
+                "Cursor pricing page lists enterprise plans and billing options.",
+                "test evidence"
+        ));
+
+        new AnalystNode(llmClient, new ObjectMapper(), new FallbackAnalysisDraftFactory()).execute(run);
+
+        assertThat(run.getClaims())
+                .singleElement()
+                .satisfies(claim -> {
+                    assertThat(claim.getSupportStatus()).isEqualTo("UNVERIFIED");
+                    assertThat(claim.getConfidence()).isEqualTo(ConfidenceLevel.LOW);
+                    assertThat(claim.getEvidenceIds()).isEmpty();
+                    assertThat(claim.getRecommendedPlacement()).isEqualTo("VALIDATION_BACKLOG");
+                    assertThat(claim.getEligibleForMainReport()).isFalse();
+                    assertThat(claim.getPlacementReason()).contains("证据不足");
                 });
     }
 

@@ -416,7 +416,7 @@ public class AnalysisLangGraphWorkflow {
     }
 
     private AgentName repairTargetForManualRerun(ReviewFinding finding, List<AgentName> repairScopeAgents, AgentName fallbackAgent) {
-        AgentName targetAgent = targetAgentForFinding(finding);
+        AgentName targetAgent = finding.getTargetAgent() == null ? targetAgentForFinding(finding) : finding.getTargetAgent();
         return repairScopeAgents.contains(targetAgent) ? targetAgent : fallbackAgent;
     }
 
@@ -532,6 +532,9 @@ public class AnalysisLangGraphWorkflow {
     }
 
     private AgentName targetAgentForFinding(ReviewFinding finding) {
+        if (finding.getTargetAgent() != null) {
+            return finding.getTargetAgent();
+        }
         String text = normalizeFindingText(finding);
         if (isResearchEvidenceFinding(text)) {
             return AgentName.RESEARCHER;
@@ -546,6 +549,7 @@ public class AnalysisLangGraphWorkflow {
         }
         if (text.contains("report")
                 || text.contains("paragraph")
+                || text.contains("overclaim")
                 || text.contains("writer")
                 || text.contains("actionability")
                 || text.contains("citation_missing")
@@ -556,8 +560,7 @@ public class AnalysisLangGraphWorkflow {
                 || text.contains("claim")
                 || text.contains("matrix")
                 || text.contains("swot")
-                || text.contains("analysis")
-                || text.contains("overclaim")) {
+                || text.contains("analysis")) {
             return AgentName.ANALYST;
         }
         if (finding.getParagraphIndex() != null) {

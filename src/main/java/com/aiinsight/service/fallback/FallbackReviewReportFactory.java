@@ -55,7 +55,9 @@ public class FallbackReviewReportFactory {
                 .collect(Collectors.joining("\n"));
         String categories = run.getReviewDecision().getFindingCategories().isEmpty()
                 ? "未指定"
-                : String.join("、", run.getReviewDecision().getFindingCategories());
+                : run.getReviewDecision().getFindingCategories().stream()
+                .map(this::categoryLabel)
+                .collect(Collectors.joining("、"));
         String findingIds = run.getReviewDecision().getBlockingFindingIds().isEmpty()
                 ? "无阻断 finding"
                 : String.join("、", run.getReviewDecision().getBlockingFindingIds());
@@ -145,8 +147,8 @@ public class FallbackReviewReportFactory {
     private String findingLine(ReviewFinding finding) {
         String location = locationText(finding);
         return "- [%s] %s: %s%s\n  建议：%s".formatted(
-                finding.getSeverity(),
-                finding.getCategory(),
+                severityLabel(finding.getSeverity()),
+                categoryLabel(finding.getCategory()),
                 finding.getMessage(),
                 location,
                 finding.getRecommendation()
@@ -175,5 +177,72 @@ public class FallbackReviewReportFactory {
 
     private String nullToEmpty(String text) {
         return text == null ? "" : text;
+    }
+
+    private String severityLabel(ReviewSeverity severity) {
+        if (severity == ReviewSeverity.HIGH) return "阻断问题";
+        if (severity == ReviewSeverity.MEDIUM) return "质量提醒";
+        return "人工复核";
+    }
+
+    private String categoryLabel(String category) {
+        String normalized = category == null ? "" : category.trim().toLowerCase().replace('-', '_');
+        return switch (normalized) {
+            case "citation_missing", "missing_citation" -> "缺少引用";
+            case "citation_unknown" -> "未知引用";
+            case "citation_weak_support" -> "引用支撑不足";
+            case "citation_support_mismatch" -> "引用支撑不一致";
+            case "citation_snippet_only", "snippet_only_source" -> "搜索摘要来源";
+            case "citation_blocked_source", "blocked_source" -> "来源受限";
+            case "fetch_failed_source" -> "来源抓取失败";
+            case "citation_thin_source", "thin_source" -> "来源内容过薄";
+            case "citation_internal_evidence_presented_as_public",
+                 "claim_internal_evidence_presented_as_public" -> "内部资料被表述为公开证据";
+            case "citation_region_unavailable_source", "region_unavailable_source" -> "来源区域不可用";
+            case "citation_marketing_only_source", "marketing_only_source" -> "营销型来源";
+            case "low_quality_source" -> "低质量来源";
+            case "claim_missing_evidence" -> "结论缺少证据";
+            case "claim_unknown_evidence" -> "结论引用未知证据";
+            case "claim_evidence_mismatch" -> "结论与证据不一致";
+            case "claim_weak_support" -> "结论支撑不足";
+            case "claim_high_confidence_low_quality_source" -> "高置信结论依赖低质量来源";
+            case "claim_confidence_mismatch" -> "置信度不一致";
+            case "claim_missing_fact_binding" -> "结论缺少事实绑定";
+            case "claim_unknown_fact" -> "结论引用未知事实";
+            case "claim_fact_mismatch" -> "结论与事实不一致";
+            case "claim_weak_pricing_source" -> "定价来源偏弱";
+            case "claim_missing_pricing_source" -> "缺少定价来源";
+            case "claim_weak_security_source" -> "安全/权限来源偏弱";
+            case "claim_missing_sentiment_source" -> "缺少用户口碑来源";
+            case "fact_missing_evidence" -> "事实缺少证据";
+            case "fact_unknown_chunk" -> "事实引用未知切片";
+            case "fact_unknown_evidence" -> "事实引用未知证据";
+            case "fact_partial_evidence_binding_weak" -> "事实部分证据偏弱";
+            case "fact_unsupported_by_evidence" -> "事实未被证据支撑";
+            case "fact_extraction_mismatch", "extracted_fact_mismatch" -> "事实抽取不一致";
+            case "report_overclaim", "llm_overclaim" -> "报告过度推断";
+            case "report_quality_insufficient" -> "报告质量不足";
+            case "report_missing_decision_summary" -> "报告缺少决策摘要";
+            case "report_dimension_coverage_gap" -> "报告维度覆盖不足";
+            case "report_actionability_gap", "report_actionability_insufficient" -> "报告行动建议不足";
+            case "unsupported_recommendation" -> "建议缺少支撑";
+            case "schema_consistency" -> "结构化信息不一致";
+            case "matrix_claim_conflict" -> "矩阵与结论冲突";
+            case "swot_claim_conflict" -> "SWOT 与结论冲突";
+            case "llm_semantic_review" -> "语义质检";
+            default -> fallbackCategoryLabel(normalized);
+        };
+    }
+
+    private String fallbackCategoryLabel(String category) {
+        if (!hasText(category)) return "未分类质检项";
+        if (category.contains("citation") || category.contains("reference")) return "引用问题";
+        if (category.contains("overclaim")) return "过度推断";
+        if (category.contains("source")) return "来源质量问题";
+        if (category.contains("fact")) return "事实抽取问题";
+        if (category.contains("claim")) return "结论支撑问题";
+        if (category.contains("schema") || category.contains("matrix") || category.contains("swot")) return "结构化一致性问题";
+        if (category.contains("report")) return "报告质量问题";
+        return "质检问题";
     }
 }

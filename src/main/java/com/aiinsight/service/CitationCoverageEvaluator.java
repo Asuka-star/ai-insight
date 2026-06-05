@@ -43,7 +43,7 @@ public class CitationCoverageEvaluator {
                 continue;
             }
 
-            // 规则层只验证“已有引用是否支撑当前段落”；“该不该有引用”交给 Reviewer LLM 做语义判断。
+            // 规则层只验证引用编号是否存在；“该不该引用、引用是否支撑”交给 Reviewer LLM 做语义判断。
             if (looksLikeClaim(trimmed) && run != null && CITATION_PATTERN.matcher(trimmed).find()) {
                 findings.addAll(validateCitationSupport(trimmed, paragraphIndex, run));
             }
@@ -108,44 +108,6 @@ public class CitationCoverageEvaluator {
                 findings.add(finding);
                 continue;
             }
-            if (!citationSupportsParagraph(paragraph, citationKey, run)) {
-                ReviewFinding finding = new ReviewFinding(
-                        ReviewSeverity.MEDIUM,
-                        "citation_weak_support",
-                        "引用 [" + citationKey + "] 与结论段落的关键词重合不足，可能存在弱支撑。",
-                        "请改用更相关的证据片段，或将该结论降级为待验证假设。"
-                );
-                finding.setCitationKey(citationKey);
-                finding.setParagraphIndex(paragraphIndex);
-                finding.setExcerpt(paragraph);
-                findings.add(finding);
-            }
-            EvidenceSource source = sourceByCitationKey(run, citationKey);
-            SourceQualityRisk sourceRisk = sourceQualityRisk(source);
-            if (sourceRisk != null) {
-                ReviewFinding finding = new ReviewFinding(
-                        sourceRisk.severity(),
-                        sourceRisk.category(),
-                        "引用 [" + citationKey + "] 的来源质量偏弱: " + sourceRisk.reason(),
-                        sourceRisk.recommendation()
-                );
-                finding.setCitationKey(citationKey);
-                finding.setParagraphIndex(paragraphIndex);
-                finding.setExcerpt(paragraph);
-                findings.add(finding);
-            }
-            if (publicMarketClaim && !hasPublicEvidence && internalOrUserEvidence(source)) {
-                ReviewFinding finding = new ReviewFinding(
-                        ReviewSeverity.MEDIUM,
-                        "citation_internal_evidence_presented_as_public",
-                        "报告段落把用户提供或内部资料 [" + citationKey + "] 表述成公开/市场证据。",
-                        "为该段落补充公开或官方来源；如果只能依赖用户提供/内部资料，请改写为“基于用户提供资料”的结论。"
-                );
-                finding.setCitationKey(citationKey);
-                finding.setParagraphIndex(paragraphIndex);
-                finding.setExcerpt(paragraph);
-                findings.add(finding);
-            }
         }
         return findings;
     }
@@ -192,62 +154,8 @@ public class CitationCoverageEvaluator {
                     findings.add(finding);
                     continue;
                 }
-                if (!citationSupportsParagraph(claim.getContent(), evidenceId, run)) {
-                    ReviewFinding finding = new ReviewFinding(
-                            ReviewSeverity.MEDIUM,
-                            "claim_weak_support",
-                            "结构化结论与证据 [" + evidenceId + "] 的关键词重合不足，可能存在弱支撑。",
-                            "请重新选择更贴近该 claim 的证据，或降低结论置信度。"
-                    );
-                    finding.setClaimId(claim.getId());
-                    finding.setCitationKey(evidenceId);
-                    finding.setExcerpt(claim.getContent());
-                    findings.add(finding);
-                }
-                SourceQualityRisk sourceRisk = sourceQualityRisk(sourceByCitationKey(run, evidenceId));
-                if (sourceRisk != null && claim.getConfidence() == ConfidenceLevel.HIGH) {
-                    ReviewFinding finding = new ReviewFinding(
-                            ReviewSeverity.MEDIUM,
-                            "claim_high_confidence_low_quality_source",
-                            "高置信结论依赖低质量来源 [" + evidenceId + "]: " + sourceRisk.reason(),
-                            "高置信结论应优先绑定已抓取正文、官方页面或用户授权的一手资料。"
-                    );
-                    finding.setClaimId(claim.getId());
-                    finding.setCitationKey(evidenceId);
-                    finding.setExcerpt(claim.getContent());
-                    findings.add(finding);
-                }
-                ClaimEvidencePolicyRisk policyRisk = claimEvidencePolicyRisk(
-                        claim,
-                        sourceByCitationKey(run, evidenceId),
-                        evidenceId,
-                        run
-                );
-                if (policyRisk != null) {
-                    ReviewFinding finding = new ReviewFinding(
-                            policyRisk.severity(),
-                            policyRisk.category(),
-                            policyRisk.reason(),
-                            policyRisk.recommendation()
-                    );
-                    finding.setClaimId(claim.getId());
-                    finding.setCitationKey(evidenceId);
-                    finding.setExcerpt(claim.getContent());
-                    findings.add(finding);
-                }
             }
             findings.addAll(validateClaimFacts(run, claim, known));
-            if (claim.getConfidence() == ConfidenceLevel.HIGH && containsUncertaintyMarker(claim.getContent())) {
-                ReviewFinding finding = new ReviewFinding(
-                        ReviewSeverity.LOW,
-                        "claim_confidence_mismatch",
-                        "结论内容标注为待验证，但置信度仍为 HIGH: " + abbreviate(claim.getContent()),
-                        "将该 claim 的置信度降为 LOW/MEDIUM，或补足证据后移除待验证表述。"
-                );
-                finding.setClaimId(claim.getId());
-                finding.setExcerpt(claim.getContent());
-                findings.add(finding);
-            }
         }
         return findings;
     }
@@ -265,7 +173,6 @@ public class CitationCoverageEvaluator {
                 .map(EvidenceChunk::getChunkKey)
                 .filter(StringUtils::hasText)
                 .collect(Collectors.toCollection(LinkedHashSet::new));
-        int weakUnsupportedFactFindings = 0;
         for (ExtractedFact fact : factsById(run).values()) {
             List<String> factEvidenceIds = fact.getEvidenceIds() == null ? List.of() : fact.getEvidenceIds();
             String claimId = claimIdByFactId.get(fact.getId());
@@ -296,8 +203,6 @@ public class CitationCoverageEvaluator {
                     findings.add(finding);
                 }
             }
-            List<String> unsupportedEvidenceIds = new ArrayList<>();
-            int supportedEvidenceCount = 0;
             for (String evidenceId : factEvidenceIds.stream().filter(StringUtils::hasText).distinct().toList()) {
                 if (!knownEvidenceIds.contains(evidenceId)) {
                     findings.add(factFinding(
@@ -309,42 +214,6 @@ public class CitationCoverageEvaluator {
                             fact,
                             evidenceId
                     ));
-                    continue;
-                }
-                if (StringUtils.hasText(fact.getValue()) && !citationSupportsParagraph(fact.getValue(), evidenceId, run)) {
-                    unsupportedEvidenceIds.add(evidenceId);
-                } else {
-                    supportedEvidenceCount++;
-                }
-            }
-            if (!unsupportedEvidenceIds.isEmpty()) {
-                boolean hasSupportingEvidence = supportedEvidenceCount > 0;
-                ReviewSeverity severity = !hasSupportingEvidence && shouldBlockUnsupportedFact(fact)
-                        ? ReviewSeverity.HIGH
-                        : ReviewSeverity.MEDIUM;
-                if (severity == ReviewSeverity.HIGH || weakUnsupportedFactFindings < 6) {
-                    String unsupportedIds = limitedJoin(unsupportedEvidenceIds, 6);
-                    String category = hasSupportingEvidence
-                            ? "fact_partial_evidence_binding_weak"
-                            : "fact_unsupported_by_evidence";
-                    String message = hasSupportingEvidence
-                            ? "抽取事实已有支撑证据，但部分绑定证据较弱 [" + unsupportedIds + "]: " + abbreviate(fact.getValue())
-                            : "抽取事实值无法被其绑定证据支撑 [" + unsupportedIds + "]: " + abbreviate(fact.getValue());
-                    String recommendation = hasSupportingEvidence
-                            ? "保留已能支撑该事实的证据绑定，移除额外的弱 evidenceIds/chunkKeys；无需重跑整条分析链路。"
-                            : "请重跑 Extractor 修正事实值与证据绑定；无法被证据支撑的字段应移动到未知事实列表。";
-                    findings.add(factFinding(
-                            severity,
-                            category,
-                            message,
-                            recommendation,
-                            claimId,
-                            fact,
-                            unsupportedEvidenceIds.get(0)
-                    ));
-                }
-                if (severity != ReviewSeverity.HIGH) {
-                    weakUnsupportedFactFindings++;
                 }
             }
         }
@@ -379,19 +248,6 @@ public class CitationCoverageEvaluator {
         Map<String, ExtractedFact> factsById = factsById(run);
         List<String> factIds = claim.getFactIds() == null ? List.of() : claim.getFactIds();
         if (factIds.isEmpty()) {
-            if (!factsById.isEmpty()
-                    && claim.getConfidence() != ConfidenceLevel.LOW
-                    && !containsUncertaintyMarker(claim.getContent())) {
-                ReviewFinding finding = new ReviewFinding(
-                        ReviewSeverity.MEDIUM,
-                        "claim_missing_fact_binding",
-                        "结构化结论绑定了 evidenceIds，但没有绑定对应的 extracted factIds: " + abbreviate(claim.getContent()),
-                        "请把该 claim 绑定到相关 ExtractedFact；如果没有抽取事实可支撑，应保持为待验证结论。"
-                );
-                finding.setClaimId(claim.getId());
-                finding.setExcerpt(claim.getContent());
-                findings.add(finding);
-            }
             return findings;
         }
 
@@ -414,17 +270,6 @@ public class CitationCoverageEvaluator {
             boundFacts.add(fact);
         }
 
-        if (claim.getConfidence() == ConfidenceLevel.HIGH && !claimSupportedByFacts(claim, boundFacts)) {
-            ReviewFinding finding = new ReviewFinding(
-                    ReviewSeverity.HIGH,
-                    "claim_fact_mismatch",
-                    "高置信 claim 与其绑定的抽取事实不一致，或存在过度解读: " + abbreviate(claim.getContent()),
-                    "请重跑 Analyst，基于绑定事实改写该 claim；也可以绑定更相关的事实，或降低置信度。"
-            );
-            finding.setClaimId(claim.getId());
-            finding.setExcerpt(claim.getContent());
-            findings.add(finding);
-        }
         return findings;
     }
 
@@ -516,9 +361,25 @@ public class CitationCoverageEvaluator {
                 .filter(chunk -> citationKey.equals(chunk.getSourceCitationKey()))
                 .map(EvidenceChunk::getText)
                 .collect(Collectors.joining(" "));
+        if (!riskTopicCompatible(paragraph, evidenceText)) {
+            return false;
+        }
         Set<String> evidenceTerms = terms(evidenceText);
         long overlap = claimTerms.stream().filter(evidenceTerms::contains).count();
         return overlap >= Math.min(2, claimTerms.size());
+    }
+
+    private boolean riskTopicCompatible(String claimText, String evidenceText) {
+        String claim = normalizeLower(claimText);
+        String evidence = normalizeLower(evidenceText);
+        return topicCompatible(claim, evidence, List.of("安全", "权限", "审计", "治理", "security", "permission", "governance", "audit", "sso", "scim", "soc"))
+                && topicCompatible(claim, evidence, List.of("定价", "价格", "套餐", "pricing", "price", "plan", "billing"))
+                && topicCompatible(claim, evidence, List.of("部署", "deployment", "deploy", "bedrock", "代理", "proxy", "ship"));
+    }
+
+    private boolean topicCompatible(String claim, String evidence, List<String> topicTerms) {
+        boolean claimMentionsTopic = topicTerms.stream().anyMatch(claim::contains);
+        return !claimMentionsTopic || topicTerms.stream().anyMatch(evidence::contains);
     }
 
     private Set<String> terms(String text) {
@@ -541,7 +402,37 @@ public class CitationCoverageEvaluator {
                 terms.add(term);
             }
         }
+        addCrossLingualSupportTerms(text, terms);
         return terms;
+    }
+
+    private void addCrossLingualSupportTerms(String text, Set<String> terms) {
+        String normalized = normalizeLower(text);
+        addAliasesIfContains(normalized, terms, List.of("终端", "terminal"), "terminal", "cli");
+        addAliasesIfContains(normalized, terms, List.of("ide", "编辑器", "vscode", "jetbrains"), "ide", "editor");
+        addAliasesIfContains(normalized, terms, List.of("slack"), "slack");
+        addAliasesIfContains(normalized, terms, List.of("web", "网页", "界面"), "web");
+        addAliasesIfContains(normalized, terms, List.of("代码库", "仓库", "codebase", "repository", "repo"), "codebase", "repository");
+        addAliasesIfContains(normalized, terms, List.of("构建", "build", "ship"), "build", "ship");
+        addAliasesIfContains(normalized, terms, List.of("调试", "debug", "debugging"), "debug", "debugging");
+        addAliasesIfContains(normalized, terms, List.of("修复", "fix", "repair"), "fix", "repair");
+        addAliasesIfContains(normalized, terms, List.of("部署", "deployment", "deploy"), "deploy", "deployment");
+        addAliasesIfContains(normalized, terms, List.of("bedrock", "amazon"), "amazon", "bedrock");
+        addAliasesIfContains(normalized, terms, List.of("代理", "proxy"), "proxy");
+        addAliasesIfContains(normalized, terms, List.of("定价", "价格", "pricing", "price"), "pricing", "price");
+        addAliasesIfContains(normalized, terms, List.of("团队计划", "团队", "team", "teams"), "team", "plan");
+        addAliasesIfContains(normalized, terms, List.of("个人计划", "个人", "individual"), "individual", "plan");
+        addAliasesIfContains(normalized, terms, List.of("企业", "enterprise"), "enterprise");
+        addAliasesIfContains(normalized, terms, List.of("协作", "collaboration", "collaborate"), "collaboration", "collaborate");
+        addAliasesIfContains(normalized, terms, List.of("工作流", "workflow"), "workflow");
+        addAliasesIfContains(normalized, terms, List.of("技能", "skills"), "skills");
+        addAliasesIfContains(normalized, terms, List.of("mcp"), "mcp");
+    }
+
+    private void addAliasesIfContains(String normalized, Set<String> terms, List<String> needles, String... aliases) {
+        if (needles.stream().anyMatch(normalized::contains)) {
+            terms.addAll(List.of(aliases));
+        }
     }
 
     private boolean isStopWord(String term) {

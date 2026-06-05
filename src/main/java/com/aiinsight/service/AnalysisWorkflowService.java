@@ -508,9 +508,9 @@ public class AnalysisWorkflowService {
             run.getResearchPackage().setResearchPlan(plan);
         }
         plan.setQuestionnaire(sanitizeQuestionnaire(runId, questionnaire));
-        run.getRecommendedActions().add("Survey questionnaire updated. Download a fresh template before importing new survey results.");
+        run.getRecommendedActions().add("问卷已更新。导入新的问卷结果前，请先下载最新模板。");
         repository.save(run);
-        eventBroker.publish(run, "survey_questionnaire_updated", "Survey questionnaire updated");
+        eventBroker.publish(run, "survey_questionnaire_updated", "问卷已更新");
         return run;
     }
 
@@ -549,7 +549,7 @@ public class AnalysisWorkflowService {
         refreshResearchInputInsights(run);
         markResearchInputPending(run, "Imported survey results as " + citationKey + "; click apply to rerun Extractor and downstream agents.");
         repository.save(run);
-        eventBroker.publish(run, "survey_results_imported", "Survey results imported: " + citationKey);
+            eventBroker.publish(run, "survey_results_imported", "问卷结果已导入：" + citationKey);
         return run;
     }
 
@@ -638,7 +638,7 @@ public class AnalysisWorkflowService {
             current.setStatus(AnalysisStatus.REVISING);
             current.setErrorMessage(null);
             repository.save(current);
-            eventBroker.publish(current, "agent_rerun_started", agentName + " rerun started");
+            eventBroker.publish(current, "agent_rerun_started", agentLabel(agentName) + " 重跑已启动");
 
             AnalysisRun run = graphWorkflow.rerunAgent(runId, agentName);
             run = repository.findById(runId).orElse(run);
@@ -649,7 +649,7 @@ public class AnalysisWorkflowService {
             run.setStatus(statusAfterManualRerun(run, previousStatus, agentName));
             clearAppliedResearchInputPending(run, agentName);
             repository.save(run);
-            eventBroker.publish(run, "agent_rerun_completed", agentName + " rerun completed");
+            eventBroker.publish(run, "agent_rerun_completed", agentLabel(agentName) + " 重跑已完成");
             return run;
         } catch (CancellationException ex) {
             AnalysisRun run = repository.findById(runId).orElse(current);
@@ -678,6 +678,17 @@ public class AnalysisWorkflowService {
             return previousStatus == AnalysisStatus.REVISING ? AnalysisStatus.AWAITING_CONFIRMATION : previousStatus;
         }
         return requiresUserInputAfterWorkflow(run) ? AnalysisStatus.NEEDS_USER_INPUT : AnalysisStatus.SUCCEEDED;
+    }
+
+    private String agentLabel(AgentName agentName) {
+        return switch (agentName) {
+            case CLARIFIER -> "范围澄清";
+            case RESEARCHER -> "资料采集";
+            case EXTRACTOR -> "结构化抽取";
+            case ANALYST -> "竞品分析";
+            case WRITER -> "报告撰写";
+            case REVIEWER -> "事实质检";
+        };
     }
 
     private void executePipeline(UUID runId) {

@@ -56,7 +56,7 @@ export function ResearchDesignPanel({
         <div>
           <p className="eyebrow">Research</p>
           <h2>问卷与访谈</h2>
-          <p>{questionnaire?.title || interviewGuide?.title || "等待 Researcher 生成调研材料"}</p>
+          <p>{questionnaire?.title || interviewGuide?.title || "等待 资料采集节点 生成调研材料"}</p>
         </div>
         <div className="research-actions">
           <button type="button" className="secondary-button" onClick={onDownloadTemplate} disabled={disabled || busy || !questions.length}>
@@ -225,7 +225,7 @@ export function ResearchDesignPanel({
               ))}
             </div>
           ) : (
-            <p className="muted-text">暂无问卷题目。先运行 Researcher 生成调研计划。</p>
+            <p className="muted-text">暂无问卷题目。先运行 资料采集节点 生成调研计划。</p>
           )}
           {!editingQuestionnaire && questionnaire?.targetRespondents ? <p className="muted-text">{questionnaire.targetRespondents}</p> : null}
         </section>

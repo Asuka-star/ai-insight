@@ -81,7 +81,7 @@ public class AnalystNode implements AgentNode {
     );
     private static final Set<String> HIGH_PRECISION_SUPPORT_TERMS = Set.of(
             "sso", "scim", "saml", "soc", "soc2", "soc 2", "rbac", "iso", "hipaa", "gdpr",
-            "bedrock", "slack", "terminal", "ide", "vscode", "github", "gitlab"
+            "bedrock", "proxy", "agent", "skills", "mcp", "workflow", "slack", "terminal", "ide", "vscode", "github", "gitlab"
     );
     private static final String SUPPORT_STATUS_SUPPORTED = "SUPPORTED";
     private static final String SUPPORT_STATUS_PARTIAL = "PARTIAL";
@@ -299,7 +299,7 @@ public class AnalystNode implements AgentNode {
         if (claim.getEvidenceIds().isEmpty() && !containsUncertaintyMarker(claim.getContent())) {
             claim.setContent(claim.getContent() + "（证据不足，待验证）");
         }
-        refreshClaimAssessment(claim);
+        refreshClaimAssessment(run, claim);
         return claim;
     }
 
@@ -338,11 +338,11 @@ public class AnalystNode implements AgentNode {
             if (!containsUncertaintyMarker(claim.getContent())) {
                 claim.setContent(claim.getContent() + "（证据不足，待验证）");
             }
-            refreshClaimAssessment(claim);
+            refreshClaimAssessment(run, claim);
             return claim;
         }
         adjustClaimConfidence(run, claim);
-        refreshClaimAssessment(claim);
+        refreshClaimAssessment(run, claim);
         return claim;
     }
 
@@ -464,7 +464,7 @@ public class AnalystNode implements AgentNode {
         if (!containsUncertaintyMarker(claim.getContent())) {
             claim.setContent(claim.getContent() + "（证据不足，待验证）");
         }
-        refreshClaimAssessment(claim);
+        refreshClaimAssessment(null, claim);
     }
 
     private boolean isRiskyRepairCategory(String category) {
@@ -703,14 +703,13 @@ public class AnalystNode implements AgentNode {
         Set<String> preciseTerms = claimTerms.stream()
                 .filter(HIGH_PRECISION_SUPPORT_TERMS::contains)
                 .collect(Collectors.toCollection(LinkedHashSet::new));
-        if (preciseTerms.isEmpty()) {
-            return true;
-        }
-        if (!evidenceTerms.containsAll(preciseTerms)) {
+        if (!preciseTerms.isEmpty() && !evidenceTerms.containsAll(preciseTerms)) {
             return false;
         }
         long overlap = claimTerms.stream().filter(evidenceTerms::contains).count();
-        int required = claimTerms.size() <= 3 ? 1 : 2;
+        int required = preciseTerms.isEmpty()
+                ? (claimTerms.size() <= 3 ? 1 : 2)
+                : Math.max(2, preciseTerms.size());
         return overlap >= Math.min(required, claimTerms.size());
     }
 
@@ -734,7 +733,31 @@ public class AnalystNode implements AgentNode {
                 terms.add(term);
             }
         }
+        addCrossLingualSupportTerms(text, terms);
         return terms;
+    }
+
+    private void addCrossLingualSupportTerms(String text, Set<String> terms) {
+        String normalized = normalizeLower(text);
+        addAliasesIfContains(normalized, terms, List.of("权限", "permission", "permissions"), "permission", "permissions", "admin");
+        addAliasesIfContains(normalized, terms, List.of("审计", "audit", "auditing"), "audit", "auditing");
+        addAliasesIfContains(normalized, terms, List.of("治理", "governance"), "governance");
+        addAliasesIfContains(normalized, terms, List.of("企业", "enterprise"), "enterprise");
+        addAliasesIfContains(normalized, terms, List.of("控制", "controls", "control"), "controls", "control");
+        addAliasesIfContains(normalized, terms, List.of("管理员", "admin", "administrator"), "admin", "administrator");
+        addAliasesIfContains(normalized, terms, List.of("官方", "official"), "official");
+        addAliasesIfContains(normalized, terms, List.of("文档", "docs", "documentation"), "docs", "documentation");
+        addAliasesIfContains(normalized, terms, List.of("搜索", "search"), "search");
+        addAliasesIfContains(normalized, terms, List.of("ai", "人工智能", "智能"), "ai");
+        addAliasesIfContains(normalized, terms, List.of("能力", "capability", "capabilities"), "capability", "capabilities");
+        addAliasesIfContains(normalized, terms, List.of("路线图", "roadmap", "规划", "planning"), "roadmap", "planning");
+        addAliasesIfContains(normalized, terms, List.of("优先", "prioritize", "priority"), "prioritize", "priority");
+    }
+
+    private void addAliasesIfContains(String normalized, Set<String> terms, List<String> needles, String... aliases) {
+        if (needles.stream().anyMatch(normalized::contains)) {
+            terms.addAll(List.of(aliases));
+        }
     }
 
     private String evidenceSourceText(EvidenceSource source) {
@@ -916,7 +939,7 @@ public class AnalystNode implements AgentNode {
         return PLACEMENT_MATRIX;
     }
 
-    private void refreshClaimAssessment(AnalysisClaim claim) {
+    private void refreshClaimAssessment(AnalysisRun run, AnalysisClaim claim) {
         boolean lacksEvidence = claim.getEvidenceIds() == null || claim.getEvidenceIds().isEmpty();
         boolean uncertain = containsUncertaintyMarker(claim.getContent());
         if (lacksEvidence || uncertain || claim.getConfidence() == ConfidenceLevel.LOW) {
@@ -924,6 +947,18 @@ public class AnalystNode implements AgentNode {
             if (!PLACEMENT_NONE.equals(claim.getRecommendedPlacement())) {
                 claim.setRecommendedPlacement(PLACEMENT_VALIDATION_BACKLOG);
             }
+            applyClaimEligibility(claim, "证据不足、待验证或低置信度，不能进入主展示。");
+            return;
+        }
+        if (run != null && highRiskClaimNeedsStrongerEvidence(run, claim)) {
+            claim.setSupportStatus(SUPPORT_STATUS_PARTIAL);
+            if (claim.getConfidence() == ConfidenceLevel.HIGH) {
+                claim.setConfidence(ConfidenceLevel.MEDIUM);
+            }
+            if (!PLACEMENT_NONE.equals(claim.getRecommendedPlacement())) {
+                claim.setRecommendedPlacement(PLACEMENT_VALIDATION_BACKLOG);
+            }
+            applyClaimEligibility(claim, "价格、安全、权限或部署类结论缺少足够强的一手来源，先放入待验证。");
             return;
         }
         claim.setSupportStatus(claim.getConfidence() == ConfidenceLevel.HIGH
@@ -934,6 +969,101 @@ public class AnalystNode implements AgentNode {
                 && !PLACEMENT_NONE.equals(claim.getRecommendedPlacement())) {
             claim.setRecommendedPlacement(defaultPlacementFor(claim.getType()));
         }
+        applyClaimEligibility(claim, "证据与置信度满足主展示条件。");
+    }
+
+    private void applyClaimEligibility(AnalysisClaim claim, String reason) {
+        boolean displayable = displayableClaim(claim);
+        String placement = normalizeRecommendedPlacement(claim.getRecommendedPlacement(), claim.getType());
+        claim.setEligibleForMatrix(displayable && PLACEMENT_MATRIX.equals(placement));
+        claim.setEligibleForSwot(displayable && PLACEMENT_SWOT.equals(placement));
+        claim.setEligibleForMainReport(displayable
+                && (Boolean.TRUE.equals(claim.getEligibleForMatrix()) || Boolean.TRUE.equals(claim.getEligibleForSwot())));
+        claim.setPlacementReason(reason);
+    }
+
+    private boolean highRiskClaimNeedsStrongerEvidence(AnalysisRun run, AnalysisClaim claim) {
+        if (!highRiskClaim(claim)) {
+            return false;
+        }
+        Map<String, EvidenceSource> sources = sourceByCitationKey(run);
+        return safeList(claim.getEvidenceIds()).stream()
+                .noneMatch(citationKey -> {
+                    EvidenceSource source = sources.get(citationKey);
+                    return source != null
+                            && evidenceConfidenceScore(source) >= 3
+                            && highRiskSourceMatchesClaim(source, claim)
+                            && directEvidenceSupportsHighRiskClaim(run, citationKey, claim);
+                });
+    }
+
+    private boolean highRiskClaim(AnalysisClaim claim) {
+        String text = normalizeLower("%s %s".formatted(nullToEmpty(claim.getDimension()), nullToEmpty(claim.getContent())));
+        return containsAny(text,
+                "pricing", "price", "plan", "subscription", "billing", "$",
+                "security", "permission", "compliance", "privacy", "deployment", "deploy", "bedrock", "proxy", "vpc",
+                "sso", "scim", "saml", "soc",
+                "价格", "定价", "套餐", "订阅", "付费", "安全", "权限", "合规", "隐私", "部署", "代理", "审计");
+    }
+
+    private boolean highRiskSourceMatchesClaim(EvidenceSource source, AnalysisClaim claim) {
+        String sourceType = normalizeLower(source.getSourceType());
+        String claimText = normalizeLower("%s %s".formatted(nullToEmpty(claim.getDimension()), nullToEmpty(claim.getContent())));
+        if (containsAny(claimText, "pricing", "price", "plan", "subscription", "$", "价格", "定价", "套餐", "订阅", "付费")) {
+            return containsAny(sourceType, "pricing", "official", "docs", "product")
+                    && sourceTextHasRiskSignal(evidenceSourceText(source), "pricing");
+        }
+        if (containsAny(claimText, "security", "permission", "compliance", "privacy", "sso", "scim", "saml", "soc",
+                "安全", "权限", "合规", "隐私", "审计")) {
+            return containsAny(sourceType, "security", "docs", "product", "official", "trust", "privacy")
+                    && sourceTextHasRiskSignal(evidenceSourceText(source), "security");
+        }
+        if (containsAny(claimText, "deployment", "deploy", "bedrock", "proxy", "vpc", "部署", "代理")) {
+            return containsAny(sourceType, "docs", "product", "official", "security", "integration")
+                    && sourceTextHasRiskSignal(evidenceSourceText(source), "deployment");
+        }
+        return true;
+    }
+
+    private boolean directEvidenceSupportsHighRiskClaim(AnalysisRun run, String citationKey, AnalysisClaim claim) {
+        boolean sourceSupports = evidenceSupportsClaim(run, citationKey, claim);
+        boolean chunkSupports = run.getEvidenceChunks().stream()
+                .filter(chunk -> citationKey.equals(chunk.getSourceCitationKey()))
+                .filter(chunk -> chunkRiskCompatibleWithClaim(chunk, claim))
+                .anyMatch(chunk -> supportTextMatches(claim.getContent(), evidenceChunkText(chunk)));
+        return sourceSupports && chunkSupports;
+    }
+
+    private boolean chunkRiskCompatibleWithClaim(EvidenceChunk chunk, AnalysisClaim claim) {
+        String claimText = normalizeLower("%s %s".formatted(nullToEmpty(claim.getDimension()), nullToEmpty(claim.getContent())));
+        String chunkText = evidenceChunkText(chunk);
+        if (containsAny(claimText, "pricing", "price", "plan", "subscription", "$", "价格", "定价", "套餐", "订阅", "付费")) {
+            return sourceTextHasRiskSignal(chunkText, "pricing");
+        }
+        if (containsAny(claimText, "security", "permission", "compliance", "privacy", "sso", "scim", "saml", "soc",
+                "安全", "权限", "合规", "隐私", "审计")) {
+            return sourceTextHasRiskSignal(chunkText, "security");
+        }
+        if (containsAny(claimText, "deployment", "deploy", "bedrock", "proxy", "vpc", "部署", "代理")) {
+            return sourceTextHasRiskSignal(chunkText, "deployment");
+        }
+        return true;
+    }
+
+    private boolean sourceTextHasRiskSignal(String text, String risk) {
+        String normalized = normalizeLower(text);
+        return switch (risk) {
+            case "pricing" -> containsAny(normalized,
+                    "pricing", "price", "plan", "subscription", "billing", "$",
+                    "价格", "定价", "套餐", "订阅", "付费", "企业版");
+            case "security" -> containsAny(normalized,
+                    "security", "permission", "compliance", "privacy", "trust", "sso", "scim", "saml", "soc",
+                    "安全", "权限", "合规", "隐私", "审计", "单点登录");
+            case "deployment" -> containsAny(normalized,
+                    "deployment", "deploy", "bedrock", "proxy", "vpc", "cloud",
+                    "部署", "代理", "云");
+            default -> true;
+        };
     }
 
     private boolean displayableClaim(AnalysisClaim claim) {
@@ -946,6 +1076,9 @@ public class AnalystNode implements AgentNode {
     }
 
     private boolean matrixClaim(AnalysisClaim claim) {
+        if (claim != null && claim.getEligibleForMatrix() != null) {
+            return Boolean.TRUE.equals(claim.getEligibleForMatrix());
+        }
         return displayableClaim(claim) && PLACEMENT_MATRIX.equals(normalizeRecommendedPlacement(
                 claim.getRecommendedPlacement(),
                 claim.getType()
@@ -953,6 +1086,9 @@ public class AnalystNode implements AgentNode {
     }
 
     private boolean swotClaim(AnalysisClaim claim) {
+        if (claim != null && claim.getEligibleForSwot() != null) {
+            return Boolean.TRUE.equals(claim.getEligibleForSwot());
+        }
         return displayableClaim(claim) && PLACEMENT_SWOT.equals(normalizeRecommendedPlacement(
                 claim.getRecommendedPlacement(),
                 claim.getType()
@@ -980,8 +1116,11 @@ public class AnalystNode implements AgentNode {
         if (containsAny(normalized, "ide", "终端", "集成", "integration")) {
             keywords.addAll(List.of("ide", "终端", "terminal", "集成", "integration", "vscode", "jetbrains"));
         }
-        if (containsAny(normalized, "代码", "生成", "理解", "agent", "工作流")) {
-            keywords.addAll(List.of("代码", "生成", "理解", "agent", "workflow", "工作流", "构建", "调试"));
+        if (containsAny(normalized, "工作流", "workflow", "agent")) {
+            keywords.addAll(List.of("agent", "workflow", "工作流", "规划模式", "自动化任务", "skills"));
+        }
+        if (containsAny(normalized, "代码", "生成", "理解")) {
+            keywords.addAll(List.of("代码", "生成", "理解", "code", "generation", "understanding", "构建", "调试"));
         }
         return new ArrayList<>(keywords);
     }
@@ -1046,6 +1185,7 @@ public class AnalystNode implements AgentNode {
                 .map(competitor -> matrixRowForCompetitor(run, competitor, claims))
                 .collect(Collectors.joining("\n"));
         String claimRows = claims.stream()
+                .filter(claim -> matrixClaim(claim) || swotClaim(claim))
                 .map(claim -> "| %s | %s | %s | %s | %s | %s | %s | %s |".formatted(
                         claim.getType(),
                         claim.getConfidence(),
@@ -1167,14 +1307,28 @@ public class AnalystNode implements AgentNode {
     }
 
     private boolean claimMatchesDimension(AnalysisClaim claim, String dimension) {
-        if (containsIgnoreCase(textOrDash(claim.getDimension()), dimension)) {
+        if ("综合判断".equals(dimension)) {
             return true;
         }
-        String content = textOrDash(claim.getContent());
-        if (containsIgnoreCase(content, dimension)) {
+        String claimDimension = textOrDash(claim.getDimension());
+        if (!hasText(claimDimension) || "-".equals(claimDimension)) {
+            return false;
+        }
+        String normalizedClaimDimension = normalizeDimensionLabel(claimDimension);
+        String normalizedRequestedDimension = normalizeDimensionLabel(dimension);
+        if (normalizedClaimDimension.equals(normalizedRequestedDimension)) {
             return true;
         }
-        return dimensionKeywords(dimension).stream().anyMatch(keyword -> containsIgnoreCase(content, keyword));
+        int minLength = Math.min(normalizedClaimDimension.length(), normalizedRequestedDimension.length());
+        return minLength >= 4
+                && (normalizedClaimDimension.contains(normalizedRequestedDimension)
+                || normalizedRequestedDimension.contains(normalizedClaimDimension));
+    }
+
+    private String normalizeDimensionLabel(String value) {
+        return normalizeLower(value)
+                .replaceAll("[^\\p{IsHan}a-z0-9]+", "")
+                .trim();
     }
 
     private String validationBacklogRows(List<AnalysisClaim> claims) {

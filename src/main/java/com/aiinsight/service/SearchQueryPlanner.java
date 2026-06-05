@@ -141,6 +141,9 @@ public class SearchQueryPlanner {
             List<String> sourcePreferences = task.getSourcePreferences() == null || task.getSourcePreferences().isEmpty()
                     ? task.getRequiredEvidenceTypes()
                     : task.getSourcePreferences();
+            if (sourcePreferences == null || sourcePreferences.isEmpty()) {
+                sourcePreferences = inferredSourcePreferencesForRepairTask(task);
+            }
             for (String sourcePreference : nullToEmpty(sourcePreferences)) {
                 addSourcePreferenceQuery(queries, competitor, sourcePreference, domain);
                 if (queries.size() >= properties.maxSearchQueriesPerCompetitor()) {
@@ -158,6 +161,29 @@ public class SearchQueryPlanner {
                         entry.getValue().stream().limit(properties.maxSearchQueriesPerCompetitor()).toList()
                 ))
                 .toList();
+    }
+
+    private List<String> inferredSourcePreferencesForRepairTask(ReviewRepairTask task) {
+        String text = "%s %s %s %s %s".formatted(
+                task.getCategory(),
+                task.getDimension(),
+                task.getInstruction(),
+                task.getExpectedFix(),
+                task.getCurrentText()
+        ).toLowerCase(Locale.ROOT);
+        if (containsAny(text, "pricing", "price", "plan", "subscription", "billing", "定价", "价格", "套餐", "订阅", "付费")) {
+            return List.of("pricing_page", "official_site");
+        }
+        if (containsAny(text, "security", "permission", "compliance", "privacy", "sso", "scim", "saml", "安全", "权限", "合规", "隐私", "审计")) {
+            return List.of("security_docs", "product_docs", "official_site");
+        }
+        if (containsAny(text, "deployment", "enterprise", "bedrock", "部署", "企业")) {
+            return List.of("product_docs", "security_docs", "official_site");
+        }
+        if (containsAny(text, "agent", "workflow", "mcp", "skills", "工作流", "技能")) {
+            return List.of("product_docs", "release_notes", "technical_blog", "official_site");
+        }
+        return List.of("official_site", "product_docs");
     }
 
     private String firstMentionedCompetitor(AnalysisRequirement requirement, String text) {
@@ -214,6 +240,10 @@ public class SearchQueryPlanner {
         }
         if (containsAny(normalized, "interview", "访谈")) {
             addQuery(queries, competitor, "customer interview case study user feedback", domain);
+            return;
+        }
+        if (containsAny(normalized, "security", "permission", "compliance", "privacy", "安全", "权限", "合规")) {
+            addQuery(queries, competitor, "official security permissions compliance docs", domain);
             return;
         }
         if (containsAny(normalized, "doc", "documentation", "文档", "official", "官网")) {

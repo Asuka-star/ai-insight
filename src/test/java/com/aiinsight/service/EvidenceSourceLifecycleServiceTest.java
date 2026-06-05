@@ -168,6 +168,54 @@ class EvidenceSourceLifecycleServiceTest {
         assertThat(mediumThirdParty.getComplianceNote()).contains("更高质量来源 S2");
     }
 
+    @Test
+    void prunesHistoricalSourcesThatAreNoLongerReferenced() {
+        AnalysisRun run = new AnalysisRun(new AnalysisRequirement(
+                "Analyze Cursor",
+                "AI coding tools",
+                List.of("Cursor"),
+                List.of("pricing"),
+                List.of(),
+                List.of()
+        ));
+        EvidenceSource staleSearchResult = source(
+                "S1",
+                "Old Cursor article",
+                "https://old.example.test/cursor",
+                "article",
+                "MEDIUM",
+                "FETCHED",
+                "Old unreferenced background article.",
+                "Old Cursor article"
+        );
+        EvidenceSource currentPricing = source(
+                "S2",
+                "Cursor pricing",
+                "https://cursor.com/pricing",
+                "pricing_page",
+                "HIGH",
+                "FETCHED",
+                "Cursor official pricing page with pricing plans.",
+                "Cursor official pricing page"
+        );
+        AnalysisClaim claim = new AnalysisClaim();
+        claim.setType(ClaimType.COMPARISON);
+        claim.setContent("Cursor has official pricing information.");
+        claim.getEvidenceIds().add("S2");
+        run.getClaims().add(claim);
+
+        List<EvidenceSource> collected = new java.util.ArrayList<>(List.of(staleSearchResult, currentPricing));
+        EvidenceSourceLifecycleService.EvidenceReplacementResult result = service.reconcileAfterCollection(
+                run,
+                List.of(staleSearchResult),
+                collected
+        );
+
+        assertThat(result.prunedSources()).isEqualTo(1);
+        assertThat(collected).extracting(EvidenceSource::getCitationKey).containsExactly("S2");
+        assertThat(claim.getEvidenceIds()).containsExactly("S2");
+    }
+
     private EvidenceSource source(String citationKey,
                                   String title,
                                   String url,

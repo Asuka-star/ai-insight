@@ -37,7 +37,7 @@ export function ArtifactViewer({ artifact, sources = [], onSelectCitation, locat
       <div className="empty-state">
         <FileText size={22} />
         <strong>暂无产物</strong>
-        <p>创建任务后会显示报告、矩阵、复核结果和结构化 Schema。</p>
+        <p>创建任务后会显示报告、矩阵、复核结果和结构化 结构化信息。</p>
       </div>
     );
   }

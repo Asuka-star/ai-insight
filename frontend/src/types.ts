@@ -255,6 +255,7 @@ export interface ArtifactLocateRequest {
 export interface ReviewFinding {
   id: string;
   severity: "HIGH" | "MEDIUM" | "LOW";
+  targetAgent?: AgentName;
   category: string;
   message: string;
   recommendation: string;

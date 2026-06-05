@@ -27,6 +27,9 @@ public class SourceTypeClassifier {
         if (containsAny(combined, "/security", "/trust", "/privacy", " security", " compliance", " permissions")) {
             return isFirstPartyReferenceUrl(url) ? "security_docs" : "third_party_article";
         }
+        if (containsAny(combined, "/enterprise", " enterprise", "/product/", "/products/")) {
+            return isFirstPartyReferenceUrl(url) || looksLikeOfficialHost(url) ? "official_site" : "third_party_article";
+        }
         if (containsAny(combined, "/integrations", "/integration", " integrations", " api ")) {
             return isFirstPartyReferenceUrl(url) ? "integration_docs" : "third_party_article";
         }

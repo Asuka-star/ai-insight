@@ -123,7 +123,7 @@ export function ResearchCollectionPanel({
           ) : null}
         </div>
       ) : (
-        <p className="muted-text">采集计划会在 Researcher 启动后生成</p>
+        <p className="muted-text">采集计划会在资料采集节点启动后生成</p>
       )}
     </CollapsiblePanel>
   );
@@ -143,7 +143,7 @@ function TaskRow({ task }: { task: ResearchSubtask }) {
     <article className="collection-task-row">
       <div>
         <strong>{task.competitorName || "未指定竞品"}</strong>
-        <small>{task.dimension || "public_search"}</small>
+        <small>{dimensionLabel(task.dimension)}</small>
       </div>
       <span className={`collection-status ${statusClass(task.status)}`}>{STATUS_LABELS[task.status ?? ""] ?? task.status ?? "待执行"}</span>
       <small>{task.acceptedEvidenceCount ?? 0} 证据 · {task.candidateUrlCount ?? 0} 候选</small>
@@ -155,8 +155,8 @@ function RepairTargetRow({ target }: { target: ResearchRepairTarget }) {
   return (
     <article className="collection-target-row">
       <div>
-        <strong>{target.competitorName || "未指定竞品"} / {target.dimension || "public_search"}</strong>
-        <small>{target.priority || "BACKFILL"} · {target.status || "PENDING"}</small>
+        <strong>{target.competitorName || "未指定竞品"} / {dimensionLabel(target.dimension)}</strong>
+        <small>{repairPriorityLabel(target.priority)} · {STATUS_LABELS[target.status ?? ""] ?? target.status ?? "待执行"}</small>
       </div>
       {target.sourcePreferences?.length ? <ChipList values={target.sourcePreferences} compact /> : null}
       {target.queries?.[0] ? <p>{target.queries[0]}</p> : null}
@@ -172,6 +172,18 @@ function ChipList({ values, compact = false }: { values: string[]; compact?: boo
       ))}
     </div>
   );
+}
+
+function dimensionLabel(dimension?: string) {
+  if (!dimension || dimension === "public_search") return "公开搜索";
+  return dimension;
+}
+
+function repairPriorityLabel(priority?: string) {
+  if (!priority || priority === "BACKFILL") return "补充采集";
+  if (priority === "REVIEW_REPAIR") return "质检修复";
+  if (priority === "NORMAL_SEARCH") return "常规采集";
+  return priority;
 }
 
 function statusClass(status?: string) {
