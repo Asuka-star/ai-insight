@@ -38,19 +38,57 @@ public class SurveyResultImportService {
     private static final int MAX_FINDINGS = 12;
     private static final int MAX_VALUES_PER_QUESTION = 8;
 
-    public byte[] buildTemplateCsv(AnalysisRun run) {
-        Questionnaire questionnaire = run.getResearchPackage().getResearchPlan().getQuestionnaire();
-        List<String> headers = new ArrayList<>();
-        headers.add("提交时间");
-        headers.add("受访者角色");
+    public byte[] buildQuestionnaireDslText(AnalysisRun run) {
+        Questionnaire questionnaire = questionnaireOrNull(run);
+        List<String> blocks = new ArrayList<>();
         if (questionnaire != null && questionnaire.getQuestions() != null) {
             questionnaire.getQuestions().stream()
-                    .map(SurveyQuestion::getQuestion)
+                    .map(this::questionDsl)
                     .filter(StringUtils::hasText)
-                    .forEach(headers::add);
+                    .forEach(blocks::add);
         }
-        headers.add("补充反馈");
-        return ("\uFEFF" + csvLine(headers) + "\n").getBytes(StandardCharsets.UTF_8);
+        // 导出给腾讯问卷内容编辑器粘贴的文本 DSL；答卷导入仍然接受用户上传的 CSV/XLSX。
+        return (String.join("\n\n", blocks) + "\n").getBytes(StandardCharsets.UTF_8);
+    }
+
+    private Questionnaire questionnaireOrNull(AnalysisRun run) {
+        if (run == null || run.getResearchPackage() == null || run.getResearchPackage().getResearchPlan() == null) {
+            return null;
+        }
+        return run.getResearchPackage().getResearchPlan().getQuestionnaire();
+    }
+
+    private String questionDsl(SurveyQuestion question) {
+        if (question == null || !StringUtils.hasText(question.getQuestion())) {
+            return "";
+        }
+        String text = dslLine(question.getQuestion());
+        String description = StringUtils.hasText(question.getDimension())
+                ? "维度：" + dslLine(question.getDimension())
+                : "";
+        // 暂按选项是否存在区分单选/多行文本，避免导出阶段猜测量表、多选等题型。
+        if (question.getOptions() == null || question.getOptions().isEmpty()) {
+            return questionHeader(text, "多行文本题", description);
+        }
+        List<String> options = question.getOptions().stream()
+                .filter(StringUtils::hasText)
+                .map(this::dslLine)
+                .toList();
+        if (options.isEmpty()) {
+            return questionHeader(text, "多行文本题", description);
+        }
+        return questionHeader(text, "单选题", description) + "\n" + String.join("\n", options);
+    }
+
+    private String questionHeader(String text, String type, String description) {
+        if (!StringUtils.hasText(description)) {
+            return text + "[" + type + "]";
+        }
+        return text + "[" + type + "](" + description + ")";
+    }
+
+    private String dslLine(String value) {
+        return value == null ? "" : value.replaceAll("[\\r\\n]+", " ").trim();
     }
 
     public SurveyResultBatch importResults(Questionnaire questionnaire, MultipartFile file) {

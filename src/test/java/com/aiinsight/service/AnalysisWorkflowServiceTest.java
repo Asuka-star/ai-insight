@@ -790,8 +790,9 @@ class AnalysisWorkflowServiceTest {
                     assertThat(question.getQuestion()).isEqualTo("AI 搜索是否影响采购？");
                     assertThat(question.getOptions()).containsExactly("影响", "不影响", "不确定");
                 });
-        String template = new String(service.surveyTemplateCsv(run.getId()), StandardCharsets.UTF_8);
-        assertThat(template).contains("AI 搜索是否影响采购？");
+        String template = new String(service.surveyQuestionnaireDsl(run.getId()), StandardCharsets.UTF_8);
+        assertThat(template).contains("AI 搜索是否影响采购？[单选题](维度：AI 搜索)");
+        assertThat(template).contains("影响\n不影响\n不确定");
     }
 
     @Test
@@ -810,7 +811,7 @@ class AnalysisWorkflowServiceTest {
         run.getResearchPackage().setResearchPlan(null);
         repository.save(run);
 
-        assertThatThrownBy(() -> service.surveyTemplateCsv(run.getId()))
+        assertThatThrownBy(() -> service.surveyQuestionnaireDsl(run.getId()))
                 .isInstanceOf(InvalidRunStateException.class)
                 .hasMessageContaining("questionnaire is not ready");
     }
@@ -3374,34 +3375,35 @@ class AnalysisWorkflowServiceTest {
 
     @Test
     void reviewerFindingsCarryArtifactAndClaimLocation() {
-        LlmClient noopLlmClient = new LlmClient() {
-            @Override
-            public boolean isAvailable() {
-                return false;
-            }
-
-            @Override
-            public String complete(com.aiinsight.llm.ChatRequest request) {
-                throw new IllegalStateException("LLM is not configured");
-            }
-        };
+        LlmClient reviewerLlm = reviewerFindingLlm(
+                "missing_citation",
+                "C-LOC-1",
+                null,
+                0,
+                "Opportunity is building a repeatable agent workflow."
+        );
         AnalysisRun run = new AnalysisRun();
         AnalysisClaim claim = new AnalysisClaim();
+        claim.setId("C-LOC-1");
         claim.setType(ClaimType.OPPORTUNITY);
+        claim.setContent("Opportunity is building a repeatable agent workflow.");
         run.getClaims().add(claim);
         AnalysisArtifact draft = run.addArtifact(new AnalysisArtifact(
                 ArtifactType.REPORT_DRAFT,
                 "draft",
-                "机会点是构建可复核的 Agent 工作流。",
+                "Opportunity is building a repeatable agent workflow.",
                 List.of()
         ));
 
-        new ReviewerNode(new CitationCoverageEvaluator(), noopLlmClient, new FallbackReviewReportFactory()).execute(run);
+        new ReviewerNode(new CitationCoverageEvaluator(), reviewerLlm, new FallbackReviewReportFactory()).execute(run);
 
-        assertThat(run.getReviewFindings()).hasSize(1);
-        assertThat(run.getReviewFindings().get(0).getArtifactId()).isEqualTo(draft.getId());
-        assertThat(run.getReviewFindings().get(0).getClaimId()).isEqualTo(claim.getId());
-        assertThat(run.getReviewFindings().get(0).getExcerpt()).contains("机会点");
+        assertThat(run.getReviewFindings())
+                .anySatisfy(finding -> {
+                    assertThat(finding.getCategory()).isEqualTo("missing_citation");
+                    assertThat(finding.getArtifactId()).isEqualTo(draft.getId());
+                    assertThat(finding.getClaimId()).isEqualTo("C-LOC-1");
+                    assertThat(finding.getExcerpt()).contains("repeatable agent workflow");
+                });
     }
 
     @Test
@@ -3415,12 +3417,16 @@ class AnalysisWorkflowServiceTest {
                 List.of()
         ));
 
-        new ReviewerNode(new CitationCoverageEvaluator(), noopLlmClient(), new FallbackReviewReportFactory()).execute(run);
+        new ReviewerNode(
+                new CitationCoverageEvaluator(),
+                reviewerFindingLlm("claim_missing_pricing_source", null, null, 0, "机会点是优化企业版价格策略。"),
+                new FallbackReviewReportFactory()
+        ).execute(run);
 
         assertThat(run.getReviewDecision().getAction()).isEqualTo(ReviewAction.RECOLLECT_EVIDENCE);
         assertThat(run.getReviewDecision().getTargetAgent()).isEqualTo(AgentName.RESEARCHER);
         assertThat(run.getReviewDecision().getRequiredEvidenceTypes()).containsExactly("pricing_page");
-        assertThat(run.getReviewDecision().getFindingCategories()).containsExactly("citation_missing");
+        assertThat(run.getReviewDecision().getFindingCategories()).containsExactly("claim_missing_pricing_source");
         assertThat(run.getReviewDecision().getBlockingFindingIds()).hasSize(1);
         assertThat(run.getReviewDecision().getRepairScopeSummary()).contains("RESEARCHER", "pricing_page");
         assertThat(run.getReviewDecision().getRepairInstructions())
@@ -3433,12 +3439,12 @@ class AnalysisWorkflowServiceTest {
                     assertThat(task.getRequiredEvidenceTypes()).containsExactly("pricing_page");
                     assertThat(task.getAcceptanceCriteria()).contains("pricing_page");
                 });
-        assertThat(run.getReviewDecision().getReason()).contains("citation_missing", "pricing_page");
+        assertThat(run.getReviewDecision().getReason()).contains("claim_missing_pricing_source", "pricing_page");
         assertThat(run.getArtifacts())
                 .filteredOn(artifact -> artifact.getType() == ArtifactType.REVIEW_FINDINGS)
                 .last()
                 .satisfies(artifact -> assertThat(artifact.getContent())
-                        .contains("可信度状态", "定向修复计划", "结构化修复任务", "阻断问题", "citation_missing"));
+                        .contains("可信度状态", "定向修复计划", "结构化修复任务", "阻断问题", "claim_missing_pricing_source"));
     }
 
     @Test
@@ -3452,14 +3458,18 @@ class AnalysisWorkflowServiceTest {
                 List.of()
         ));
 
-        new ReviewerNode(new CitationCoverageEvaluator(), noopLlmClient(), new FallbackReviewReportFactory()).execute(run);
+        new ReviewerNode(
+                new CitationCoverageEvaluator(),
+                reviewerFindingLlm("claim_missing_sentiment_source", null, null, 0, "机会点是优化用户画像和采购访谈链路。"),
+                new FallbackReviewReportFactory()
+        ).execute(run);
 
         assertThat(run.getReviewDecision().getAction()).isEqualTo(ReviewAction.REVISE_REPORT);
         assertThat(run.getReviewDecision().getTargetAgent()).isEqualTo(AgentName.WRITER);
         assertThat(run.getReviewDecision().getRequiredEvidenceTypes())
                 .containsExactly("survey_result", "interview_note");
         assertThat(run.getReviewDecision().getReason())
-                .contains("一手调研缺口", "不能由公开搜索自动补齐");
+                .contains("一手调研证据", "公开搜索不能自动生成");
         assertThat(run.getRecommendedActions())
                 .anyMatch(action -> action.contains("公开搜索不能自动生成真实问卷或访谈"));
     }
@@ -3475,7 +3485,11 @@ class AnalysisWorkflowServiceTest {
                 List.of()
         ));
 
-        new ReviewerNode(new CitationCoverageEvaluator(), noopLlmClient(), new FallbackReviewReportFactory()).execute(run);
+        new ReviewerNode(
+                new CitationCoverageEvaluator(),
+                reviewerFindingLlm("claim_missing_pricing_source", null, null, 0, "机会点是优化企业版价格策略。"),
+                new FallbackReviewReportFactory()
+        ).execute(run);
 
         assertThat(run.getReviewDecision().getAction()).isEqualTo(ReviewAction.RECOLLECT_EVIDENCE);
         assertThat(run.getReviewDecision().getTargetAgent()).isEqualTo(AgentName.RESEARCHER);
@@ -3483,7 +3497,7 @@ class AnalysisWorkflowServiceTest {
         assertThat(run.getReviewDecision().getReason())
                 .contains("pricing_page")
                 .contains("survey_result")
-                .contains("人工补证");
+                .contains("一手调研缺口");
     }
 
     @Test
@@ -4410,6 +4424,60 @@ class AnalysisWorkflowServiceTest {
                 throw new IllegalStateException("LLM is not configured");
             }
         };
+    }
+
+    private LlmClient reviewerFindingLlm(String category, String claimId, String citationKey, int paragraphIndex, String excerpt) {
+        return new LlmClient() {
+            private final java.util.concurrent.atomic.AtomicBoolean emitted = new java.util.concurrent.atomic.AtomicBoolean();
+
+            @Override
+            public boolean isAvailable() {
+                return true;
+            }
+
+            @Override
+            public String complete(com.aiinsight.llm.ChatRequest request) {
+                if (!emitted.compareAndSet(false, true)) {
+                    return """
+                            {"summary":"reviewed","findings":[]}
+                            """;
+                }
+                return """
+                        {
+                          "summary": "reviewed",
+                          "findings": [
+                            {
+                              "severity": "HIGH",
+                              "category": %s,
+                              "message": "A high-risk review issue needs targeted repair.",
+                              "recommendation": "Repair the upstream evidence or downgrade the claim.",
+                              "claimId": %s,
+                              "citationKey": %s,
+                              "paragraphIndex": %d,
+                              "excerpt": %s
+                            }
+                          ]
+                        }
+                        """.formatted(
+                        jsonValue(category),
+                        jsonValue(claimId),
+                        jsonValue(citationKey),
+                        paragraphIndex,
+                        jsonValue(excerpt)
+                );
+            }
+        };
+    }
+
+    private String jsonValue(String value) {
+        if (value == null) {
+            return "null";
+        }
+        return "\"" + value
+                .replace("\\", "\\\\")
+                .replace("\"", "\\\"")
+                .replace("\n", "\\n")
+                .replace("\r", "\\r") + "\"";
     }
 
     private AnalysisWorkflowService newService() {

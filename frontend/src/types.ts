@@ -242,6 +242,16 @@ export interface AnalysisArtifact {
   createdAt?: string;
 }
 
+export interface ArtifactLocateRequest {
+  requestId: number;
+  artifactId?: string;
+  paragraphIndex?: number;
+  excerpt?: string;
+  claimId?: string;
+  claimText?: string;
+  citationKey?: string;
+}
+
 export interface ReviewFinding {
   id: string;
   severity: "HIGH" | "MEDIUM" | "LOW";

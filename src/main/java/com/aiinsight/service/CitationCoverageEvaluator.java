@@ -35,30 +35,15 @@ public class CitationCoverageEvaluator {
     public List<ReviewFinding> evaluate(String reportContent, AnalysisRun run) {
         List<ReviewFinding> findings = new ArrayList<>();
         int paragraphIndex = 0;
-        String currentSection = "";
         for (String paragraph : reportContent.split("\\R\\R+")) {
             String trimmed = paragraph.trim();
             String section = sectionHeading(trimmed);
-            if (StringUtils.hasText(section)) {
-                currentSection = section;
-            }
             if (trimmed.isEmpty() || trimmed.startsWith("#") || trimmed.startsWith("##") || StringUtils.hasText(section)) {
                 paragraphIndex++;
                 continue;
             }
-            // 先用确定性规则兜底，保证即使 LLM 质检漏判也能抓住“无引用结论”。
-            if (looksLikeClaim(trimmed) && !CITATION_PATTERN.matcher(trimmed).find()
-                    && !allowsMissingCitation(trimmed, currentSection)) {
-                ReviewFinding finding = new ReviewFinding(
-                        ReviewSeverity.HIGH,
-                        "citation_missing",
-                        "发现未绑定引用的结论段落: " + abbreviate(trimmed),
-                        "为该结论补充来源片段，或降级为待验证假设。"
-                );
-                finding.setParagraphIndex(paragraphIndex);
-                finding.setExcerpt(trimmed);
-                findings.add(finding);
-            }
+
+            // 规则层只验证“已有引用是否支撑当前段落”；“该不该有引用”交给 Reviewer LLM 做语义判断。
             if (looksLikeClaim(trimmed) && run != null && CITATION_PATTERN.matcher(trimmed).find()) {
                 findings.addAll(validateCitationSupport(trimmed, paragraphIndex, run));
             }
@@ -86,29 +71,6 @@ public class CitationCoverageEvaluator {
             return normalized;
         }
         return "";
-    }
-
-    private boolean allowsMissingCitation(String paragraph, String currentSection) {
-        String section = currentSection == null ? "" : currentSection;
-        if (containsAny(section, "需补充证据", "证据覆盖缺口", "结论与建议", "人工复核建议", "复核结论", "质检问题摘要")) {
-            return true;
-        }
-        String normalized = paragraph.replaceAll("\\s+", "");
-        return containsAny(normalized,
-                "建议在后续调研",
-                "建议补充",
-                "需补充",
-                "证据不足",
-                "证据缺口",
-                "缺乏直接证据",
-                "缺少直接证据",
-                "缺少可验证证据",
-                "待验证",
-                "补证",
-                "补充证据",
-                "人工复核",
-                "优先补充证据",
-                "报告依据说明");
     }
 
     private List<ReviewFinding> validateCitationSupport(String paragraph, int paragraphIndex, AnalysisRun run) {
@@ -957,24 +919,55 @@ public class CitationCoverageEvaluator {
 
     private boolean looksLikeClaim(String paragraph) {
         String normalized = normalizeLower(paragraph);
-        return paragraph.contains("机会")
-                || paragraph.contains("风险")
-                || paragraph.contains("优势")
-                || paragraph.contains("弱势")
-                || paragraph.contains("建议")
-                || paragraph.contains("更适合")
-                || containsAny(normalized,
+        if (isReportScaffoldingParagraph(normalized)) {
+            return false;
+        }
+        // 这里只用于触发引用支撑校验，不再用于生成“缺少引用” finding。
+        return containsAny(normalized,
+                "机会", "风险", "优势", "劣势", "弱势", "更适合", "领先", "落后", "强于", "弱于",
+                "高于", "低于", "优于", "依赖", "缺乏", "不足", "增长", "下降", "占比",
+                "定价", "价格", "套餐", "免费版", "企业版", "权限", "安全", "合规",
+                "用户反馈", "用户评价", "口碑", "公开资料", "公开信息", "市场", "竞品", "行业",
+                "数据显示", "证据显示", "资料显示", "调研显示", "访谈显示",
                 "opportunity",
                 "risk",
                 "advantage",
                 "weakness",
-                "recommendation",
                 "public evidence",
                 "public market",
                 "market evidence",
                 "competitive",
                 "competitor",
-                "industry");
+                "industry",
+                "pricing",
+                "security",
+                "permission",
+                "compliance",
+                "market share",
+                "user feedback",
+                "customer feedback");
+    }
+
+    private boolean isReportScaffoldingParagraph(String normalized) {
+        if (!StringUtils.hasText(normalized)) {
+            return true;
+        }
+        String compact = normalized.replaceAll("\\s+", "");
+        if (compact.length() <= 8) {
+            return true;
+        }
+        // 章节导语、总结引子和行动建议引子通常不表达可核验事实，避免它们进入引用校验路径。
+        if (containsAny(compact,
+                "以下是", "如下", "本节", "本段", "本文", "本报告", "上文", "下文",
+                "行动建议", "明确的行动建议", "建议如下", "下一步建议", "优先级建议",
+                "基于当前信息", "基于对当前信息", "当前信息与风险", "综合判断",
+                "总体来看", "整体来看", "综上", "小结", "总结如下", "分析如下",
+                "需要注意的是", "为了便于", "为了确保", "为便于", "为确保",
+                "the following", "below are", "in summary", "overall", "next steps",
+                "action recommendations", "recommendations below")) {
+            return true;
+        }
+        return compact.matches("^[一二三四五六七八九十0-9]+[、.．-].{1,42}$");
     }
 
     private boolean containsUncertaintyMarker(String text) {

@@ -91,6 +91,7 @@ public class AnalysisLangGraphWorkflow {
         prepareManualRerunReviewContext(runId, agentName);
         AnalysisRun run = null;
         try {
+            // 手动重跑和质检打回都从目标 agent 开始顺序重放下游，避免只修上游却留下旧报告/旧复核结果。
             for (AgentNode cascadeNode : rerunCascade(agentName)) {
                 run = nodeExecutor.executeNode(
                         runId,
@@ -620,6 +621,7 @@ public class AnalysisLangGraphWorkflow {
     }
 
     private List<AgentNode> rerunCascade(AgentName agentName) {
+        // 这里定义 agent 依赖链：Reviewer 只需要选最上游责任点，下游会在同一轮级联中自动刷新。
         // Manual reruns replay the selected agent plus deterministic downstream dependencies only.
         // Reviewer is the terminal executable agent; finish no longer triggers a copied-report step.
         List<AgentName> order = switch (agentName) {

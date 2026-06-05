@@ -27,7 +27,7 @@
 - `POST /api/analysis-runs/{runId}/context` 记录上下文补充。
 - `POST /api/analysis-runs/{runId}/evidence` 记录用户补充资料。
 - `PUT /api/analysis-runs/{runId}/surveys/questionnaire` 支持编辑问卷草案。
-- `GET /api/analysis-runs/{runId}/surveys/template` 支持下载问卷结果模板。
+- `GET /api/analysis-runs/{runId}/surveys/template` 支持下载腾讯问卷内容 DSL 文本。
 - `POST /api/analysis-runs/{runId}/surveys/import` 支持导入问卷 CSV/XLSX 结果。
 - `POST /api/analysis-runs/{runId}/agents/{agentName}/rerun` 支持单 Agent 重跑。
 - `GET /api/analysis-runs/{runId}/events` 支持 SSE 进度事件。

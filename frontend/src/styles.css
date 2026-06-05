@@ -524,6 +524,16 @@ h3 {
   flex-wrap: wrap;
   justify-content: flex-end;
   gap: 8px;
+  max-width: 430px;
+}
+
+.research-format-note {
+  flex-basis: 100%;
+  margin: 0;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.45;
+  text-align: right;
 }
 
 .research-pending-banner {
@@ -1274,6 +1284,11 @@ h3 {
 .artifact-reader p {
   margin: 9px 0;
   color: #26312d;
+}
+
+.artifact-reader .artifact-locate-flash {
+  border-radius: 6px;
+  animation: artifact-locate-pulse 1.8s ease-out;
 }
 
 .artifact-reader ul {
@@ -3308,6 +3323,21 @@ h3 {
 @keyframes spin {
   to {
     transform: rotate(360deg);
+  }
+}
+
+@keyframes artifact-locate-pulse {
+  0% {
+    background: rgba(240, 166, 61, 0.32);
+    box-shadow: 0 0 0 1px rgba(240, 166, 61, 0.55), 0 0 0 7px rgba(240, 166, 61, 0.18);
+  }
+  42% {
+    background: rgba(240, 166, 61, 0.18);
+    box-shadow: 0 0 0 1px rgba(240, 166, 61, 0.45), 0 0 0 4px rgba(240, 166, 61, 0.12);
+  }
+  100% {
+    background: transparent;
+    box-shadow: 0 0 0 0 rgba(240, 166, 61, 0);
   }
 }
 

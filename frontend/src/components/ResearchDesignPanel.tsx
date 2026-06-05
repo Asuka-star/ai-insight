@@ -60,11 +60,14 @@ export function ResearchDesignPanel({
         </div>
         <div className="research-actions">
           <button type="button" className="secondary-button" onClick={onDownloadTemplate} disabled={disabled || busy || !questions.length}>
-            <DownloadCloud size={15} /> 下载结果模板
+            <DownloadCloud size={15} /> 导出调研问卷
           </button>
           <button type="button" className="primary-button" onClick={() => importInputRef.current?.click()} disabled={disabled || busy}>
-            <UploadCloud size={15} /> 导入结果表格
+            <UploadCloud size={15} /> 导入调研数据
           </button>
+          <p className="research-format-note">
+            导出 TXT：腾讯问卷内容 DSL，可粘贴到腾讯问卷建题；导入 CSV/XLSX：每行一份答卷，表头保留题干。
+          </p>
           <input
             ref={importInputRef}
             type="file"

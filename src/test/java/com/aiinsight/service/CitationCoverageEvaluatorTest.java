@@ -21,7 +21,7 @@ class CitationCoverageEvaluatorTest {
     private final CitationCoverageEvaluator evaluator = new CitationCoverageEvaluator();
 
     @Test
-    void flagsClaimParagraphWithoutCitation() {
+    void doesNotUseRulesToFlagClaimParagraphWithoutCitation() {
         String report = """
                 # Report
 
@@ -32,10 +32,7 @@ class CitationCoverageEvaluatorTest {
 
         var findings = evaluator.evaluate(report);
 
-        assertThat(findings).hasSize(1);
-        assertThat(findings.get(0).getCategory()).isEqualTo("citation_missing");
-        assertThat(findings.get(0).getParagraphIndex()).isEqualTo(1);
-        assertThat(findings.get(0).getExcerpt()).contains("机会点");
+        assertThat(findings).isEmpty();
     }
 
     @Test
@@ -56,8 +53,20 @@ class CitationCoverageEvaluatorTest {
 
         var findings = evaluator.evaluate(report);
 
-        assertThat(findings).hasSize(1);
-        assertThat(findings.get(0).getExcerpt()).contains("机会点");
+        assertThat(findings).isEmpty();
+    }
+
+    @Test
+    void ignoresActionRecommendationIntroWithoutCitation() {
+        String report = """
+                # Report
+
+                基于对当前信息与风险的判断，以下是明确的行动建议。
+                """;
+
+        var findings = evaluator.evaluate(report);
+
+        assertThat(findings).isEmpty();
     }
 
     @Test

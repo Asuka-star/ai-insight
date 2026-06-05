@@ -26,11 +26,12 @@ class SurveyResultImportServiceTest {
         ));
         run.getResearchPackage().getResearchPlan().setQuestionnaire(questionnaire());
 
-        String csv = new String(new SurveyResultImportService().buildTemplateCsv(run), StandardCharsets.UTF_8);
+        String dsl = new String(new SurveyResultImportService().buildQuestionnaireDslText(run), StandardCharsets.UTF_8);
 
-        assertThat(csv).contains("受访者角色");
-        assertThat(csv).contains("AI 搜索是否重要？");
-        assertThat(csv).contains("权限治理是否影响采购？");
+        assertThat(dsl).contains("AI 搜索是否重要？[单选题](维度：AI search)");
+        assertThat(dsl).contains("非常重要\n一般");
+        assertThat(dsl).contains("权限治理是否影响采购？[单选题](维度：governance)");
+        assertThat(dsl).doesNotContain("受访者角色");
     }
 
     @Test

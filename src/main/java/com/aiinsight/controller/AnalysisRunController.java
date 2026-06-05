@@ -114,11 +114,11 @@ public class AnalysisRunController {
         return workflowService.updateSurveyQuestionnaire(runId, questionnaire);
     }
 
-    @GetMapping(value = "/{runId}/surveys/template", produces = "text/csv;charset=UTF-8")
+    @GetMapping(value = "/{runId}/surveys/template", produces = "text/plain;charset=UTF-8")
     public ResponseEntity<byte[]> surveyTemplate(@PathVariable UUID runId) {
         return ResponseEntity.ok()
-                .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"survey-template.csv\"")
-                .body(workflowService.surveyTemplateCsv(runId));
+                .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"survey-questionnaire-dsl.txt\"")
+                .body(workflowService.surveyQuestionnaireDsl(runId));
     }
 
     @PostMapping(path = "/{runId}/surveys/import", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)

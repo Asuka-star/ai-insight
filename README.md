@@ -282,7 +282,7 @@ docker exec -it ai-insight-pg psql -U ai_insight -d ai_insight -c "truncate tabl
 - analysis_run PostgreSQL 持久化
 - Researcher 支持用户提供公开 URL 并沉淀为可引用证据
 - Researcher 支持问卷草案、访谈提纲、采集子任务、覆盖缺口和补采目标
-- 前端问卷访谈模块支持编辑问卷、下载结果模板、导入 CSV/XLSX 问卷结果和展示访谈提纲
+- 前端问卷访谈模块支持编辑问卷、导出腾讯问卷内容 DSL、导入 CSV/XLSX 调研数据和展示访谈提纲
 - 问卷结果会转成用户问卷证据和结构化洞察；同一任务只使用最新问卷结果，访谈证据按多份累积；导入后先标记为待应用，用户手动重跑 Extractor 后再刷新下游分析
 - EvidenceChunk 证据切片与关键词召回接口
 - 配置 embedding 后支持 evidence chunk 向量投影和语义召回，未配置时保留关键词 fallback

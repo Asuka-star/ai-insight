@@ -514,13 +514,13 @@ public class AnalysisWorkflowService {
         return run;
     }
 
-    public byte[] surveyTemplateCsv(UUID runId) {
+    public byte[] surveyQuestionnaireDsl(UUID runId) {
         AnalysisRun run = get(runId);
         Questionnaire questionnaire = questionnaireOrNull(run);
         if (!hasAnyUsableQuestion(questionnaire)) {
             throw new InvalidRunStateException(runId, "questionnaire is not ready; run Researcher first");
         }
-        return surveyResultImportService.buildTemplateCsv(run);
+        return surveyResultImportService.buildQuestionnaireDslText(run);
     }
 
     public AnalysisRun importSurveyResults(UUID runId, MultipartFile file) {

@@ -175,6 +175,45 @@ class ReviewerNodeTest {
                 .isTrue();
     }
 
+    @Test
+    void dropsLlmCitationMissingFindingForReportScaffolding() {
+        AnalysisRun run = new AnalysisRun();
+        run.addArtifact(new AnalysisArtifact(
+                ArtifactType.REPORT_DRAFT,
+                "draft",
+                "基于对当前信息与风险的判断，以下是明确的行动建议。",
+                List.of()
+        ));
+
+        new ReviewerNode(new CitationCoverageEvaluator(), scaffoldingCitationMissingLlmClient(), new FallbackReviewReportFactory()).execute(run);
+
+        assertThat(run.getReviewFindings()).isEmpty();
+        assertThat(run.getReviewDecision().getAction()).isEqualTo(ReviewAction.PASS);
+    }
+
+    @Test
+    void routesLlmMissingCitationToWriter() {
+        AnalysisRun run = new AnalysisRun();
+        run.addArtifact(new AnalysisArtifact(
+                ArtifactType.REPORT_DRAFT,
+                "draft",
+                "Cursor has the strongest enterprise governance advantage.",
+                List.of()
+        ));
+
+        new ReviewerNode(new CitationCoverageEvaluator(), missingCitationLlmClient(), new FallbackReviewReportFactory()).execute(run);
+
+        assertThat(run.getReviewFindings())
+                .anySatisfy(finding -> {
+                    assertThat(finding.getSeverity()).isEqualTo(com.aiinsight.model.enums.ReviewSeverity.HIGH);
+                    assertThat(finding.getCategory()).isEqualTo("missing_citation");
+                });
+        assertThat(run.getReviewDecision().getAction()).isEqualTo(ReviewAction.REVISE_REPORT);
+        assertThat(run.getReviewDecision().getTargetAgent()).isEqualTo(AgentName.WRITER);
+        assertThat(run.getReviewDecision().getRepairTasks())
+                .allSatisfy(task -> assertThat(task.getTargetAgent()).isEqualTo(AgentName.WRITER));
+    }
+
     private LlmClient noopLlmClient() {
         return new LlmClient() {
             @Override
@@ -185,6 +224,62 @@ class ReviewerNodeTest {
             @Override
             public String complete(ChatRequest request) {
                 throw new IllegalStateException("LLM is not configured");
+            }
+        };
+    }
+
+    private LlmClient missingCitationLlmClient() {
+        return new LlmClient() {
+            @Override
+            public boolean isAvailable() {
+                return true;
+            }
+
+            @Override
+            public String complete(ChatRequest request) {
+                return """
+                        {
+                          "summary": "reviewed",
+                          "findings": [
+                            {
+                              "severity": "HIGH",
+                              "category": "missing_citation",
+                              "message": "Enterprise governance advantage is a competitive claim and needs citation.",
+                              "recommendation": "Add a relevant citation or downgrade the claim.",
+                              "paragraphIndex": 0,
+                              "excerpt": "Cursor has the strongest enterprise governance advantage."
+                            }
+                          ]
+                        }
+                        """;
+            }
+        };
+    }
+
+    private LlmClient scaffoldingCitationMissingLlmClient() {
+        return new LlmClient() {
+            @Override
+            public boolean isAvailable() {
+                return true;
+            }
+
+            @Override
+            public String complete(ChatRequest request) {
+                return """
+                        {
+                          "summary": "reviewed",
+                          "findings": [
+                            {
+                              "severity": "MEDIUM",
+                              "category": "citation_missing",
+                              "message": "Action-introduction sentence has no citation.",
+                              "recommendation": "No change needed.",
+                              "paragraphIndex": 1,
+                              "excerpt": "基于对当前信息与风险的判断，以下是明确的行动建议。"
+                            }
+                          ]
+                        }
+                        """;
             }
         };
     }

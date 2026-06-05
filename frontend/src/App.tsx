@@ -17,7 +17,7 @@ import {
   Sparkles,
   UploadCloud
 } from "lucide-react";
-import type { AgentStep, AnalysisContextMessage, AgentName, AnalysisArtifact, AnalysisRun, AnalysisRunMetrics, AnalysisRunSummary, ContextIntent, Questionnaire, ReviewFinding, RunEvent } from "./types";
+import type { AgentStep, AnalysisContextMessage, AgentName, AnalysisArtifact, ArtifactLocateRequest, AnalysisRun, AnalysisRunMetrics, AnalysisRunSummary, ContextIntent, Questionnaire, ReviewFinding, RunEvent } from "./types";
 import { addContext, addEvidence, clarifyRequirement, createRun, deleteDocument, deleteRun, downloadSurveyTemplate, getRun, getRunMetrics, importSurveyResults, listRunSummaries, rerunAgent, startAnalysis, updateRequirement, updateSurveyQuestionnaire, uploadDocument } from "./api";
 import { AGENT_LABELS, ARTIFACT_LABELS } from "./constants";
 import {
@@ -89,6 +89,7 @@ export function App() {
   const [selectedCitationKey, setSelectedCitationKey] = useState<string>();
   const [selectedCitationRequestId, setSelectedCitationRequestId] = useState(0);
   const [selectedClaimId, setSelectedClaimId] = useState<string>();
+  const [artifactLocateRequest, setArtifactLocateRequest] = useState<ArtifactLocateRequest>();
   const [selectedAgent, setSelectedAgent] = useState<AgentName | null>(null);
   const [traceDrawerAgent, setTraceDrawerAgent] = useState<AgentName | null>(null);
   const [contextText, setContextText] = useState("");
@@ -888,19 +889,19 @@ export function App() {
     if (!run || runMutationDisabled || surveyBusy) return;
     const runId = run.id;
     setSurveyBusy(true);
-    setEventMessage("正在生成问卷结果模板");
+    setEventMessage("正在生成腾讯问卷文本");
     try {
       const blob = await downloadSurveyTemplate(runId);
       if (!isCurrentWorkspaceRun(runId)) return;
       const url = URL.createObjectURL(blob);
       const link = document.createElement("a");
       link.href = url;
-      link.download = `survey-template-${runId.slice(0, 8)}.csv`;
+      link.download = `survey-questionnaire-${runId.slice(0, 8)}.txt`;
       document.body.appendChild(link);
       link.click();
       link.remove();
       URL.revokeObjectURL(url);
-      setEventMessage("问卷结果模板已下载");
+      setEventMessage("调研问卷文本已下载，可粘贴到腾讯问卷内容编辑器");
     } catch (error) {
       if (!isCurrentWorkspaceRun(runId)) return;
       setEventMessage(error instanceof Error ? `模板下载失败：${error.message}` : "模板下载失败");
@@ -1039,21 +1040,41 @@ export function App() {
   }
 
   function handleLocateFinding(finding: ReviewFinding) {
-    // Prefer the most structured target first: claim -> schema, otherwise fall back to the report artifact.
-    // Citation selection is independent so EvidencePanel can still highlight the source.
+    const claim = run?.claims?.find((item) => item.id === finding.claimId);
+    const canLocateInReport = Boolean(reportArtifacts.length);
+
+    // 质检定位要同时服务两个面板：证据侧栏高亮 citation，主工作台定位报告或 schema。
+    // report 优先，因为用户点击“定位”时最需要看到 Writer 实际要改的句子。
     if (finding.citationKey) {
       handleSelectCitation(finding.citationKey);
     }
-    // 同时设置 claimId 和 artifactId，让用户既能看到结构化结论也能快速跳到报告段落
     if (finding.claimId) {
       setSelectedClaimId(finding.claimId);
     }
-    if (finding.artifactId) {
+
+    if (finding.artifactId && reportArtifacts.some((artifact) => artifact.id === finding.artifactId)) {
       setSelectedArtifactId(finding.artifactId);
       setArtifactPinned(true);
+    } else if (canLocateInReport) {
+      setArtifactPinned(false);
+    }
+
+    if (canLocateInReport) {
+      setArtifactLocateRequest((current) => ({
+        requestId: (current?.requestId ?? 0) + 1,
+        artifactId: finding.artifactId,
+        paragraphIndex: finding.paragraphIndex,
+        excerpt: finding.excerpt,
+        claimId: finding.claimId,
+        claimText: claim?.content,
+        citationKey: finding.citationKey
+      }));
       setMainView("report");
-      setEventMessage(`已定位到报告段落 ${finding.paragraphIndex ?? ""}${finding.claimId ? `，关联结论 ${finding.claimId}` : ""}`);
-    } else if (finding.claimId) {
+      setEventMessage(`已定位到报告${finding.paragraphIndex !== undefined ? `段落 ${finding.paragraphIndex}` : ""}${finding.claimId ? `，关联结论 ${finding.claimId}` : ""}`);
+      return;
+    }
+
+    if (finding.claimId) {
       setMainView("schema");
       setEventMessage(`已定位到结构化结论 ${finding.claimId}`);
     }
@@ -1360,6 +1381,7 @@ export function App() {
                     artifact={reportDisplayArtifact}
                     sources={run?.evidenceSources ?? []}
                     onSelectCitation={handleSelectCitation}
+                    locateRequest={artifactLocateRequest}
                   />
                 </Suspense>
               </div>

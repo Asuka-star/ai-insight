@@ -1,17 +1,36 @@
+import { useEffect, useMemo, useRef } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { FileText } from "lucide-react";
-import type { AnalysisArtifact, EvidenceSource } from "../types";
+import type { AnalysisArtifact, ArtifactLocateRequest, EvidenceSource } from "../types";
 import { ARTIFACT_LABELS } from "../constants";
 
 interface ArtifactViewerProps {
   artifact?: AnalysisArtifact;
   sources?: EvidenceSource[];
   onSelectCitation: (citationKey: string) => void;
+  locateRequest?: ArtifactLocateRequest;
 }
 
-export function ArtifactViewer({ artifact, sources = [], onSelectCitation }: ArtifactViewerProps) {
-  const sourcesByKey = new Map(sources.map((source) => [source.citationKey, source]));
+export function ArtifactViewer({ artifact, sources = [], onSelectCitation, locateRequest }: ArtifactViewerProps) {
+  const readerRef = useRef<HTMLElement>(null);
+  const sourcesByKey = useMemo(() => new Map(sources.map((source) => [source.citationKey, source])), [sources]);
+
+  useEffect(() => {
+    if (!artifact || !locateRequest || !readerRef.current) return;
+    if (locateRequest.artifactId && locateRequest.artifactId !== artifact.id && !isReportArtifact(artifact)) return;
+    const target = findLocateTarget(readerRef.current, artifact.content ?? "", locateRequest);
+    if (!target) return;
+
+    // 定位结果用滚动加短暂闪烁表达，避免用户只看到视图跳转却找不到具体句子。
+    target.scrollIntoView({ block: "center", behavior: "smooth" });
+    target.classList.remove("artifact-locate-flash");
+    window.requestAnimationFrame(() => {
+      target.classList.add("artifact-locate-flash");
+    });
+    const timer = window.setTimeout(() => target.classList.remove("artifact-locate-flash"), 2200);
+    return () => window.clearTimeout(timer);
+  }, [artifact, locateRequest]);
 
   if (!artifact) {
     return (
@@ -24,7 +43,7 @@ export function ArtifactViewer({ artifact, sources = [], onSelectCitation }: Art
   }
 
   return (
-    <article className="artifact-reader">
+    <article className="artifact-reader" ref={readerRef}>
       <div className="artifact-meta">
         <span>{ARTIFACT_LABELS[artifact.type] ?? artifact.type}</span>
         <span>v{artifact.version || 1}</span>
@@ -58,6 +77,10 @@ export function ArtifactViewer({ artifact, sources = [], onSelectCitation }: Art
   );
 }
 
+function isReportArtifact(artifact: AnalysisArtifact) {
+  return artifact.type === "REPORT_DRAFT" || artifact.type === "FINAL_REPORT";
+}
+
 function linkifyCitations(markdown: string) {
   return markdown.replace(/\[((?:S\d+\s*(?:[,，、]\s*)?)+)]/g, (_, citationGroup: string) => {
     const citationKeys = citationGroup.match(/S\d+/g) ?? [];
@@ -79,4 +102,110 @@ function citationQualityClass(source?: EvidenceSource) {
   const quality = source?.sourceQuality?.toLowerCase();
   if (!quality) return "";
   return `quality-${quality}`;
+}
+
+function findLocateTarget(reader: HTMLElement, markdown: string, request: ArtifactLocateRequest) {
+  const blockElements = Array.from(reader.querySelectorAll<HTMLElement>(
+    "p, li, blockquote, td, th, h1, h2, h3, h4, h5, h6"
+  ));
+  const markdownBlocks = splitMarkdownParagraphs(markdown);
+
+  // 后端 paragraphIndex 来自原始 Markdown 段落数组；这里先按同一口径匹配，再逐级退到摘录、claim、citation。
+  if (request.paragraphIndex !== undefined) {
+    const paragraphBlock = markdownBlocks[request.paragraphIndex];
+    const match = paragraphBlock ? findElementByText(blockElements, paragraphBlock, true) : null;
+    if (match) return match;
+  }
+
+  if (request.excerpt) {
+    const match = findElementByText(blockElements, request.excerpt, true);
+    if (match) return match;
+  }
+
+  if (request.claimText) {
+    const match = findElementByText(blockElements, request.claimText, false);
+    if (match) return match;
+  }
+
+  if (request.citationKey) {
+    const citation = Array.from(reader.querySelectorAll<HTMLElement>(".citation-chip"))
+      .find((element) => normalizeSearchText(element.textContent).includes(normalizeSearchText(request.citationKey)));
+    return citation?.closest<HTMLElement>("p, li, blockquote, td, th") ?? citation ?? null;
+  }
+
+  if (request.claimId) {
+    return findElementByText(blockElements, request.claimId, false);
+  }
+
+  return null;
+}
+
+function splitMarkdownParagraphs(markdown: string) {
+  // 保留空段对应的索引位置，避免 paragraphIndex 被前端过滤后错位。
+  return markdown
+    .split(/\r?\n\s*\r?\n/)
+    .map((block) => block.trim());
+}
+
+function findElementByText(elements: HTMLElement[], text: string, strict: boolean) {
+  const normalizedNeedle = normalizeSearchText(text);
+  if (!normalizedNeedle) return null;
+
+  const exact = elements.find((element) => {
+    const haystack = normalizeSearchText(element.textContent);
+    if (!haystack) return false;
+    // 反向包含只允许较长块，防止一个短词命中表格/列表里的错误位置。
+    return haystack.includes(normalizedNeedle) || (haystack.length >= 18 && normalizedNeedle.includes(haystack));
+  });
+  if (exact) return exact;
+
+  const snippets = textSnippets(text);
+  const snippetMatch = elements.find((element) => {
+    const haystack = normalizeSearchText(element.textContent);
+    if (!haystack) return false;
+    return snippets.some((snippet) => haystack.includes(snippet));
+  });
+  if (snippetMatch) return snippetMatch;
+
+  if (strict) return null;
+
+  return elements
+    .map((element) => ({
+      element,
+      score: overlapScore(normalizeSearchText(element.textContent), normalizedNeedle)
+    }))
+    .filter((item) => item.score >= 0.42)
+    .sort((left, right) => right.score - left.score)[0]?.element ?? null;
+}
+
+function textSnippets(text: string) {
+  return text
+    .split(/[。！？!?；;：:\n\r]/)
+    .map(normalizeSearchText)
+    .filter((snippet) => snippet.length >= 12)
+    .sort((left, right) => right.length - left.length)
+    .slice(0, 4);
+}
+
+function normalizeSearchText(value?: string | null) {
+  return (value ?? "")
+    .toLowerCase()
+    .replace(/[`*_#[\](){}<>|>~-]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function overlapScore(haystack: string, needle: string) {
+  const needleTerms = searchTerms(needle);
+  if (!needleTerms.length) return 0;
+  const haystackTerms = new Set(searchTerms(haystack));
+  const matched = needleTerms.filter((term) => haystackTerms.has(term)).length;
+  return matched / needleTerms.length;
+}
+
+function searchTerms(value: string) {
+  return value
+    .split(/[^a-z0-9\u4e00-\u9fa5]+/i)
+    .map((term) => term.trim())
+    .filter((term) => term.length >= 2);
 }
