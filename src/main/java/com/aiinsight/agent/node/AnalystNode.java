@@ -9,7 +9,6 @@ import com.aiinsight.model.enums.AgentName;
 import com.aiinsight.model.enums.ArtifactType;
 import com.aiinsight.model.enums.ClaimType;
 import com.aiinsight.model.enums.ConfidenceLevel;
-import com.aiinsight.model.enums.FactType;
 import com.aiinsight.model.enums.ReviewAction;
 import com.aiinsight.model.review.ReviewDecision;
 import com.aiinsight.model.review.ReviewRepairTask;
@@ -30,10 +29,25 @@ import com.aiinsight.util.AgentUtils;
 import com.aiinsight.util.JsonResponseExtractor;
 import com.aiinsight.util.LlmSubtaskSupport;
 import com.aiinsight.util.LlmSubtaskSupport.LlmSubtaskResult;
+import com.aiinsight.util.TermExtractor;
+import com.aiinsight.util.TermExtractor.TermOptions;
+import static com.aiinsight.agent.node.AnalysisClaimRules.PLACEMENT_MATRIX;
+import static com.aiinsight.agent.node.AnalysisClaimRules.PLACEMENT_NONE;
+import static com.aiinsight.agent.node.AnalysisClaimRules.PLACEMENT_SWOT;
+import static com.aiinsight.agent.node.AnalysisClaimRules.PLACEMENT_VALIDATION_BACKLOG;
+import static com.aiinsight.agent.node.AnalysisClaimRules.SUPPORT_STATUS_PARTIAL;
+import static com.aiinsight.agent.node.AnalysisClaimRules.SUPPORT_STATUS_SUPPORTED;
+import static com.aiinsight.agent.node.AnalysisClaimRules.SUPPORT_STATUS_UNVERIFIED;
+import static com.aiinsight.agent.node.AnalysisClaimRules.containsUncertaintyMarker;
+import static com.aiinsight.agent.node.AnalysisClaimRules.defaultPlacementFor;
+import static com.aiinsight.agent.node.AnalysisClaimRules.displayableClaim;
+import static com.aiinsight.agent.node.AnalysisClaimRules.normalizeRecommendedPlacement;
+import static com.aiinsight.agent.node.AnalysisClaimRules.normalizeSupportStatus;
 import static com.aiinsight.util.AgentUtils.CITATION_PATTERN;
 import static com.aiinsight.util.AgentUtils.abbreviate;
 import static com.aiinsight.util.AgentUtils.containsAny;
 import static com.aiinsight.util.AgentUtils.containsIgnoreCase;
+import static com.aiinsight.util.AgentUtils.distinctKnownEvidenceIds;
 import static com.aiinsight.util.AgentUtils.hasText;
 import static com.aiinsight.util.AgentUtils.knownCitationKeys;
 import static com.aiinsight.util.AgentUtils.normalizeLower;
@@ -50,7 +64,6 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
-import java.net.URI;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.LinkedHashSet;
@@ -72,31 +85,9 @@ public class AnalystNode implements AgentNode {
     private final LlmClient llmClient;
     private final ObjectMapper objectMapper;
     private final FallbackAnalysisDraftFactory fallbackAnalysisDraftFactory;
-    private static final Set<String> CLAIM_SUPPORT_STOP_WORDS = Set.of(
-            "supports", "support", "provides", "provide", "offers", "offer", "includes", "include",
-            "using", "used", "with", "without", "for", "from", "that", "this", "and", "the",
-            "feature", "features", "capability", "capabilities", "product", "users", "user",
-            "analysis", "competitive", "advantage", "risk", "opportunity", "recommendation",
-            "支持", "提供", "功能", "能力", "用户", "产品", "可以", "用于", "适用", "覆盖", "包括",
-            "风险", "机会", "建议", "分析", "竞品", "结论", "证据", "不足", "待验证"
-    );
-    private static final Set<String> GENERIC_TITLE_TOKENS = Set.of(
-            "docs", "doc", "guide", "guides", "documentation", "pricing", "plans", "plan",
-            "enterprise", "deployment", "overview", "security", "trust", "privacy", "product",
-            "features", "feature", "integration", "integrations", "agent", "agents", "skills",
-            "workflow", "workflows", "code", "coding", "developer", "developers"
-    );
-    private static final Set<String> HIGH_PRECISION_SUPPORT_TERMS = Set.of(
-            "sso", "scim", "saml", "soc", "soc2", "soc 2", "rbac", "iso", "hipaa", "gdpr",
-            "bedrock", "proxy", "agent", "skills", "mcp", "workflow", "slack", "terminal", "ide", "vscode", "github", "gitlab"
-    );
-    private static final String SUPPORT_STATUS_SUPPORTED = "SUPPORTED";
-    private static final String SUPPORT_STATUS_PARTIAL = "PARTIAL";
-    private static final String SUPPORT_STATUS_UNVERIFIED = "UNVERIFIED";
-    private static final String PLACEMENT_MATRIX = "MATRIX";
-    private static final String PLACEMENT_SWOT = "SWOT";
-    private static final String PLACEMENT_VALIDATION_BACKLOG = "VALIDATION_BACKLOG";
-    private static final String PLACEMENT_NONE = "NONE";
+    private final ClaimEvidenceBinder claimEvidenceBinder = new ClaimEvidenceBinder();
+    private final AnalysisProductRenderer analysisProductRenderer = new AnalysisProductRenderer();
+    private static final TermOptions CLAIM_DEDUP_TERM_OPTIONS = TermOptions.basic(2);
 
     @Override
     public AgentName name() {
@@ -177,8 +168,8 @@ public class AnalystNode implements AgentNode {
         }
         return new AnalysisDraft(
                 effectiveClaims,
-                renderMatrixFromClaims(context, effectiveClaims),
-                renderSwotFromClaims(effectiveClaims)
+                analysisProductRenderer.renderMatrix(context.run(), effectiveClaims),
+                analysisProductRenderer.renderSwot(effectiveClaims)
         );
     }
 
@@ -311,8 +302,8 @@ public class AnalystNode implements AgentNode {
         claim.setChunkKeys(distinctKnownChunkKeys(run, draft.chunkKeys));
         claim.setEvidenceQuotes(sanitizeShortList(draft.evidenceQuotes, 4, 180));
         claim.setMissingEvidenceTypes(sanitizeShortList(draft.missingEvidenceTypes, 4, 80));
-        bindClaimFacts(run, claim);
-        pruneUnsupportedClaimEvidence(run, claim);
+        claimEvidenceBinder.bindClaimFacts(run, claim);
+        claimEvidenceBinder.pruneUnsupportedClaimEvidence(run, claim);
         adjustClaimConfidence(run, claim);
         if (claim.getEvidenceIds().isEmpty() && !containsUncertaintyMarker(claim.getContent())) {
             claim.setContent(claim.getContent() + "（证据不足，待验证）");
@@ -325,20 +316,18 @@ public class AnalystNode implements AgentNode {
         List<AnalysisClaim> claims = draft.claims().stream()
                 .map(claim -> sanitizeClaim(run, claim))
                 .toList();
-        AnalystContext context = analystContext(run);
         return new AnalysisDraft(
                 claims,
-                sanitizeCitationText(run, renderMatrixFromClaims(context, claims)),
-                sanitizeCitationText(run, renderSwotFromClaims(claims))
+                sanitizeCitationText(run, analysisProductRenderer.renderMatrix(run, claims)),
+                sanitizeCitationText(run, analysisProductRenderer.renderSwot(claims))
         );
     }
 
     private AnalysisDraft renderDraftFromClaims(AnalysisRun run, List<AnalysisClaim> claims) {
-        AnalystContext context = analystContext(run);
         return new AnalysisDraft(
                 claims,
-                sanitizeCitationText(run, renderMatrixFromClaims(context, claims)),
-                sanitizeCitationText(run, renderSwotFromClaims(claims))
+                sanitizeCitationText(run, analysisProductRenderer.renderMatrix(run, claims)),
+                sanitizeCitationText(run, analysisProductRenderer.renderSwot(claims))
         );
     }
 
@@ -353,8 +342,8 @@ public class AnalystNode implements AgentNode {
         claim.setRewriteSuggestion(sanitizeShortText(claim.getRewriteSuggestion(), 220));
         claim.setEvidenceQuotes(sanitizeShortList(claim.getEvidenceQuotes(), 4, 180));
         claim.setMissingEvidenceTypes(sanitizeShortList(claim.getMissingEvidenceTypes(), 4, 80));
-        bindClaimFacts(run, claim);
-        pruneUnsupportedClaimEvidence(run, claim);
+        claimEvidenceBinder.bindClaimFacts(run, claim);
+        claimEvidenceBinder.pruneUnsupportedClaimEvidence(run, claim);
         if (claim.getEvidenceIds().isEmpty()) {
             claim.setConfidence(ConfidenceLevel.LOW);
             if (!containsUncertaintyMarker(claim.getContent())) {
@@ -507,10 +496,10 @@ public class AnalystNode implements AgentNode {
             claim.setConfidence(ConfidenceLevel.LOW);
             return;
         }
-        Map<String, EvidenceSource> sources = sourceByCitationKey(run);
+        Map<String, EvidenceSource> sources = AgentEvidenceSupport.sourceByCitationKey(run);
         int strongestEvidence = claim.getEvidenceIds().stream()
                 .map(sources::get)
-                .mapToInt(this::evidenceConfidenceScore)
+                .mapToInt(AgentEvidenceSupport::evidenceConfidenceScore)
                 .max()
                 .orElse(0);
         if (claim.getConfidence() == ConfidenceLevel.HIGH && strongestEvidence < 3) {
@@ -543,25 +532,6 @@ public class AnalystNode implements AgentNode {
         }
         return keys;
     }
-    private Map<String, EvidenceSource> sourceByCitationKey(AnalysisRun run) {
-        return run.getEvidenceSources().stream()
-                .filter(source -> hasText(source.getCitationKey()))
-                .collect(Collectors.toMap(
-                        EvidenceSource::getCitationKey,
-                        source -> source,
-                        (first, ignored) -> first
-                ));
-    }
-
-    private List<String> distinctKnownEvidenceIds(AnalysisRun run, List<String> evidenceIds) {
-        Set<String> known = knownCitationKeys(run);
-        return (evidenceIds == null ? List.<String>of() : evidenceIds).stream()
-                .filter(AgentUtils::hasText)
-                .filter(known::contains)
-                .distinct()
-                .toList();
-    }
-
     private List<String> distinctKnownFactIds(AnalysisRun run, List<String> factIds) {
         Set<String> known = run.getCompetitorFactSets().stream()
                 .flatMap(factSet -> factSet.getFacts().stream())
@@ -587,309 +557,7 @@ public class AnalystNode implements AgentNode {
                 .toList();
     }
 
-    private void bindClaimFacts(AnalysisRun run, AnalysisClaim claim) {
-        List<ExtractedFact> selectedFacts = selectedFactsForClaim(run, claim);
-        if (claim.getFactIds().isEmpty()) {
-            claim.setFactIds(selectedFacts.stream()
-                    .map(ExtractedFact::getId)
-                    .filter(AgentUtils::hasText)
-                    .distinct()
-                    .limit(6)
-                    .toList());
-        }
-        if (claim.getEvidenceIds().isEmpty()) {
-            claim.setEvidenceIds(selectedFacts.stream()
-                    .flatMap(fact -> fact.getEvidenceIds().stream())
-                    .filter(AgentUtils::hasText)
-                    .distinct()
-                    .limit(6)
-                    .toList());
-        }
-        if (claim.getChunkKeys().isEmpty()) {
-            claim.setChunkKeys(selectedFacts.stream()
-                    .flatMap(fact -> fact.getChunkKeys().stream())
-                    .filter(AgentUtils::hasText)
-                    .distinct()
-                    .limit(8)
-                    .toList());
-        }
-    }
-
-    private void pruneUnsupportedClaimEvidence(AnalysisRun run, AnalysisClaim claim) {
-        if (claim == null || claim.getEvidenceIds().isEmpty()) {
-            return;
-        }
-        List<String> supportedEvidenceIds = claim.getEvidenceIds().stream()
-                .filter(id -> evidenceSupportsClaim(run, id, claim))
-                .distinct()
-                .limit(6)
-                .toList();
-        if (supportedEvidenceIds.size() == claim.getEvidenceIds().size()) {
-            return;
-        }
-        claim.setEvidenceIds(supportedEvidenceIds);
-        Set<String> acceptedSources = new LinkedHashSet<>(supportedEvidenceIds);
-        claim.setChunkKeys(claim.getChunkKeys().stream()
-                .filter(chunkKey -> chunkSupportsClaim(run, chunkKey, acceptedSources, claim))
-                .distinct()
-                .limit(8)
-                .toList());
-        if (supportedEvidenceIds.isEmpty()) {
-            claim.setConfidence(ConfidenceLevel.LOW);
-        } else if (claim.getConfidence() == ConfidenceLevel.HIGH) {
-            claim.setConfidence(ConfidenceLevel.MEDIUM);
-        }
-    }
-
-    private boolean evidenceSupportsClaim(AnalysisRun run, String citationKey, AnalysisClaim claim) {
-        if (boundFactSupportsEvidence(run, citationKey, claim)) {
-            return true;
-        }
-        EvidenceSource source = sourceByCitationKey(run).get(citationKey);
-        if (source == null) {
-            return false;
-        }
-        String sourceText = evidenceSourceText(source);
-        if (!claimMentionsAnyCompetitor(claim, sourceText)) {
-            return false;
-        }
-        if (analystQuoteSupportsEvidence(run, citationKey, claim, sourceText)) {
-            return true;
-        }
-        if (supportTextMatches(claim.getContent(), sourceText)) {
-            return true;
-        }
-        return run.getEvidenceChunks().stream()
-                .filter(chunk -> citationKey.equals(chunk.getSourceCitationKey()))
-                .anyMatch(chunk -> supportTextMatches(claim.getContent(), evidenceChunkText(chunk)));
-    }
-
-    private boolean analystQuoteSupportsEvidence(AnalysisRun run,
-                                                 String citationKey,
-                                                 AnalysisClaim claim,
-                                                 String sourceText) {
-        List<String> quotes = safeList(claim.getEvidenceQuotes());
-        if (quotes.isEmpty()) {
-            return false;
-        }
-        if (quotes.stream().anyMatch(quote -> supportTextMatches(quote, sourceText))) {
-            return true;
-        }
-        return run.getEvidenceChunks().stream()
-                .filter(chunk -> citationKey.equals(chunk.getSourceCitationKey()))
-                .map(this::evidenceChunkText)
-                .anyMatch(chunkText -> quotes.stream().anyMatch(quote -> supportTextMatches(quote, chunkText)));
-    }
-
-    private boolean boundFactSupportsEvidence(AnalysisRun run, String citationKey, AnalysisClaim claim) {
-        Set<String> boundFactIds = new LinkedHashSet<>(safeList(claim.getFactIds()));
-        return run.getCompetitorFactSets().stream()
-                .flatMap(factSet -> factSet.getFacts().stream())
-                .filter(fact -> fact.getEvidenceIds().contains(citationKey))
-                .filter(fact -> boundFactIds.isEmpty() || boundFactIds.contains(fact.getId()))
-                .anyMatch(fact -> factSupportsClaim(fact, claim));
-    }
-
-    private boolean factSupportsClaim(ExtractedFact fact, AnalysisClaim claim) {
-        if (fact.getFactType() == FactType.PRICING && claimLooksLikePricing(claim)) {
-            return true;
-        }
-        if (fact.getFactType() == FactType.CUSTOMER_SIGNAL && claimLooksLikeCustomerSignal(claim)) {
-            return true;
-        }
-        return supportTextMatches(claim.getContent(), "%s %s %s".formatted(
-                fact.getFactType(),
-                nullToEmpty(fact.getAttribute()),
-                nullToEmpty(fact.getValue())
-        ));
-    }
-
-    private boolean claimLooksLikePricing(AnalysisClaim claim) {
-        String text = normalizeLower(claim.getContent());
-        return containsAny(text, "pricing", "price", "plan", "subscription", "billing", "$",
-                "价格", "定价", "套餐", "订阅", "付费", "商业模式");
-    }
-
-    private boolean claimLooksLikeCustomerSignal(AnalysisClaim claim) {
-        String text = normalizeLower(claim.getContent());
-        return containsAny(text, "review", "feedback", "customer", "user", "pain", "interview", "survey",
-                "评价", "反馈", "用户", "痛点", "访谈", "调研");
-    }
-
-    private boolean chunkSupportsClaim(AnalysisRun run,
-                                       String chunkKey,
-                                       Set<String> acceptedSources,
-                                       AnalysisClaim claim) {
-        return run.getEvidenceChunks().stream()
-                .filter(chunk -> chunkKey.equals(chunk.getChunkKey()))
-                .filter(chunk -> acceptedSources.contains(chunk.getSourceCitationKey()))
-                .anyMatch(chunk -> supportTextMatches(claim.getContent(), evidenceChunkText(chunk)));
-    }
-
-    private boolean claimMentionsAnyCompetitor(AnalysisClaim claim, String evidenceText) {
-        List<String> competitors = safeList(claim.getCompetitorNames()).stream()
-                .filter(AgentUtils::hasText)
-                .toList();
-        if (competitors.isEmpty()) {
-            return true;
-        }
-        return competitors.stream().anyMatch(competitor -> containsIgnoreCase(evidenceText, competitor));
-    }
-
-    private boolean supportTextMatches(String claimText, String evidenceText) {
-        Set<String> claimTerms = supportTerms(claimText);
-        Set<String> evidenceTerms = supportTerms(evidenceText);
-        if (claimTerms.isEmpty() || evidenceTerms.isEmpty()) {
-            return false;
-        }
-        Set<String> preciseTerms = claimTerms.stream()
-                .filter(HIGH_PRECISION_SUPPORT_TERMS::contains)
-                .collect(Collectors.toCollection(LinkedHashSet::new));
-        if (!preciseTerms.isEmpty() && !evidenceTerms.containsAll(preciseTerms)) {
-            return false;
-        }
-        long overlap = claimTerms.stream().filter(evidenceTerms::contains).count();
-        int required = preciseTerms.isEmpty()
-                ? (claimTerms.size() <= 3 ? 1 : 2)
-                : Math.max(2, preciseTerms.size());
-        return overlap >= Math.min(required, claimTerms.size());
-    }
-
-    private Set<String> supportTerms(String text) {
-        Set<String> terms = new LinkedHashSet<>();
-        if (!hasText(text)) {
-            return terms;
-        }
-        String normalized = normalizeLower(text)
-                .replaceAll("[^\\p{IsHan}a-z0-9]+", " ")
-                .trim();
-        for (String part : normalized.split("\\s+")) {
-            if (part.length() >= 3 && !CLAIM_SUPPORT_STOP_WORDS.contains(part)) {
-                terms.add(part);
-            }
-        }
-        String chineseOnly = normalized.replaceAll("[^\\p{IsHan}]", "");
-        for (int i = 0; i < chineseOnly.length() - 1; i++) {
-            String term = chineseOnly.substring(i, i + 2);
-            if (!CLAIM_SUPPORT_STOP_WORDS.contains(term)) {
-                terms.add(term);
-            }
-        }
-        addCrossLingualSupportTerms(text, terms);
-        return terms;
-    }
-
-    private void addCrossLingualSupportTerms(String text, Set<String> terms) {
-        String normalized = normalizeLower(text);
-        addAliasesIfContains(normalized, terms, List.of("权限", "permission", "permissions"), "permission", "permissions", "admin");
-        addAliasesIfContains(normalized, terms, List.of("审计", "audit", "auditing"), "audit", "auditing");
-        addAliasesIfContains(normalized, terms, List.of("治理", "governance"), "governance");
-        addAliasesIfContains(normalized, terms, List.of("企业", "enterprise"), "enterprise");
-        addAliasesIfContains(normalized, terms, List.of("控制", "controls", "control"), "controls", "control");
-        addAliasesIfContains(normalized, terms, List.of("管理员", "admin", "administrator"), "admin", "administrator");
-        addAliasesIfContains(normalized, terms, List.of("官方", "official"), "official");
-        addAliasesIfContains(normalized, terms, List.of("文档", "docs", "documentation"), "docs", "documentation");
-        addAliasesIfContains(normalized, terms, List.of("搜索", "search"), "search");
-        addAliasesIfContains(normalized, terms, List.of("ai", "人工智能", "智能"), "ai");
-        addAliasesIfContains(normalized, terms, List.of("能力", "capability", "capabilities"), "capability", "capabilities");
-        addAliasesIfContains(normalized, terms, List.of("路线图", "roadmap", "规划", "planning"), "roadmap", "planning");
-        addAliasesIfContains(normalized, terms, List.of("优先", "prioritize", "priority"), "prioritize", "priority");
-    }
-
-    private void addAliasesIfContains(String normalized, Set<String> terms, List<String> needles, String... aliases) {
-        if (needles.stream().anyMatch(normalized::contains)) {
-            terms.addAll(List.of(aliases));
-        }
-    }
-
-    private String evidenceSourceText(EvidenceSource source) {
-        return "%s %s %s %s %s %s".formatted(
-                nullToEmpty(source.getTitle()),
-                nullToEmpty(source.getUrl()),
-                nullToEmpty(source.getSourceType()),
-                nullToEmpty(source.getSnippet()),
-                nullToEmpty(source.getRawText()),
-                nullToEmpty(source.getComplianceNote())
-        );
-    }
-
-    private String evidenceChunkText(EvidenceChunk chunk) {
-        return "%s %s %s %s %s".formatted(
-                nullToEmpty(chunk.getTitle()),
-                nullToEmpty(chunk.getUrl()),
-                chunk.getHeadingPath() == null ? "" : String.join(" ", chunk.getHeadingPath()),
-                nullToEmpty(chunk.getContentKind()),
-                nullToEmpty(chunk.getText())
-        );
-    }
-
-    private List<ExtractedFact> selectedFactsForClaim(AnalysisRun run, AnalysisClaim claim) {
-        List<ExtractedFact> allFacts = run.getCompetitorFactSets().stream()
-                .flatMap(factSet -> factSet.getFacts().stream())
-                .toList();
-        if (allFacts.isEmpty()) {
-            return List.of();
-        }
-        Set<String> requestedFactIds = new LinkedHashSet<>(safeList(claim.getFactIds()));
-        Set<String> evidenceIds = new LinkedHashSet<>(safeList(claim.getEvidenceIds()));
-        Set<String> competitors = safeList(claim.getCompetitorNames()).stream()
-                .map(this::competitorKey)
-                .collect(Collectors.toCollection(LinkedHashSet::new));
-        Set<String> claimTerms = termsForBinding(claim.getContent());
-        return allFacts.stream()
-                .map(fact -> new FactMatch(fact, factMatchScore(fact, requestedFactIds, evidenceIds, competitors, claimTerms)))
-                .filter(match -> match.score() >= MIN_AUTO_BIND_SCORE)
-                .sorted((left, right) -> Integer.compare(right.score(), left.score()))
-                .map(FactMatch::fact)
-                .limit(6)
-                .toList();
-    }
-
-    // 自动绑定的最低分数阈值：低于此分数认为术语重叠是偶然的，不绑定，
-    // 避免 Claim 带上语义不相关的 Fact 和 Evidence ID。
-    private static final int MIN_AUTO_BIND_SCORE = 3;
     private static final int MAX_CLAIMS = 8;
-
-    private int factMatchScore(ExtractedFact fact,
-                               Set<String> requestedFactIds,
-                               Set<String> evidenceIds,
-                               Set<String> competitors,
-                               Set<String> claimTerms) {
-        int score = 0;
-        if (!requestedFactIds.isEmpty() && requestedFactIds.contains(fact.getId())) {
-            score += 100;
-        }
-        if (!evidenceIds.isEmpty() && fact.getEvidenceIds().stream().anyMatch(evidenceIds::contains)) {
-            score += 20;
-        }
-        if (!competitors.isEmpty() && competitors.contains(competitorKey(fact.getCompetitorName()))) {
-            score += 10;
-        }
-        Set<String> factTerms = termsForBinding("%s %s %s".formatted(fact.getFactType(), fact.getAttribute(), fact.getValue()));
-        long overlap = claimTerms.stream().filter(factTerms::contains).count();
-        score += (int) Math.min(overlap, 8);
-        return score;
-    }
-
-    private Set<String> termsForBinding(String text) {
-        Set<String> terms = new LinkedHashSet<>();
-        if (!hasText(text)) {
-            return terms;
-        }
-        String normalized = text.toLowerCase(Locale.ROOT)
-                .replaceAll("[^\\p{IsHan}a-z0-9]+", " ")
-                .trim();
-        for (String part : normalized.split("\\s+")) {
-            if (part.length() >= 2) {
-                terms.add(part);
-            }
-        }
-        String chineseOnly = normalized.replaceAll("[^\\p{IsHan}]", "");
-        for (int i = 0; i < chineseOnly.length() - 1; i++) {
-            terms.add(chineseOnly.substring(i, i + 2));
-        }
-        return terms;
-    }
 
     private String claimContentKey(String text) {
         if (!hasText(text)) {
@@ -899,6 +567,10 @@ public class AnalystNode implements AgentNode {
                 .replaceAll("（证据不足，待验证）", "")
                 .replaceAll("\\(insufficient evidence; needs verification\\)", "")
                 .replaceAll("[^\\p{IsHan}a-z0-9]+", "");
+    }
+
+    private Set<String> termsForBinding(String text) {
+        return TermExtractor.extract(text, CLAIM_DEDUP_TERM_OPTIONS);
     }
 
     private double claimContentOverlap(String left, String right) {
@@ -948,37 +620,6 @@ public class AnalystNode implements AgentNode {
                         || dimensionKeywords(dimension).stream().anyMatch(keyword -> containsIgnoreCase(text, keyword)))
                 .findFirst()
                 .orElse("综合判断");
-    }
-
-    private String normalizeSupportStatus(String value) {
-        String normalized = normalizeUpper(value);
-        if (SUPPORT_STATUS_SUPPORTED.equals(normalized)
-                || SUPPORT_STATUS_PARTIAL.equals(normalized)
-                || SUPPORT_STATUS_UNVERIFIED.equals(normalized)) {
-            return normalized;
-        }
-        return SUPPORT_STATUS_PARTIAL;
-    }
-
-    private String normalizeRecommendedPlacement(String value, ClaimType type) {
-        String normalized = normalizeUpper(value);
-        if (PLACEMENT_MATRIX.equals(normalized)
-                || PLACEMENT_SWOT.equals(normalized)
-                || PLACEMENT_VALIDATION_BACKLOG.equals(normalized)
-                || PLACEMENT_NONE.equals(normalized)) {
-            return normalized;
-        }
-        return defaultPlacementFor(type);
-    }
-
-    private String defaultPlacementFor(ClaimType type) {
-        if (type == ClaimType.STRENGTH
-                || type == ClaimType.WEAKNESS
-                || type == ClaimType.OPPORTUNITY
-                || type == ClaimType.RISK) {
-            return PLACEMENT_SWOT;
-        }
-        return PLACEMENT_MATRIX;
     }
 
     private String sanitizeShortText(String text, int maxLength) {
@@ -1072,10 +713,10 @@ public class AnalystNode implements AgentNode {
     }
 
     private boolean hasStrongFirstPartyEvidence(AnalysisRun run, AnalysisClaim claim) {
-        Map<String, EvidenceSource> sources = sourceByCitationKey(run);
+        Map<String, EvidenceSource> sources = AgentEvidenceSupport.sourceByCitationKey(run);
         return safeList(claim.getEvidenceIds()).stream()
                 .map(sources::get)
-                .anyMatch(source -> evidenceConfidenceScore(source) >= 3 && firstPartyAuthority(source));
+                .anyMatch(source -> AgentEvidenceSupport.evidenceConfidenceScore(source) >= 3 && firstPartyAuthority(source));
     }
 
     private boolean firstPartyAuthority(EvidenceSource source) {
@@ -1086,7 +727,7 @@ public class AnalystNode implements AgentNode {
         if (authority.startsWith("FIRST_PARTY")) {
             return true;
         }
-        return isAuthoritativeSourceType(source) && !thirdPartyLikeSource(source);
+        return AgentEvidenceSupport.isAuthoritativeSourceType(source) && !AgentEvidenceSupport.thirdPartyLikeSource(source);
     }
 
     private void applyClaimEligibility(AnalysisClaim claim, String reason) {
@@ -1103,12 +744,12 @@ public class AnalystNode implements AgentNode {
         if (!highRiskClaim(claim)) {
             return false;
         }
-        Map<String, EvidenceSource> sources = sourceByCitationKey(run);
+        Map<String, EvidenceSource> sources = AgentEvidenceSupport.sourceByCitationKey(run);
         return safeList(claim.getEvidenceIds()).stream()
                 .noneMatch(citationKey -> {
                     EvidenceSource source = sources.get(citationKey);
                     return source != null
-                            && evidenceConfidenceScore(source) >= 3
+                            && AgentEvidenceSupport.evidenceConfidenceScore(source) >= 3
                             && highRiskSourceMatchesClaim(source, claim)
                             && directEvidenceSupportsHighRiskClaim(run, citationKey, claim);
                 });
@@ -1128,88 +769,43 @@ public class AnalystNode implements AgentNode {
         String claimText = normalizeLower("%s %s".formatted(nullToEmpty(claim.getDimension()), nullToEmpty(claim.getContent())));
         if (containsAny(claimText, "pricing", "price", "plan", "subscription", "$", "价格", "定价", "套餐", "订阅", "付费")) {
             return containsAny(sourceType, "pricing", "official", "docs", "product")
-                    && sourceTextHasRiskSignal(evidenceSourceText(source), "pricing");
+                    && AgentEvidenceSupport.sourceTextHasRiskSignal(claimEvidenceBinder.evidenceSourceText(source), "pricing");
         }
         if (containsAny(claimText, "security", "permission", "compliance", "privacy", "sso", "scim", "saml", "soc",
                 "安全", "权限", "合规", "隐私", "审计")) {
             return containsAny(sourceType, "security", "docs", "product", "official", "trust", "privacy")
-                    && sourceTextHasRiskSignal(evidenceSourceText(source), "security");
+                    && AgentEvidenceSupport.sourceTextHasRiskSignal(claimEvidenceBinder.evidenceSourceText(source), "security");
         }
         if (containsAny(claimText, "deployment", "deploy", "bedrock", "proxy", "vpc", "部署", "代理")) {
             return containsAny(sourceType, "docs", "product", "official", "security", "integration")
-                    && sourceTextHasRiskSignal(evidenceSourceText(source), "deployment");
+                    && AgentEvidenceSupport.sourceTextHasRiskSignal(claimEvidenceBinder.evidenceSourceText(source), "deployment");
         }
         return true;
     }
 
     private boolean directEvidenceSupportsHighRiskClaim(AnalysisRun run, String citationKey, AnalysisClaim claim) {
-        boolean sourceSupports = evidenceSupportsClaim(run, citationKey, claim);
+        boolean sourceSupports = claimEvidenceBinder.evidenceSupportsClaim(run, citationKey, claim);
         boolean chunkSupports = run.getEvidenceChunks().stream()
                 .filter(chunk -> citationKey.equals(chunk.getSourceCitationKey()))
                 .filter(chunk -> chunkRiskCompatibleWithClaim(chunk, claim))
-                .anyMatch(chunk -> supportTextMatches(claim.getContent(), evidenceChunkText(chunk)));
+                .anyMatch(chunk -> claimEvidenceBinder.supportTextMatches(claim.getContent(), claimEvidenceBinder.evidenceChunkText(chunk)));
         return sourceSupports && chunkSupports;
     }
 
     private boolean chunkRiskCompatibleWithClaim(EvidenceChunk chunk, AnalysisClaim claim) {
         String claimText = normalizeLower("%s %s".formatted(nullToEmpty(claim.getDimension()), nullToEmpty(claim.getContent())));
-        String chunkText = evidenceChunkText(chunk);
+        String chunkText = claimEvidenceBinder.evidenceChunkText(chunk);
         if (containsAny(claimText, "pricing", "price", "plan", "subscription", "$", "价格", "定价", "套餐", "订阅", "付费")) {
-            return sourceTextHasRiskSignal(chunkText, "pricing");
+            return AgentEvidenceSupport.sourceTextHasRiskSignal(chunkText, "pricing");
         }
         if (containsAny(claimText, "security", "permission", "compliance", "privacy", "sso", "scim", "saml", "soc",
                 "安全", "权限", "合规", "隐私", "审计")) {
-            return sourceTextHasRiskSignal(chunkText, "security");
+            return AgentEvidenceSupport.sourceTextHasRiskSignal(chunkText, "security");
         }
         if (containsAny(claimText, "deployment", "deploy", "bedrock", "proxy", "vpc", "部署", "代理")) {
-            return sourceTextHasRiskSignal(chunkText, "deployment");
+            return AgentEvidenceSupport.sourceTextHasRiskSignal(chunkText, "deployment");
         }
         return true;
-    }
-
-    private boolean sourceTextHasRiskSignal(String text, String risk) {
-        String normalized = normalizeLower(text);
-        return switch (risk) {
-            case "pricing" -> containsAny(normalized,
-                    "pricing", "price", "plan", "subscription", "billing", "$",
-                    "价格", "定价", "套餐", "订阅", "付费", "企业版");
-            case "security" -> containsAny(normalized,
-                    "security", "permission", "compliance", "privacy", "trust", "sso", "scim", "saml", "soc",
-                    "安全", "权限", "合规", "隐私", "审计", "单点登录");
-            case "deployment" -> containsAny(normalized,
-                    "deployment", "deploy", "bedrock", "proxy", "vpc", "cloud",
-                    "部署", "代理", "云");
-            default -> true;
-        };
-    }
-
-    private boolean displayableClaim(AnalysisClaim claim) {
-        return claim != null
-                && claim.getConfidence() != ConfidenceLevel.LOW
-                && !SUPPORT_STATUS_UNVERIFIED.equals(normalizeSupportStatus(claim.getSupportStatus()))
-                && claim.getEvidenceIds() != null
-                && !claim.getEvidenceIds().isEmpty()
-                && !containsUncertaintyMarker(claim.getContent());
-    }
-
-    private boolean matrixClaim(AnalysisClaim claim) {
-        if (claim != null && claim.getEligibleForMatrix() != null) {
-            return Boolean.TRUE.equals(claim.getEligibleForMatrix());
-        }
-        return displayableClaim(claim) && PLACEMENT_MATRIX.equals(normalizeRecommendedPlacement(
-                claim.getRecommendedPlacement(),
-                claim.getType()
-        ));
-    }
-
-    private boolean swotClaim(AnalysisClaim claim) {
-        if (claim != null && claim.getEligibleForSwot() != null) {
-            return Boolean.TRUE.equals(claim.getEligibleForSwot());
-        }
-        return displayableClaim(claim) && PLACEMENT_SWOT.equals(normalizeRecommendedPlacement(
-                claim.getRecommendedPlacement(),
-                claim.getType()
-        ));
     }
 
     private List<String> dimensionKeywords(String dimension) {
@@ -1295,254 +891,6 @@ public class AnalystNode implements AgentNode {
                 .collect(Collectors.joining("\n"));
     }
 
-    private String renderMatrixFromClaims(AnalystContext context, List<AnalysisClaim> claims) {
-        AnalysisRun run = context.run();
-        List<String> competitors = matrixCompetitors(run, claims);
-        String rows = competitors.stream()
-                .map(competitor -> matrixRowForCompetitor(run, competitor, claims))
-                .collect(Collectors.joining("\n"));
-        String claimRows = claims.stream()
-                .filter(claim -> matrixClaim(claim) || swotClaim(claim))
-                .map(claim -> "| %s | %s | %s | %s | %s | %s | %s | %s |".formatted(
-                        claim.getType(),
-                        claim.getConfidence(),
-                        textOrDash(claim.getSupportStatus()),
-                        textOrDash(claim.getRecommendedPlacement()),
-                        textOrDash(claim.getDimension()),
-                        competitorText(claim.getCompetitorNames()),
-                        escapeCell(claim.getContent()),
-                        citationText(claim.getEvidenceIds())
-                ))
-                .collect(Collectors.joining("\n"));
-        String dimensionRows = dimensionCoverageRows(run, claims);
-        String backlogRows = validationBacklogRows(claims);
-        return """
-                ## 基于结构化结论的竞品矩阵
-
-                | 竞品 | 基于结论的判断 | 置信度 | 证据 |
-                | --- | --- | --- | --- |
-                %s
-
-                ## 用户指定维度覆盖
-
-                | 维度 | 判断 | 置信度 | 证据 |
-                | --- | --- | --- | --- |
-                %s
-
-                ## 结构化结论明细
-
-                | 类型 | 置信度 | 支撑状态 | 放置建议 | 维度 | 竞品 | 结论 | 证据 |
-                | --- | --- | --- | --- | --- | --- | --- | --- |
-                %s
-
-                ## 待验证结论
-
-                | 维度 | 结论 | 原因 |
-                | --- | --- | --- |
-                %s
-
-                说明：主矩阵仅使用 MEDIUM/HIGH、已绑定证据且 recommendedPlacement=MATRIX 的结构化结论；LOW、无证据或 UNVERIFIED 结论只进入待验证区域。
-                """.formatted(
-                rows.isBlank() ? "| - | 暂无结构化结论。 | LOW | 证据不足 |" : rows,
-                dimensionRows,
-                claimRows.isBlank() ? "| - | LOW | UNVERIFIED | VALIDATION_BACKLOG | 综合判断 | - | 暂无结构化结论。 | 证据不足 |" : claimRows,
-                backlogRows
-        );
-    }
-
-    private String matrixRowForCompetitor(AnalysisRun run, String competitor, List<AnalysisClaim> claims) {
-        Map<String, EvidenceSource> sourceByCitationKey = sourceByCitationKey(run);
-        List<AnalysisClaim> relatedClaims = claims.stream()
-                .filter(this::matrixClaim)
-                .filter(claim -> claimAppliesToCompetitor(claim, competitor))
-                .sorted((left, right) -> Integer.compare(claimDisplayScore(right, sourceByCitationKey),
-                        claimDisplayScore(left, sourceByCitationKey)))
-                .limit(3)
-                .toList();
-        if (relatedClaims.isEmpty()) {
-            return "| %s | 暂无可归属的结构化结论。 | LOW | 证据不足 |".formatted(escapeCell(competitor));
-        }
-        String summary = relatedClaims.stream()
-                .map(claim -> "%s: %s".formatted(claim.getType(), claim.getContent()))
-                .collect(Collectors.joining("<br>"));
-        String confidence = relatedClaims.stream()
-                .map(claim -> String.valueOf(claim.getConfidence()))
-                .distinct()
-                .collect(Collectors.joining("/"));
-        List<String> evidenceIds = relatedClaims.stream()
-                .flatMap(claim -> claim.getEvidenceIds().stream())
-                .distinct()
-                .toList();
-        return "| %s | %s | %s | %s |".formatted(
-                escapeCell(competitor),
-                escapeCell(summary),
-                confidence,
-                citationText(evidenceIds)
-        );
-    }
-
-    private String dimensionCoverageRows(AnalysisRun run, List<AnalysisClaim> claims) {
-        List<String> dimensions = run.getRequirement() == null
-                ? List.of()
-                : safeList(run.getRequirement().getDimensions()).stream()
-                .filter(AgentUtils::hasText)
-                .toList();
-        if (dimensions.isEmpty()) {
-            dimensions = List.of("综合判断");
-        }
-        return dimensions.stream()
-                .map(dimension -> dimensionCoverageRow(dimension, claims))
-                .collect(Collectors.joining("\n"));
-    }
-
-    private String dimensionCoverageRow(String dimension, List<AnalysisClaim> claims) {
-        List<AnalysisClaim> relatedClaims = claims.stream()
-                .filter(this::matrixClaim)
-                .filter(claim -> claimMatchesDimension(claim, dimension))
-                .limit(2)
-                .toList();
-        if (relatedClaims.isEmpty()) {
-            return "| %s | 证据不足，待验证。 | LOW | 证据不足 |".formatted(escapeCell(dimension));
-        }
-        String summary = relatedClaims.stream()
-                .map(AnalysisClaim::getContent)
-                .collect(Collectors.joining("<br>"));
-        String confidence = relatedClaims.stream()
-                .map(claim -> String.valueOf(claim.getConfidence()))
-                .distinct()
-                .collect(Collectors.joining("/"));
-        List<String> evidenceIds = relatedClaims.stream()
-                .flatMap(claim -> claim.getEvidenceIds().stream())
-                .distinct()
-                .toList();
-        return "| %s | %s | %s | %s |".formatted(
-                escapeCell(dimension),
-                escapeCell(summary),
-                confidence,
-                citationText(evidenceIds)
-        );
-    }
-
-    private boolean claimMatchesDimension(AnalysisClaim claim, String dimension) {
-        if ("综合判断".equals(dimension)) {
-            return true;
-        }
-        String claimDimension = textOrDash(claim.getDimension());
-        if (!hasText(claimDimension) || "-".equals(claimDimension)) {
-            return false;
-        }
-        String normalizedClaimDimension = normalizeDimensionLabel(claimDimension);
-        String normalizedRequestedDimension = normalizeDimensionLabel(dimension);
-        if (normalizedClaimDimension.equals(normalizedRequestedDimension)) {
-            return true;
-        }
-        int minLength = Math.min(normalizedClaimDimension.length(), normalizedRequestedDimension.length());
-        return minLength >= 4
-                && (normalizedClaimDimension.contains(normalizedRequestedDimension)
-                || normalizedRequestedDimension.contains(normalizedClaimDimension));
-    }
-
-    private String normalizeDimensionLabel(String value) {
-        return normalizeLower(value)
-                .replaceAll("[^\\p{IsHan}a-z0-9]+", "")
-                .trim();
-    }
-
-    private String validationBacklogRows(List<AnalysisClaim> claims) {
-        String rows = claims.stream()
-                .filter(claim -> !displayableClaim(claim)
-                        || PLACEMENT_VALIDATION_BACKLOG.equals(normalizeRecommendedPlacement(
-                        claim.getRecommendedPlacement(),
-                        claim.getType()
-                ))
-                        || PLACEMENT_NONE.equals(normalizeRecommendedPlacement(
-                        claim.getRecommendedPlacement(),
-                        claim.getType()
-                )))
-                .limit(6)
-                .map(claim -> "| %s | %s | %s |".formatted(
-                        escapeCell(textOrDash(claim.getDimension())),
-                        escapeCell(claim.getContent()),
-                        validationReason(claim)
-                ))
-                .collect(Collectors.joining("\n"));
-        return rows.isBlank() ? "| - | 暂无待验证结论。 | - |" : rows;
-    }
-
-    private String validationReason(AnalysisClaim claim) {
-        if (claim.getEvidenceIds() == null || claim.getEvidenceIds().isEmpty()) {
-            return "缺少可用证据绑定";
-        }
-        if (claim.getConfidence() == ConfidenceLevel.LOW) {
-            return "LOW 置信度";
-        }
-        if (SUPPORT_STATUS_UNVERIFIED.equals(normalizeSupportStatus(claim.getSupportStatus()))) {
-            return "支撑状态为 UNVERIFIED";
-        }
-        if (PLACEMENT_NONE.equals(normalizeRecommendedPlacement(claim.getRecommendedPlacement(), claim.getType()))) {
-            return "放置建议为不展示";
-        }
-        return "放置建议为待验证";
-    }
-
-    private String renderSwotFromClaims(List<AnalysisClaim> claims) {
-        return """
-                | 维度 | 基于结构化结论的判断 | 证据 |
-                | --- | --- | --- |
-                | 优势 | %s | %s |
-                | 短板 | %s | %s |
-                | 机会 | %s | %s |
-                | 威胁 | %s | %s |
-
-                说明：SWOT 仅由结构化结论渲染；证据不足的想法应留在证据缺口中，不作为新的 SWOT 结论。
-                """.formatted(
-                swotText(claims, ClaimType.STRENGTH, ClaimType.COMPARISON),
-                citationText(evidenceIdsForClaimType(claims, ClaimType.STRENGTH, ClaimType.COMPARISON)),
-                swotText(claims, ClaimType.WEAKNESS),
-                citationText(evidenceIdsForClaimType(claims, ClaimType.WEAKNESS)),
-                swotText(claims, ClaimType.OPPORTUNITY, ClaimType.RECOMMENDATION),
-                citationText(evidenceIdsForClaimType(claims, ClaimType.OPPORTUNITY, ClaimType.RECOMMENDATION)),
-                swotText(claims, ClaimType.RISK),
-                citationText(evidenceIdsForClaimType(claims, ClaimType.RISK))
-        );
-    }
-
-    private String swotText(List<AnalysisClaim> claims, ClaimType... types) {
-        Set<ClaimType> accepted = Set.of(types);
-        String text = claims.stream()
-                .filter(this::swotClaim)
-                .filter(claim -> accepted.contains(claim.getType()))
-                .map(AnalysisClaim::getContent)
-                .filter(AgentUtils::hasText)
-                .limit(2)
-                .collect(Collectors.joining("<br>"));
-        return text.isBlank() ? "暂无结构化结论。" : escapeCell(text);
-    }
-
-    private List<String> matrixCompetitors(AnalysisRun run, List<AnalysisClaim> claims) {
-        LinkedHashSet<String> competitors = new LinkedHashSet<>();
-        if (run.getRequirement() != null && run.getRequirement().getCompetitors() != null) {
-            run.getRequirement().getCompetitors().stream().filter(AgentUtils::hasText).forEach(competitors::add);
-        }
-        run.getCompetitorProfiles().stream()
-                .map(profile -> textOrDash(profile.getProductName()))
-                .filter(AgentUtils::hasText)
-                .forEach(competitors::add);
-        claims.stream()
-                .flatMap(claim -> safeList(claim.getCompetitorNames()).stream())
-                .filter(AgentUtils::hasText)
-                .forEach(competitors::add);
-        return competitors.isEmpty() ? List.of("-") : new ArrayList<>(competitors);
-    }
-
-    private boolean claimAppliesToCompetitor(AnalysisClaim claim, String competitor) {
-        if (claim.getCompetitorNames() == null || claim.getCompetitorNames().isEmpty()) {
-            return true;
-        }
-        return claim.getCompetitorNames().stream()
-                .anyMatch(name -> name.equalsIgnoreCase(competitor));
-    }
-
     private List<String> normalizeCompetitorNames(AnalysisRun run, List<String> candidateNames) {
         List<String> configuredCompetitors = run.getRequirement() == null
                 ? List.of()
@@ -1580,71 +928,6 @@ public class AnalystNode implements AgentNode {
         return normalizeLower(value).replaceAll("[^\\p{IsAlphabetic}\\p{IsDigit}]+", "");
     }
 
-    private int claimDisplayScore(AnalysisClaim claim, Map<String, EvidenceSource> sourceByCitationKey) {
-        int bestEvidenceScore = safeList(claim.getEvidenceIds()).stream()
-                .map(sourceByCitationKey::get)
-                .mapToInt(this::evidenceConfidenceScore)
-                .max()
-                .orElse(0);
-        return bestEvidenceScore * 100 + confidenceScore(claim.getConfidence()) * 10 + claimTypeDisplayScore(claim.getType());
-    }
-
-    private int confidenceScore(ConfidenceLevel confidence) {
-        if (confidence == ConfidenceLevel.HIGH) {
-            return 3;
-        }
-        if (confidence == ConfidenceLevel.MEDIUM) {
-            return 2;
-        }
-        return 1;
-    }
-
-    private int claimTypeDisplayScore(ClaimType type) {
-        if (type == null) {
-            return 0;
-        }
-        return switch (type) {
-            case RECOMMENDATION -> 7;
-            case OPPORTUNITY -> 6;
-            case COMPARISON -> 5;
-            case STRENGTH -> 4;
-            case WEAKNESS -> 3;
-            case RISK -> 2;
-            case FACT -> 1;
-        };
-    }
-
-    private List<String> evidenceIdsForClaimType(List<AnalysisClaim> claims, ClaimType... types) {
-        Set<ClaimType> accepted = Set.of(types);
-        return claims.stream()
-                .filter(this::swotClaim)
-                .filter(claim -> accepted.contains(claim.getType()))
-                .flatMap(claim -> claim.getEvidenceIds().stream())
-                .distinct()
-                .toList();
-    }
-
-    private String citationText(List<String> evidenceIds) {
-        if (evidenceIds == null || evidenceIds.isEmpty()) {
-            return "证据不足";
-        }
-        return evidenceIds.stream()
-                .filter(AgentUtils::hasText)
-                .distinct()
-                .map(id -> "[" + id + "]")
-                .collect(Collectors.joining(" "));
-    }
-
-    private String competitorText(List<String> competitors) {
-        if (competitors == null || competitors.isEmpty()) {
-            return "-";
-        }
-        return competitors.stream().filter(AgentUtils::hasText).collect(Collectors.joining(", "));
-    }
-
-    private String escapeCell(String value) {
-        return textOrDash(value).replace("|", "\\|").replace("\n", "<br>");
-    }
     private String evidenceIndexBlock(AnalysisRun run) {
         List<EvidenceSource> sources = selectedEvidenceSources(run);
         if (sources.isEmpty()) {
@@ -1657,7 +940,7 @@ public class AnalystNode implements AgentNode {
                         nullToEmpty(source.getSourceType()),
                         nullToEmpty(source.getSourceQuality()),
                         nullToEmpty(source.getCollectionStatus()),
-                        evidenceTier(source),
+                        AgentEvidenceSupport.evidenceTier(source),
                         abbreviate(source.getSnippet(), 180)
                 ))
                 .collect(Collectors.joining("\n"));
@@ -1682,7 +965,7 @@ public class AnalystNode implements AgentNode {
                             .map(source -> "[%s] %s (%s)".formatted(
                                     source.getCitationKey(),
                                     abbreviate(source.getTitle(), 60),
-                                    evidenceTier(source)
+                                    AgentEvidenceSupport.evidenceTier(source)
                             ))
                             .collect(Collectors.joining("；"));
                     return "- %s：%s".formatted(dimension, evidence);
@@ -1762,109 +1045,9 @@ public class AnalystNode implements AgentNode {
     }
 
     private int evidencePromptScore(EvidenceSource source) {
-        return evidenceConfidenceScore(source) * 100
+        return AgentEvidenceSupport.evidenceConfidenceScore(source) * 100
                 + sourceTypeScore(source) * 10
                 + collectionStatusScore(source);
-    }
-
-    private int evidenceConfidenceScore(EvidenceSource source) {
-        if (source == null) {
-            return 0;
-        }
-        String quality = normalizeUpper(source.getSourceQuality());
-        String status = normalizeUpper(source.getCollectionStatus());
-        String freshness = normalizeUpper(source.getFreshness());
-        boolean thirdPartyLike = thirdPartyLikeSource(source);
-        if ("UNUSABLE".equals(quality) || "LOW".equals(quality)
-                || "FETCH_FAILED".equals(status) || "BLOCKED_BY_ROBOTS".equals(status)
-                || "SEARCH_RESULT_SNIPPET".equals(freshness)) {
-            return 1;
-        }
-        if ("HIGH".equals(quality)) {
-            return thirdPartyLike ? 2 : 3;
-        }
-        if (isAuthoritativeSourceType(source) && ("FETCHED".equals(status) || hasText(source.getRawText()))) {
-            return thirdPartyLike ? 2 : 3;
-        }
-        if ("MEDIUM".equals(quality) || ("FETCHED".equals(status) && hasText(source.getSnippet()))) {
-            return 2;
-        }
-        return hasText(source.getSnippet()) ? 2 : 1;
-    }
-
-    private String evidenceTier(EvidenceSource source) {
-        int score = evidenceConfidenceScore(source);
-        if (score >= 3) {
-            return "strong";
-        }
-        if (score == 2) {
-            return "medium";
-        }
-        return "weak";
-    }
-
-    private boolean isAuthoritativeSourceType(EvidenceSource source) {
-        return Set.of("official_site", "docs", "product_docs", "pricing_page", "release_notes", "technical_blog", "authoritative_media")
-                .contains(normalizeLower(source.getSourceType()));
-    }
-
-    private boolean thirdPartyLikeSource(EvidenceSource source) {
-        String host = sourceHost(source.getUrl());
-        if (host.endsWith(".test") && isAuthoritativeSourceType(source)) {
-            return false;
-        }
-        String authority = normalizeUpper(source.getSourceAuthority());
-        String sourceType = normalizeLower(source.getSourceType());
-        if (authority.startsWith("THIRD_PARTY")
-                || "COMMUNITY".equals(authority)
-                || "SEARCH_SNIPPET".equals(authority)
-                || "UNKNOWN".equals(authority)
-                || sourceType.startsWith("third_party")
-                || sourceType.contains("public_review")) {
-            return true;
-        }
-        return host.endsWith(".ac.cn") || titleSuggestsDifferentPublisher(host, source.getTitle());
-    }
-
-    private String sourceHost(String url) {
-        if (!hasText(url)) {
-            return "";
-        }
-        try {
-            String host = URI.create(url).getHost();
-            return host == null ? "" : host.toLowerCase(Locale.ROOT);
-        } catch (RuntimeException ex) {
-            return "";
-        }
-    }
-
-    private boolean titleSuggestsDifferentPublisher(String host, String title) {
-        if (!hasText(host) || !hasText(title)) {
-            return false;
-        }
-        String root = rootDomain(host);
-        String leadingTitle = normalizeLower(title).split("\\s[-|]\\s", 2)[0];
-        if (!hasText(root) || leadingTitle.contains(root)) {
-            return false;
-        }
-        for (String token : leadingTitle.split("[^a-z0-9]+")) {
-            if (token.length() < 3 || GENERIC_TITLE_TOKENS.contains(token)) {
-                continue;
-            }
-            return !root.contains(token) && !token.contains(root);
-        }
-        return false;
-    }
-
-    private String rootDomain(String host) {
-        String[] parts = host.split("\\.");
-        if (parts.length < 2) {
-            return host;
-        }
-        if (parts.length >= 3 && Set.of("com", "net", "org", "ac", "edu", "gov").contains(parts[parts.length - 2])) {
-            return parts[parts.length - 3];
-        }
-        return parts[parts.length - 2];
     }
 
     private int sourceTypeScore(EvidenceSource source) {
@@ -2031,9 +1214,6 @@ public class AnalystNode implements AgentNode {
         public List<String> chunkKeys = List.of();
         public List<String> evidenceQuotes = List.of();
         public List<String> missingEvidenceTypes = List.of();
-    }
-
-    private record FactMatch(ExtractedFact fact, int score) {
     }
 
     private record AnalystContext(

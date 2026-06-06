@@ -30,6 +30,9 @@ public final class AgentUtils {
     /** Compiled pattern matching evidence citation references like {@code [S1]}, {@code [S12]}. */
     public static final Pattern CITATION_PATTERN = Pattern.compile("\\[(S\\d+)]");
 
+    /** Compiled pattern matching bare evidence citation keys like {@code S1}, {@code S12}. */
+    public static final Pattern CITATION_KEY_PATTERN = Pattern.compile("\\bS\\d+\\b");
+
     // ───────────────────────── String utilities ─────────────────────────
 
     public static String nullToEmpty(String value) {
@@ -81,9 +84,9 @@ public final class AgentUtils {
     }
 
     public static boolean containsAny(String text, String... patterns) {
+        String normalizedText = text == null ? "" : text.toLowerCase(Locale.ROOT);
         for (String pattern : patterns) {
-            if (text != null && pattern != null
-                    && text.contains(pattern.toLowerCase(Locale.ROOT))) {
+            if (pattern != null && normalizedText.contains(pattern.toLowerCase(Locale.ROOT))) {
                 return true;
             }
         }
@@ -102,6 +105,58 @@ public final class AgentUtils {
         return run.getEvidenceSources().stream()
                 .map(EvidenceSource::getCitationKey)
                 .collect(Collectors.toCollection(LinkedHashSet::new));
+    }
+
+    public static List<String> distinctKnownEvidenceIds(AnalysisRun run, List<String> evidenceIds) {
+        return knownEvidenceIds(run, evidenceIds, List.of());
+    }
+
+    public static List<String> knownEvidenceIds(AnalysisRun run, List<String> candidateIds, List<String> fallback) {
+        Set<String> known = knownCitationKeys(run);
+        List<String> selected = safeList(candidateIds).stream()
+                .filter(AgentUtils::hasText)
+                .map(AgentUtils::normalizeEvidenceId)
+                .filter(known::contains)
+                .distinct()
+                .toList();
+        if (!selected.isEmpty()) {
+            return selected;
+        }
+        return safeList(fallback).stream()
+                .filter(AgentUtils::hasText)
+                .map(AgentUtils::normalizeEvidenceId)
+                .filter(known::contains)
+                .distinct()
+                .toList();
+    }
+
+    public static String sanitizeCitationKey(String citationKey) {
+        if (!hasText(citationKey)) {
+            return null;
+        }
+        Matcher matcher = CITATION_KEY_PATTERN.matcher(citationKey.trim());
+        return matcher.find() ? matcher.group() : null;
+    }
+
+    public static String firstCitationKey(String... values) {
+        if (values == null) {
+            return null;
+        }
+        for (String value : values) {
+            String citationKey = sanitizeCitationKey(value);
+            if (citationKey != null) {
+                return citationKey;
+            }
+        }
+        return null;
+    }
+
+    private static String normalizeEvidenceId(String value) {
+        String normalized = value.trim();
+        if (normalized.startsWith("[") && normalized.endsWith("]") && normalized.length() > 2) {
+            normalized = normalized.substring(1, normalized.length() - 1).trim();
+        }
+        return normalized;
     }
 
     /**

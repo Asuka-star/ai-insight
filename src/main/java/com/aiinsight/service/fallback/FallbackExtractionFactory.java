@@ -11,10 +11,12 @@ import com.aiinsight.model.schema.PricingPlan;
 import com.aiinsight.model.schema.UserPersona;
 import org.springframework.stereotype.Component;
 
+import static com.aiinsight.util.AgentUtils.containsIgnoreCase;
+import static com.aiinsight.util.AgentUtils.nullToEmpty;
+
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
-import java.util.Locale;
 import java.util.Set;
 import java.util.stream.Collectors;
 
@@ -213,11 +215,4 @@ public class FallbackExtractionFactory {
         return industry;
     }
 
-    private boolean containsIgnoreCase(String text, String pattern) {
-        return text != null && pattern != null && text.toLowerCase(Locale.ROOT).contains(pattern.toLowerCase(Locale.ROOT));
-    }
-
-    private String nullToEmpty(String value) {
-        return value == null ? "" : value;
-    }
 }

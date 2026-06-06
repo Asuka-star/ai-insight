@@ -30,6 +30,7 @@ import static com.aiinsight.util.AgentUtils.abbreviate;
 import static com.aiinsight.util.AgentUtils.containsAny;
 import static com.aiinsight.util.AgentUtils.containsIgnoreCase;
 import static com.aiinsight.util.AgentUtils.countBySeverity;
+import static com.aiinsight.util.AgentUtils.firstCitationKey;
 import static com.aiinsight.util.AgentUtils.hasText;
 import static com.aiinsight.util.AgentUtils.latestArtifact;
 import static com.aiinsight.util.AgentUtils.normalizeLower;
@@ -55,7 +56,6 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 @Component
@@ -65,7 +65,6 @@ import java.util.stream.Collectors;
 // ReviewDecision 会驱动工作流打回采集或修订节点，形成可观测反馈闭环。
 public class ReviewerNode implements AgentNode {
 
-    private static final Pattern CITATION_KEY_PATTERN = Pattern.compile("\\bS\\d+\\b");
     private static final int MAX_FINDING_CATEGORY_LENGTH = 128;
     private static final int MAX_LLM_FINDINGS_PER_SUBTASK = 4;
     private static final int MAX_LLM_FINDING_MESSAGE_LENGTH = 180;
@@ -1190,27 +1189,6 @@ public class ReviewerNode implements AgentNode {
             return normalized;
         }
         return normalized.substring(0, MAX_FINDING_CATEGORY_LENGTH);
-    }
-
-    private String sanitizeCitationKey(String citationKey) {
-        if (!StringUtils.hasText(citationKey)) {
-            return null;
-        }
-        Matcher matcher = CITATION_KEY_PATTERN.matcher(citationKey.trim());
-        return matcher.find() ? matcher.group() : null;
-    }
-
-    private String firstCitationKey(String... values) {
-        if (values == null) {
-            return null;
-        }
-        for (String value : values) {
-            String citationKey = sanitizeCitationKey(value);
-            if (citationKey != null) {
-                return citationKey;
-            }
-        }
-        return null;
     }
 
     private ReviewSeverity parseSeverity(String value) {

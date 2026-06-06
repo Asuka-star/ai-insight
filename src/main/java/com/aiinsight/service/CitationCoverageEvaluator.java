@@ -12,22 +12,20 @@ import com.aiinsight.model.schema.ExtractedFact;
 import org.springframework.stereotype.Component;
 import org.springframework.util.StringUtils;
 
+import static com.aiinsight.util.AgentUtils.CITATION_PATTERN;
+import static com.aiinsight.util.AgentUtils.nullToEmpty;
+
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
-import java.util.regex.Pattern;
 import java.util.regex.Matcher;
 import java.util.stream.Collectors;
 
 @Component
 public class CitationCoverageEvaluator {
-
-    // MVP 阶段强制使用 [S1]、[S2] 这种证据编号，后续可升级为 claimId -> evidenceId 映射。
-    private static final Pattern CITATION_PATTERN = Pattern.compile("\\[S\\d+]");
-    private static final Pattern CITATION_KEY_PATTERN = Pattern.compile("\\[(S\\d+)]");
 
     public List<ReviewFinding> evaluate(String reportContent) {
         return evaluate(reportContent, null);
@@ -90,7 +88,7 @@ public class CitationCoverageEvaluator {
         boolean hasPublicEvidence = paragraphCitationKeys.stream()
                 .map(citationKey -> sourceByCitationKey(run, citationKey))
                 .anyMatch(this::publicEvidence);
-        Matcher matcher = CITATION_KEY_PATTERN.matcher(paragraph);
+        Matcher matcher = CITATION_PATTERN.matcher(paragraph);
         while (matcher.find()) {
             String citationKey = matcher.group(1);
             if (!checkedCitationKeys.add(citationKey)) {
@@ -682,7 +680,7 @@ public class CitationCoverageEvaluator {
         if (!StringUtils.hasText(text)) {
             return keys;
         }
-        Matcher matcher = CITATION_KEY_PATTERN.matcher(text);
+        Matcher matcher = CITATION_PATTERN.matcher(text);
         while (matcher.find()) {
             keys.add(matcher.group(1));
         }
@@ -808,10 +806,6 @@ public class CitationCoverageEvaluator {
             }
         }
         return false;
-    }
-
-    private String nullToEmpty(String text) {
-        return text == null ? "" : text;
     }
 
     private boolean looksLikeClaim(String paragraph) {

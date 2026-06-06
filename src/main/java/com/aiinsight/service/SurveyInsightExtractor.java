@@ -7,6 +7,8 @@ import com.aiinsight.model.schema.SurveyInsight;
 import org.springframework.stereotype.Component;
 import org.springframework.util.StringUtils;
 
+import static com.aiinsight.util.AgentUtils.containsIgnoreCase;
+
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -246,7 +248,4 @@ public class SurveyInsightExtractor {
         return false;
     }
 
-    private boolean containsIgnoreCase(String text, String pattern) {
-        return text != null && pattern != null && text.toLowerCase(Locale.ROOT).contains(pattern.toLowerCase(Locale.ROOT));
-    }
 }

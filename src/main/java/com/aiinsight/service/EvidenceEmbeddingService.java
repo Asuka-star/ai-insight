@@ -9,6 +9,8 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 
+import static com.aiinsight.util.AgentUtils.nullToEmpty;
+
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
@@ -233,10 +235,6 @@ public class EvidenceEmbeddingService {
         } catch (NoSuchAlgorithmException ex) {
             throw new IllegalStateException("SHA-256 is not available", ex);
         }
-    }
-
-    private String nullToEmpty(String value) {
-        return value == null ? "" : value;
     }
 
     private record EmbeddingCandidate(EvidenceChunk chunk, String input, String inputHash, int dimensions) {

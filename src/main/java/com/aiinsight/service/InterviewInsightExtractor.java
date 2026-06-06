@@ -5,10 +5,11 @@ import com.aiinsight.model.run.EvidenceSource;
 import com.aiinsight.model.schema.InterviewInsight;
 import org.springframework.stereotype.Component;
 
+import static com.aiinsight.util.AgentUtils.containsIgnoreCase;
+
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
-import java.util.Locale;
 import java.util.Set;
 
 @Component
@@ -179,10 +180,6 @@ public class InterviewInsightExtractor {
             }
         }
         return false;
-    }
-
-    private boolean containsIgnoreCase(String text, String pattern) {
-        return text != null && pattern != null && text.toLowerCase(Locale.ROOT).contains(pattern.toLowerCase(Locale.ROOT));
     }
 
     private String truncate(String value, int maxLength) {

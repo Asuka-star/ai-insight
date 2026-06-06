@@ -21,6 +21,8 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 import org.springframework.util.StringUtils;
 
+import static com.aiinsight.util.AgentUtils.containsIgnoreCase;
+
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.LinkedHashMap;
@@ -277,10 +279,6 @@ public class LlmSearchQueryPlanner {
 
     private String normalize(String value) {
         return value == null ? "" : value.trim().toLowerCase(Locale.ROOT);
-    }
-
-    private boolean containsIgnoreCase(String text, String pattern) {
-        return text != null && pattern != null && text.toLowerCase(Locale.ROOT).contains(pattern.toLowerCase(Locale.ROOT));
     }
 
     private static class QueryBatchDraft {

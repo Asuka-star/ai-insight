@@ -7,6 +7,8 @@ import com.aiinsight.model.run.AnalysisRun;
 import com.aiinsight.model.schema.AnalysisClaim;
 import org.springframework.stereotype.Component;
 
+import static com.aiinsight.util.AgentUtils.nullToEmpty;
+
 import java.util.List;
 import java.util.stream.Collectors;
 
@@ -115,10 +117,6 @@ public class FallbackReportDraftFactory {
                 && !"UNVERIFIED".equalsIgnoreCase(nullToEmpty(claim.getSupportStatus()))
                 && !"VALIDATION_BACKLOG".equalsIgnoreCase(nullToEmpty(claim.getRecommendedPlacement()))
                 && !"NONE".equalsIgnoreCase(nullToEmpty(claim.getRecommendedPlacement()));
-    }
-
-    private String nullToEmpty(String value) {
-        return value == null ? "" : value;
     }
 
     private String abbreviate(String value, int maxChars) {

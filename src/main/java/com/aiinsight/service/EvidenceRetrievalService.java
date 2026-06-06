@@ -9,6 +9,9 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 
+import static com.aiinsight.util.AgentUtils.containsAny;
+import static com.aiinsight.util.AgentUtils.nullToEmpty;
+
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
@@ -436,15 +439,6 @@ public class EvidenceRetrievalService {
         return false;
     }
 
-    private boolean containsAny(String text, String... patterns) {
-        for (String pattern : patterns) {
-            if (text.contains(pattern.toLowerCase(Locale.ROOT))) {
-                return true;
-            }
-        }
-        return false;
-    }
-
     private String normalize(String value) {
         return value == null ? "" : value.toLowerCase(Locale.ROOT).trim();
     }
@@ -453,7 +447,4 @@ public class EvidenceRetrievalService {
         return value == null ? "" : value.toUpperCase(Locale.ROOT).trim();
     }
 
-    private String nullToEmpty(String value) {
-        return value == null ? "" : value;
-    }
 }

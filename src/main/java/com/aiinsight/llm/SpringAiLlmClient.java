@@ -12,6 +12,8 @@ import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.chat.prompt.Prompt;
 import org.springframework.ai.openai.OpenAiChatOptions;
 
+import static com.aiinsight.util.AgentUtils.hasText;
+
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
@@ -187,7 +189,7 @@ class SpringAiLlmClient implements LlmClient {
         }
         return AgentTraceContext.current()
                 .map(trace -> trace.getAgentName() == null ? null : trace.getAgentName().name())
-                .filter(this::hasText)
+                .filter(value -> hasText(value))
                 .orElse("unknown");
     }
 
@@ -211,10 +213,6 @@ class SpringAiLlmClient implements LlmClient {
 
     private Usage usage(ChatResponse response) {
         return response == null || response.getMetadata() == null ? null : response.getMetadata().getUsage();
-    }
-
-    private boolean hasText(String value) {
-        return value != null && !value.isBlank();
     }
 
     private String generationMetadata(ChatResponse response) {

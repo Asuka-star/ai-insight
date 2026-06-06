@@ -17,6 +17,8 @@ import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 
+import static com.aiinsight.util.AgentUtils.containsIgnoreCase;
+
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -1853,10 +1855,6 @@ public class SourceCollectionService {
                 "not available in your region",
                 "not currently available in your region",
                 "service is not available in your region");
-    }
-
-    private boolean containsIgnoreCase(String text, String pattern) {
-        return text != null && pattern != null && text.toLowerCase(Locale.ROOT).contains(pattern.toLowerCase(Locale.ROOT));
     }
 
     private boolean containsAny(String text, String... patterns) {

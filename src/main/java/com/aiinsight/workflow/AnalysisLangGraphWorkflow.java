@@ -22,6 +22,8 @@ import org.bsc.langgraph4j.action.AsyncNodeAction;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
+import static com.aiinsight.util.AgentUtils.hasText;
+
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -311,7 +313,7 @@ public class AnalysisLangGraphWorkflow {
         decision.setReason("Manual rerun of " + agentName + " is carrying previous Reviewer findings.");
         decision.setAffectedClaimIds(findings.stream()
                 .map(ReviewFinding::getClaimId)
-                .filter(this::hasText)
+                .filter(value -> hasText(value))
                 .distinct()
                 .toList());
         decision.setRequiredEvidenceTypes(previous.getRequiredEvidenceTypes() == null
@@ -319,7 +321,7 @@ public class AnalysisLangGraphWorkflow {
                 : new ArrayList<>(previous.getRequiredEvidenceTypes()));
         decision.setFindingCategories(findings.stream()
                 .map(ReviewFinding::getCategory)
-                .filter(this::hasText)
+                .filter(value -> hasText(value))
                 .distinct()
                 .toList());
         decision.setBlockingFindingIds(findings.stream()
@@ -332,7 +334,7 @@ public class AnalysisLangGraphWorkflow {
         List<ReviewRepairTask> tasks = new ArrayList<>(existingTasks);
         LinkedHashSet<String> existingFindingIds = tasks.stream()
                 .map(ReviewRepairTask::getFindingId)
-                .filter(this::hasText)
+                .filter(value -> hasText(value))
                 .collect(LinkedHashSet::new, LinkedHashSet::add, LinkedHashSet::addAll);
         findings.stream()
                 .filter(finding -> !existingFindingIds.contains(finding.getId().toString()))
@@ -460,7 +462,7 @@ public class AnalysisLangGraphWorkflow {
         LinkedHashSet<String> evidenceTypes = new LinkedHashSet<>();
         if (currentTypes != null) {
             currentTypes.stream()
-                    .filter(this::hasText)
+                    .filter(value -> hasText(value))
                     .forEach(evidenceTypes::add);
         }
         if (tasks != null) {
@@ -468,7 +470,7 @@ public class AnalysisLangGraphWorkflow {
                     .flatMap(task -> task.getRequiredEvidenceTypes() == null
                             ? List.<String>of().stream()
                             : task.getRequiredEvidenceTypes().stream())
-                    .filter(this::hasText)
+                    .filter(value -> hasText(value))
                     .forEach(evidenceTypes::add);
         }
         return new ArrayList<>(evidenceTypes);
@@ -619,10 +621,6 @@ public class AnalysisLangGraphWorkflow {
             return normalized;
         }
         return normalized.substring(0, maxLength) + "...";
-    }
-
-    private boolean hasText(String value) {
-        return value != null && !value.isBlank();
     }
 
     private List<AgentNode> rerunCascade(AgentName agentName) {

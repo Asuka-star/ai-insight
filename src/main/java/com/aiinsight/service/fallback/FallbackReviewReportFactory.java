@@ -5,6 +5,9 @@ import com.aiinsight.model.review.ReviewFinding;
 import com.aiinsight.model.run.AnalysisRun;
 import org.springframework.stereotype.Component;
 
+import static com.aiinsight.util.AgentUtils.hasText;
+import static com.aiinsight.util.AgentUtils.nullToEmpty;
+
 import java.util.Comparator;
 import java.util.List;
 import java.util.stream.Collectors;
@@ -126,7 +129,7 @@ public class FallbackReviewReportFactory {
                         findingsGroup(findings, ReviewSeverity.MEDIUM, "质量提醒"),
                         findingsGroup(findings, ReviewSeverity.LOW, "人工复核项")
                 ).stream()
-                .filter(this::hasText)
+                .filter(value -> hasText(value))
                 .collect(Collectors.joining("\n\n"));
     }
 
@@ -160,7 +163,7 @@ public class FallbackReviewReportFactory {
         String citation = hasText(finding.getCitationKey()) ? "citation=[" + finding.getCitationKey() + "]" : "";
         String paragraph = finding.getParagraphIndex() == null ? "" : "paragraph=" + finding.getParagraphIndex();
         String location = List.of(claim, citation, paragraph).stream()
-                .filter(this::hasText)
+                .filter(value -> hasText(value))
                 .collect(Collectors.joining(", "));
         return hasText(location) ? "（" + location + "）" : "";
     }
@@ -169,14 +172,6 @@ public class FallbackReviewReportFactory {
         return findings.stream()
                 .filter(finding -> finding.getSeverity() == severity)
                 .count();
-    }
-
-    private boolean hasText(String text) {
-        return text != null && !text.isBlank();
-    }
-
-    private String nullToEmpty(String text) {
-        return text == null ? "" : text;
     }
 
     private String severityLabel(ReviewSeverity severity) {

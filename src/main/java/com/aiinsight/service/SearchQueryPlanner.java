@@ -10,6 +10,8 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 import org.springframework.util.StringUtils;
 
+import static com.aiinsight.util.AgentUtils.containsIgnoreCase;
+
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -316,10 +318,6 @@ public class SearchQueryPlanner {
             }
         }
         return false;
-    }
-
-    private boolean containsIgnoreCase(String text, String pattern) {
-        return text != null && pattern != null && text.toLowerCase(Locale.ROOT).contains(pattern.toLowerCase(Locale.ROOT));
     }
 
     private List<String> nullToEmpty(List<String> values) {

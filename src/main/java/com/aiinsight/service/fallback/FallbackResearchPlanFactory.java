@@ -9,9 +9,10 @@ import com.aiinsight.model.schema.SurveyQuestion;
 import com.aiinsight.service.SearchQueryPlanner;
 import org.springframework.stereotype.Component;
 
+import static com.aiinsight.util.AgentUtils.containsIgnoreCase;
+
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Locale;
 
 @Component
 public class FallbackResearchPlanFactory {
@@ -221,7 +222,4 @@ public class FallbackResearchPlanFactory {
         return false;
     }
 
-    private boolean containsIgnoreCase(String text, String pattern) {
-        return text != null && pattern != null && text.toLowerCase(Locale.ROOT).contains(pattern.toLowerCase(Locale.ROOT));
-    }
 }

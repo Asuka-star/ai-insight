@@ -13,6 +13,12 @@ import com.aiinsight.model.schema.ExtractedFact;
 import com.aiinsight.service.AnalysisDraft;
 import org.springframework.stereotype.Component;
 
+import static com.aiinsight.util.AgentUtils.containsAny;
+import static com.aiinsight.util.AgentUtils.containsIgnoreCase;
+import static com.aiinsight.util.AgentUtils.distinctKnownEvidenceIds;
+import static com.aiinsight.util.AgentUtils.hasText;
+import static com.aiinsight.util.AgentUtils.nullToEmpty;
+
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -277,7 +283,7 @@ public class FallbackAnalysisDraftFactory {
         LinkedHashSet<String> dimensions = new LinkedHashSet<>();
         AnalysisRequirement requirement = run.getRequirement();
         if (requirement != null && requirement.getDimensions() != null) {
-            requirement.getDimensions().stream().filter(this::hasText).forEach(dimensions::add);
+            requirement.getDimensions().stream().filter(value -> hasText(value)).forEach(dimensions::add);
         }
         String prompt = requirement == null ? "" : nullToEmpty(requirement.getOriginalPrompt());
         if (containsAny(normalize(prompt), "价格", "定价", "套餐", "pricing")) {
@@ -339,17 +345,6 @@ public class FallbackAnalysisDraftFactory {
         return new ArrayList<>(keywords);
     }
 
-    private List<String> distinctKnownEvidenceIds(AnalysisRun run, List<String> evidenceIds) {
-        Set<String> known = run.getEvidenceSources().stream()
-                .map(EvidenceSource::getCitationKey)
-                .collect(Collectors.toCollection(LinkedHashSet::new));
-        return (evidenceIds == null ? List.<String>of() : evidenceIds).stream()
-                .filter(this::hasText)
-                .filter(known::contains)
-                .distinct()
-                .toList();
-    }
-
     private List<String> evidenceIdsForClaimType(List<AnalysisClaim> claims, ClaimType... types) {
         Set<ClaimType> accepted = Set.of(types);
         return claims.stream()
@@ -389,28 +384,7 @@ public class FallbackAnalysisDraftFactory {
         return evidenceIds.stream().map(id -> "[" + id + "]").collect(Collectors.joining(" "));
     }
 
-    private boolean containsIgnoreCase(String text, String pattern) {
-        return text != null && pattern != null && text.toLowerCase(Locale.ROOT).contains(pattern.toLowerCase(Locale.ROOT));
-    }
-
-    private boolean containsAny(String text, String... patterns) {
-        for (String pattern : patterns) {
-            if (containsIgnoreCase(text, pattern)) {
-                return true;
-            }
-        }
-        return false;
-    }
-
     private String normalize(String text) {
         return nullToEmpty(text).toLowerCase(Locale.ROOT);
-    }
-
-    private boolean hasText(String text) {
-        return text != null && !text.isBlank();
-    }
-
-    private String nullToEmpty(String text) {
-        return text == null ? "" : text;
     }
 }

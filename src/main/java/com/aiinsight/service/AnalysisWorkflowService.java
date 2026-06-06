@@ -45,6 +45,9 @@ import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 import org.springframework.web.multipart.MultipartFile;
 
+import static com.aiinsight.util.AgentUtils.CITATION_PATTERN;
+import static com.aiinsight.util.AgentUtils.containsIgnoreCase;
+
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
@@ -59,12 +62,9 @@ import java.util.UUID;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
-import java.util.regex.Pattern;
 
 @Service
 public class AnalysisWorkflowService {
-
-    private static final Pattern CITATION_PATTERN = Pattern.compile("\\[S\\d+]");
 
     private final AnalysisRunRepository repository;
     private final AnalysisRequestNormalizer normalizer;
@@ -1230,9 +1230,4 @@ public class AnalysisWorkflowService {
         }
     }
 
-    private boolean containsIgnoreCase(String text, String pattern) {
-        return text != null
-                && pattern != null
-                && text.toLowerCase(java.util.Locale.ROOT).contains(pattern.toLowerCase(java.util.Locale.ROOT));
-    }
 }

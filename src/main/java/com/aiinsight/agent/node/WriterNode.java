@@ -17,6 +17,8 @@ import com.aiinsight.llm.LlmClient;
 import com.aiinsight.agent.AgentNode;
 import com.aiinsight.observability.AgentTraceContext;
 import com.aiinsight.util.AgentUtils;
+import com.aiinsight.util.TermExtractor;
+import com.aiinsight.util.TermExtractor.TermOptions;
 import static com.aiinsight.util.AgentUtils.CITATION_PATTERN;
 import static com.aiinsight.util.AgentUtils.abbreviate;
 import static com.aiinsight.util.AgentUtils.containsAny;
@@ -30,7 +32,6 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
-import java.net.URI;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
@@ -46,16 +47,9 @@ import java.util.stream.Collectors;
 // 它必须把关键结论绑定 citationKey，否则 Reviewer 会判为高风险问题。
 public class WriterNode implements AgentNode {
 
-    private static final Pattern CITATION_PATTERN = Pattern.compile("\\[(S\\d+)]");
     private static final Pattern CLAIM_REFERENCE_PATTERN = Pattern.compile("\\[C-[^\\]]+]");
     private static final int MAX_UPSTREAM_ARTIFACT_CHARS_FOR_PROMPT = 2_200;
-    private static final Set<String> GENERIC_TITLE_TOKENS = Set.of(
-            "docs", "doc", "guide", "guides", "documentation", "pricing", "plans", "plan",
-            "enterprise", "deployment", "overview", "security", "trust", "privacy", "product",
-            "features", "feature", "integration", "integrations", "agent", "agents", "skills",
-            "workflow", "workflows", "code", "coding", "developer", "developers"
-    );
-
+    private static final TermOptions REPORT_LINE_TERM_OPTIONS = TermOptions.basic(3);
     private final LlmClient llmClient;
     private final FallbackReportDraftFactory fallbackReportDraftFactory;
 
@@ -386,18 +380,7 @@ public class WriterNode implements AgentNode {
     }
 
     private Set<String> supportTerms(String text) {
-        Set<String> terms = new LinkedHashSet<>();
-        String normalized = normalizeText(text).replaceAll("[^\\p{IsHan}a-z0-9]+", " ").trim();
-        for (String part : normalized.split("\\s+")) {
-            if (part.length() >= 3) {
-                terms.add(part);
-            }
-        }
-        String chineseOnly = normalized.replaceAll("[^\\p{IsHan}]", "");
-        for (int i = 0; i < chineseOnly.length() - 1; i++) {
-            terms.add(chineseOnly.substring(i, i + 2));
-        }
-        return terms;
+        return TermExtractor.extract(text, REPORT_LINE_TERM_OPTIONS);
     }
 
     private String normalizeText(String value) {
@@ -608,49 +591,8 @@ public class WriterNode implements AgentNode {
                 || sourceType.contains("public_review")) {
             return true;
         }
-        String host = sourceHost(source.getUrl());
-        return host.endsWith(".ac.cn") || titleSuggestsDifferentPublisher(host, source.getTitle());
-    }
-
-    private String sourceHost(String url) {
-        if (!hasText(url)) {
-            return "";
-        }
-        try {
-            String host = URI.create(url).getHost();
-            return host == null ? "" : host.toLowerCase(Locale.ROOT);
-        } catch (RuntimeException ex) {
-            return "";
-        }
-    }
-
-    private boolean titleSuggestsDifferentPublisher(String host, String title) {
-        if (!hasText(host) || !hasText(title)) {
-            return false;
-        }
-        String root = rootDomain(host);
-        String leadingTitle = normalizeText(title).split("\\s[-|]\\s", 2)[0];
-        if (!hasText(root) || leadingTitle.contains(root)) {
-            return false;
-        }
-        for (String token : leadingTitle.split("[^a-z0-9]+")) {
-            if (token.length() < 3 || GENERIC_TITLE_TOKENS.contains(token)) {
-                continue;
-            }
-            return !root.contains(token) && !token.contains(root);
-        }
-        return false;
-    }
-
-    private String rootDomain(String host) {
-        String[] parts = host.split("\\.");
-        if (parts.length < 2) {
-            return host;
-        }
-        if (parts.length >= 3 && Set.of("com", "net", "org", "ac", "edu", "gov").contains(parts[parts.length - 2])) {
-            return parts[parts.length - 3];
-        }
-        return parts[parts.length - 2];
+        String host = AgentEvidenceSupport.sourceHost(source.getUrl());
+        return host.endsWith(".ac.cn") || AgentEvidenceSupport.titleSuggestsDifferentPublisher(host, source.getTitle());
     }
 
     private String repairPlanBlock(AnalysisRun run) {
