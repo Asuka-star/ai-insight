@@ -75,7 +75,9 @@ public class WorkflowNodeExecutor {
             if (updatedRun != null) {
                 run = updatedRun;
             }
-            recordRepairDelta(run, node, repairSnapshot);
+            if (!isManualCascadeRerun(inputSummary)) {
+                recordRepairDelta(run, node, repairSnapshot);
+            }
             ensureNotCancelled(runId);
             step.succeed(buildOutputSummary(run, node));
             completeTrace(trace, step, run, "SUCCEEDED", startedAt);
@@ -196,24 +198,51 @@ public class WorkflowNodeExecutor {
         run.getTraces().add(trace);
     }
 
+    RepairSnapshot captureRepairSnapshot(UUID runId, AgentName agentName) {
+        AnalysisRun run = repository.findById(runId).orElseThrow(() -> new RunNotFoundException(runId));
+        return RepairSnapshot.capture(run, agentName);
+    }
+
+    AnalysisRun recordCascadeRepairDelta(UUID runId, AgentName agentName, RepairSnapshot before) {
+        AnalysisRun run = repository.findById(runId).orElseThrow(() -> new RunNotFoundException(runId));
+        recordRepairDelta(run, agentName, before, false, true, "手动级联重跑");
+        repository.save(run);
+        return run;
+    }
+
     private void recordRepairDelta(AnalysisRun run, AgentNode node, RepairSnapshot before) {
+        recordRepairDelta(run, node.name(), before, true, false, "Reviewer 打回");
+    }
+
+    private void recordRepairDelta(AnalysisRun run,
+                                   AgentName agentName,
+                                   RepairSnapshot before,
+                                   boolean recordTraceSummary,
+                                   boolean includeOutcomeMetrics,
+                                   String triggerLabel) {
         if (before == null || !before.active()) {
             return;
         }
-        RepairSnapshot after = RepairSnapshot.capture(run, node.name());
-        String summary = repairDeltaSummary(node.name(), before, after);
-        AgentTraceContext.recordProcessSummary(summary);
-        run.setLastReviewRepairDelta(before.toDelta(after));
+        RepairSnapshot after = RepairSnapshot.capture(run, agentName);
+        String summary = repairDeltaSummary(agentName, before, after);
+        if (recordTraceSummary) {
+            AgentTraceContext.recordProcessSummary(summary);
+        }
+        run.setLastReviewRepairDelta(before.toDelta(after, includeOutcomeMetrics));
         log.info("Review repair delta: runId={}, agent={}, changed={}, before={}, after={}",
                 run.getId(),
-                node.name(),
-                before.materiallyChanged(after),
+                agentName,
+                before.deltaChanged(after, includeOutcomeMetrics),
                 before.shortSummary(),
                 after.shortSummary());
-        if (!before.materiallyChanged(after)) {
-            addRecommendedActionOnce(run, "Reviewer 打回后 " + node.name()
+        if (!before.deltaChanged(after, includeOutcomeMetrics)) {
+            addRecommendedActionOnce(run, triggerLabel + "后 " + agentName
                     + " 返工没有产生实质变化；请检查 repairTasks 是否过宽、证据是否不足，或改为人工处理对应阻塞问题。");
         }
+    }
+
+    private boolean isManualCascadeRerun(String inputSummary) {
+        return inputSummary != null && inputSummary.contains("Manual cascade rerun");
     }
 
     private String repairDeltaSummary(AgentName agentName, RepairSnapshot before, RepairSnapshot after) {
@@ -457,7 +486,7 @@ public class WorkflowNodeExecutor {
         }
     }
 
-    private record RepairSnapshot(
+    record RepairSnapshot(
             AgentName agentName,
             boolean active,
             int findings,
@@ -521,6 +550,31 @@ public class WorkflowNodeExecutor {
                 case WRITER -> !reportFingerprint.equals(after.reportFingerprint);
                 default -> true;
             };
+        }
+
+        boolean deltaChanged(RepairSnapshot after, boolean includeOutcomeMetrics) {
+            if (after == null) {
+                return false;
+            }
+            if (materiallyChanged(after)) {
+                return true;
+            }
+            return includeOutcomeMetrics && outcomeChanged(after);
+        }
+
+        private boolean outcomeChanged(RepairSnapshot after) {
+            return findings != after.findings
+                    || highFindings != after.highFindings
+                    || evidenceSources != after.evidenceSources
+                    || claims != after.claims
+                    || claimCoverage != after.claimCoverage
+                    || coverageGaps != after.coverageGaps
+                    || artifacts != after.artifacts
+                    || !claimsFingerprint.equals(after.claimsFingerprint)
+                    || !reportFingerprint.equals(after.reportFingerprint)
+                    || !evidenceFingerprint.equals(after.evidenceFingerprint)
+                    || !profileFingerprint.equals(after.profileFingerprint)
+                    || !factFingerprint.equals(after.factFingerprint);
         }
 
         String shortSummary() {
@@ -639,9 +693,13 @@ public class WorkflowNodeExecutor {
         }
 
         private ReviewRepairDelta toDelta(RepairSnapshot after) {
+            return toDelta(after, false);
+        }
+
+        private ReviewRepairDelta toDelta(RepairSnapshot after, boolean includeOutcomeMetrics) {
             ReviewRepairDelta delta = new ReviewRepairDelta();
             delta.setAgentName(agentName);
-            delta.setChanged(materiallyChanged(after));
+            delta.setChanged(deltaChanged(after, includeOutcomeMetrics));
             delta.setFindingsBefore(findings);
             delta.setFindingsAfter(after == null ? 0 : after.findings);
             delta.setHighFindingsBefore(highFindings);

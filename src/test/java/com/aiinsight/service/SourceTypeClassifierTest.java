@@ -40,8 +40,24 @@ class SourceTypeClassifierTest {
                 .isEqualTo("third_party_docs");
         assertThat(classifier.classify("https://claudelog.com/docs/claude-code", "Claude Code docs"))
                 .isEqualTo("third_party_docs");
+        assertThat(classifier.classify(
+                "https://www.verdent.ai/guides/claude-code-agent-skills",
+                "Claude Code Agent Skills - Verdent Guides"
+        )).isEqualTo("third_party_docs");
         assertThat(classifier.qualityFor("third_party_docs", "FETCHED", "LIVE_FETCHED"))
                 .isEqualTo("MEDIUM");
+    }
+
+    @Test
+    void doesNotTreatMirrorDomainsAsOfficialProductSites() {
+        String sourceType = classifier.classify(
+                "https://cursor.ac.cn/enterprise",
+                "Cursor 企业版"
+        );
+
+        assertThat(sourceType).isEqualTo("third_party_article");
+        assertThat(classifier.authorityFor("https://cursor.ac.cn/enterprise", sourceType))
+                .isEqualTo("THIRD_PARTY_GENERAL");
     }
 
     @Test

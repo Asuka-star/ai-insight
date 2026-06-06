@@ -2,6 +2,7 @@ package com.aiinsight.model.review;
 
 import com.aiinsight.model.enums.ReviewSeverity;
 import com.aiinsight.model.enums.AgentName;
+import com.aiinsight.model.enums.ReviewLocationType;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
 import lombok.Setter;
@@ -26,6 +27,7 @@ public class ReviewFinding {
     private String citationKey;
     private Integer paragraphIndex;
     private String excerpt;
+    private ReviewLocationType locationType;
 
     public ReviewFinding(ReviewSeverity severity, String category, String message, String recommendation) {
         this.severity = severity;

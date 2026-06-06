@@ -89,6 +89,7 @@ public class AnalysisLangGraphWorkflow {
             throw new IllegalArgumentException("Unsupported agent: " + agentName);
         }
         prepareManualRerunReviewContext(runId, agentName);
+        WorkflowNodeExecutor.RepairSnapshot cascadeRepairSnapshot = nodeExecutor.captureRepairSnapshot(runId, agentName);
         AnalysisRun run = null;
         try {
             // 手动重跑和质检打回都从目标 agent 开始顺序重放下游，避免只修上游却留下旧报告/旧复核结果。
@@ -103,6 +104,7 @@ public class AnalysisLangGraphWorkflow {
                     recordTransition(run, ROUTE_FINISH, manualRerunAttempt(run), "manual-rerun-from-" + agentName);
                 }
             }
+            run = nodeExecutor.recordCascadeRepairDelta(runId, agentName, cascadeRepairSnapshot);
         } finally {
             clearManualRerunReviewContext(runId);
         }

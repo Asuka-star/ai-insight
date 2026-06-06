@@ -2819,6 +2819,139 @@ class AnalysisWorkflowServiceTest {
     }
 
     @Test
+    void manualCascadeRerunDeltaCapturesFinalReviewerOutcome() {
+        AnalysisRunRepository repository = new TestAnalysisRunRepository();
+        AnalysisEventBroker eventBroker = new AnalysisEventBroker();
+        WorkflowNodeExecutor nodeExecutor = new WorkflowNodeExecutor(repository, eventBroker);
+        AgentNode analyst = new AgentNode() {
+            @Override
+            public AgentName name() {
+                return AgentName.ANALYST;
+            }
+
+            @Override
+            public String title() {
+                return "Analyst";
+            }
+
+            @Override
+            public AnalysisRun execute(AnalysisRun run) {
+                run.getClaims().add(testClaim("C-8"));
+                return run;
+            }
+        };
+        AgentNode writer = new AgentNode() {
+            @Override
+            public AgentName name() {
+                return AgentName.WRITER;
+            }
+
+            @Override
+            public String title() {
+                return "Writer";
+            }
+
+            @Override
+            public AnalysisRun execute(AnalysisRun run) {
+                run.addArtifact(new AnalysisArtifact(ArtifactType.REPORT_DRAFT, "draft", "Updated report [S1].", List.of("S1")));
+                return run;
+            }
+        };
+        AgentNode reviewer = new AgentNode() {
+            @Override
+            public AgentName name() {
+                return AgentName.REVIEWER;
+            }
+
+            @Override
+            public String title() {
+                return "Reviewer";
+            }
+
+            @Override
+            public AnalysisRun execute(AnalysisRun run) {
+                run.getReviewFindings().clear();
+                for (int i = 1; i <= 8; i++) {
+                    ReviewFinding finding = new ReviewFinding(
+                            ReviewSeverity.MEDIUM,
+                            "reviewer_new_finding_" + i,
+                            "Reviewer rebuilt finding " + i,
+                            "Review manually."
+                    );
+                    finding.setClaimId("C-" + Math.min(i, 8));
+                    run.getReviewFindings().add(finding);
+                }
+                run.getReviewDecision().setAction(ReviewAction.PASS);
+                run.getReviewDecision().setReason("Reviewer rebuilt findings.");
+                run.getReviewDecision().setBlockingFindingIds(List.of());
+                return run;
+            }
+        };
+        AnalysisLangGraphWorkflow workflow = new AnalysisLangGraphWorkflow(
+                List.of(
+                        noopAgentNode(AgentName.RESEARCHER),
+                        noopAgentNode(AgentName.EXTRACTOR),
+                        analyst,
+                        writer,
+                        reviewer
+                ),
+                nodeExecutor,
+                repository,
+                eventBroker
+        );
+        AnalysisRun run = new AnalysisRun(new AnalysisRequirement(
+                "Analyze Cursor",
+                "AI coding tools",
+                List.of("Cursor"),
+                List.of("workflow"),
+                List.of("official_site"),
+                List.of()
+        ));
+        run.getEvidenceSources().add(new EvidenceSource(
+                "S1",
+                "Cursor docs",
+                "https://example.test/cursor",
+                "official_site",
+                "FETCHED",
+                "LIVE_FETCHED",
+                "Cursor supports workflow features.",
+                "Cursor supports workflow features.",
+                "test evidence"
+        ));
+        for (int i = 1; i <= 7; i++) {
+            run.getClaims().add(testClaim("C-" + i));
+        }
+        for (int i = 1; i <= 5; i++) {
+            ReviewFinding finding = new ReviewFinding(
+                    ReviewSeverity.HIGH,
+                    "claim_weak_support",
+                    "Previous finding " + i,
+                    "Repair analyst claim."
+            );
+            finding.setClaimId("C-" + i);
+            finding.setCitationKey("S1");
+            run.getReviewFindings().add(finding);
+        }
+        run.getReviewDecision().setAction(ReviewAction.REWORK_ANALYSIS);
+        run.getReviewDecision().setTargetAgent(AgentName.ANALYST);
+        run.getReviewDecision().setReason("Previous reviewer asked Analyst to repair claims.");
+        repository.save(run);
+
+        AnalysisRun rerun = workflow.rerunAgent(run.getId(), AgentName.ANALYST);
+
+        assertThat(rerun.getReviewFindings()).hasSize(8);
+        assertThat(rerun.getClaims()).hasSize(8);
+        assertThat(rerun.getLastReviewRepairDelta()).satisfies(delta -> {
+            assertThat(delta.getAgentName()).isEqualTo(AgentName.ANALYST);
+            assertThat(delta.getFindingsBefore()).isEqualTo(5);
+            assertThat(delta.getFindingsAfter()).isEqualTo(8);
+            assertThat(delta.getClaimsBefore()).isEqualTo(7);
+            assertThat(delta.getClaimsAfter()).isEqualTo(8);
+            assertThat(delta.isChanged()).isTrue();
+        });
+    }
+
+    @Test
     void manualRerunCarriesPreviousReviewerFindingsToTargetAgent() {
         AnalysisRunRepository repository = new TestAnalysisRunRepository();
         AnalysisEventBroker eventBroker = new AnalysisEventBroker();
@@ -3690,7 +3823,7 @@ class AnalysisWorkflowServiceTest {
     }
 
     @Test
-    void reviewerDowngradesNewHighFindingsDuringRepairVerification() {
+    void reviewerKeepsNewHighFindingsBlockingDuringRepairVerification() {
         LlmClient reviewerLlm = new LlmClient() {
             @Override
             public boolean isAvailable() {
@@ -3754,19 +3887,19 @@ class AnalysisWorkflowServiceTest {
 
         new ReviewerNode(new CitationCoverageEvaluator(), reviewerLlm, new FallbackReviewReportFactory()).execute(run);
 
-        assertThat(run.getReviewDecision().getAction()).isEqualTo(ReviewAction.PASS);
+        assertThat(run.getReviewDecision().getAction()).isEqualTo(ReviewAction.REVISE_REPORT);
         assertThat(run.getReviewFindings())
                 .anySatisfy(finding -> {
                     assertThat(finding.getCategory()).isEqualTo("llm_overclaim");
-                    assertThat(finding.getSeverity()).isEqualTo(ReviewSeverity.MEDIUM);
+                    assertThat(finding.getSeverity()).isEqualTo(ReviewSeverity.HIGH);
                     assertThat(finding.getMessage()).contains("返工验证模式");
                 });
         assertThat(run.getRecommendedActions())
-                .anyMatch(action -> action.contains("返工验证模式") && action.contains("降为质量提醒"));
+                .anyMatch(action -> action.contains("返工验证模式") && action.contains("新 HIGH 问题"));
     }
 
     @Test
-    void reviewerDowngradesDeterministicNewHighFindingsDuringRepairVerification() {
+    void reviewerKeepsDeterministicNewHighFindingsBlockingDuringRepairVerification() {
         LlmClient reviewerLlm = new LlmClient() {
             @Override
             public boolean isAvailable() {
@@ -3808,15 +3941,15 @@ class AnalysisWorkflowServiceTest {
 
         new ReviewerNode(new CitationCoverageEvaluator(), reviewerLlm, new FallbackReviewReportFactory()).execute(run);
 
-        assertThat(run.getReviewDecision().getAction()).isEqualTo(ReviewAction.PASS);
+        assertThat(run.getReviewDecision().getAction()).isEqualTo(ReviewAction.REWORK_ANALYSIS);
         assertThat(run.getReviewFindings())
                 .anySatisfy(finding -> {
                     assertThat(finding.getCategory()).isEqualTo("claim_missing_evidence");
-                    assertThat(finding.getSeverity()).isEqualTo(ReviewSeverity.MEDIUM);
+                    assertThat(finding.getSeverity()).isEqualTo(ReviewSeverity.HIGH);
                     assertThat(finding.getMessage()).contains("返工验证模式");
                 });
         assertThat(run.getRecommendedActions())
-                .anyMatch(action -> action.contains("降为质量提醒"));
+                .anyMatch(action -> action.contains("新 HIGH 问题"));
     }
 
     @Test
@@ -3957,7 +4090,7 @@ class AnalysisWorkflowServiceTest {
     }
 
     @Test
-    void reviewerDowngradesUnlocatedHighLlmFindingsToQualityReminder() {
+    void reviewerKeepsUnlocatedHighLlmFindingsBlockingWithLocationPrompt() {
         LlmClient reviewerLlm = new LlmClient() {
             @Override
             public boolean isAvailable() {
@@ -4005,9 +4138,10 @@ class AnalysisWorkflowServiceTest {
         assertThat(run.getReviewFindings())
                 .anySatisfy(finding -> {
                     assertThat(finding.getCategory()).isEqualTo("unsupported_recommendation");
-                    assertThat(finding.getSeverity()).isEqualTo(ReviewSeverity.MEDIUM);
+                    assertThat(finding.getSeverity()).isEqualTo(ReviewSeverity.HIGH);
+                    assertThat(finding.getRecommendation()).contains("缺少精确定位");
                 });
-        assertThat(run.getReviewDecision().getAction()).isEqualTo(ReviewAction.PASS);
+        assertThat(run.getReviewDecision().getAction()).isEqualTo(ReviewAction.REVISE_REPORT);
     }
 
     @Test
@@ -4410,6 +4544,16 @@ class AnalysisWorkflowServiceTest {
                 return run;
             }
         };
+    }
+
+    private AnalysisClaim testClaim(String id) {
+        AnalysisClaim claim = new AnalysisClaim();
+        claim.setId(id);
+        claim.setType(ClaimType.OPPORTUNITY);
+        claim.setContent("Cursor workflow claim " + id);
+        claim.setConfidence(ConfidenceLevel.MEDIUM);
+        claim.setEvidenceIds(List.of("S1"));
+        return claim;
     }
 
     private LlmClient noopLlmClient() {

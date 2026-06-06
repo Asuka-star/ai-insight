@@ -30,6 +30,7 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
+import java.net.URI;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
@@ -48,6 +49,12 @@ public class WriterNode implements AgentNode {
     private static final Pattern CITATION_PATTERN = Pattern.compile("\\[(S\\d+)]");
     private static final Pattern CLAIM_REFERENCE_PATTERN = Pattern.compile("\\[C-[^\\]]+]");
     private static final int MAX_UPSTREAM_ARTIFACT_CHARS_FOR_PROMPT = 2_200;
+    private static final Set<String> GENERIC_TITLE_TOKENS = Set.of(
+            "docs", "doc", "guide", "guides", "documentation", "pricing", "plans", "plan",
+            "enterprise", "deployment", "overview", "security", "trust", "privacy", "product",
+            "features", "feature", "integration", "integrations", "agent", "agents", "skills",
+            "workflow", "workflows", "code", "coding", "developer", "developers"
+    );
 
     private final LlmClient llmClient;
     private final FallbackReportDraftFactory fallbackReportDraftFactory;
@@ -130,6 +137,9 @@ public class WriterNode implements AgentNode {
                 20. 返工输出必须相对上一版报告有可见变化；不要只调整标题、顺序或措辞而保留同一个阻塞问题。
                 21. 结构化结论中的 supportStatus=UNVERIFIED、recommendedPlacement=VALIDATION_BACKLOG/NONE、confidence=LOW 或 evidence=[] 的内容，只能放入风险与证据缺口/下一步补证清单，不能写入主结论、建议优先级或 SWOT 正向判断。
                 22. 矩阵和 SWOT 已由 Analyst 按证据边界过滤；报告主判断必须优先使用矩阵/SWOT 中的 MEDIUM/HIGH 结论，不能把“待验证结论”改写成确定判断。
+                23. supportStatus=PARTIAL 或 confidence=MEDIUM 的结论只能写成“可参考、可进一步评估、公开资料显示”，不要写成“优势、表现突出、明确优先借鉴”。
+                24. 只有 supportStatus=SUPPORTED、confidence=HIGH 且证据索引显示 authority=FIRST_PARTY_* 的结论，才可以进入“一句话结论”和“建议优先级”的强建议。
+                25. 第三方、社区、镜像或 UNKNOWN authority 来源只能用于提出线索和补证方向，不能单独支撑竞品优势判断。
 
                 用户需求:
                 %s
@@ -191,8 +201,24 @@ public class WriterNode implements AgentNode {
         }
         String cleaned = removeReportMetadata(text);
         cleaned = removeInternalClaimReferences(cleaned);
+        cleaned = removeLeakedVerificationMarkers(cleaned);
         cleaned = sanitizeCitationText(run, cleaned);
         return enforceCitationDiscipline(run, cleaned);
+    }
+
+    private String removeLeakedVerificationMarkers(String text) {
+        return text.lines()
+                .map(this::normalizeLeakedVerificationMarker)
+                .collect(Collectors.joining("\n"));
+    }
+
+    private String normalizeLeakedVerificationMarker(String line) {
+        if (!hasText(line)) {
+            return line;
+        }
+        String normalized = line.replaceFirst("^(\\s*)待验证：\\s*(\\d+[.、]\\s*)", "$1$2待验证：");
+        normalized = normalized.replaceFirst("^(\\s*[-*]\\s*)待验证：\\s*(\\d+[.、]\\s*)", "$1$2待验证：");
+        return normalized;
     }
 
     private String enforceCitationDiscipline(AnalysisRun run, String text) {
@@ -203,26 +229,80 @@ public class WriterNode implements AgentNode {
     }
 
     private String enforceLineCitation(AnalysisRun run, String line) {
+        String normalizedLine = normalizeCitationPlacement(line);
         if (CITATION_PATTERN.matcher(line).find()) {
-            return needsOverclaimDowngrade(run, line) ? prefixUnverified(line) : line;
+            return needsOverclaimDowngrade(run, normalizedLine) ? prefixUnverified(normalizedLine) : normalizedLine;
         }
-        if (!needsClaimCitation(run, line)) {
-            return line;
+        if (!needsClaimCitation(run, normalizedLine)) {
+            return normalizedLine;
         }
-        List<String> citations = citationsForLine(run, line);
+        List<String> citations = citationsForLine(run, normalizedLine);
         if (!citations.isEmpty()) {
-            return line.stripTrailing() + " " + citations.stream()
-                    .limit(3)
-                    .map("[%s]"::formatted)
-                    .collect(Collectors.joining(""));
+            return appendCitations(normalizedLine, citations);
         }
-        return prefixUnverified(line);
+        return prefixUnverified(normalizedLine);
+    }
+
+    private String appendCitations(String line, List<String> citations) {
+        String citationText = citations.stream()
+                .limit(3)
+                .map("[%s]"::formatted)
+                .collect(Collectors.joining(""));
+        if (isMarkdownTableRow(line)) {
+            return appendCitationsToTableRow(line, citationText);
+        }
+        return appendCitationsToText(line, citationText);
+    }
+
+    private String appendCitationsToText(String line, String citationText) {
+        int trailingStart = line.length();
+        while (trailingStart > 0 && Character.isWhitespace(line.charAt(trailingStart - 1))) {
+            trailingStart--;
+        }
+        String body = line.substring(0, trailingStart);
+        String trailing = line.substring(trailingStart);
+        if (!body.isEmpty() && isSentenceEndingPunctuation(body.charAt(body.length() - 1))) {
+            return body.substring(0, body.length() - 1) + citationText + body.charAt(body.length() - 1) + trailing;
+        }
+        return body + citationText + trailing;
+    }
+
+    private String appendCitationsToTableRow(String line, String citationText) {
+        String[] cells = line.split("\\|", -1);
+        for (int i = cells.length - 1; i >= 0; i--) {
+            if (hasText(cells[i])) {
+                cells[i] = appendCitationsToText(cells[i], citationText);
+                break;
+            }
+        }
+        return String.join("|", cells);
+    }
+
+    private String normalizeCitationPlacement(String line) {
+        Matcher matcher = Pattern.compile("([。！？；.!?;])\\s*((?:\\[S\\d+]\\s*)+)(?=$|\\s|\\|)").matcher(line);
+        StringBuffer buffer = new StringBuffer();
+        while (matcher.find()) {
+            String citations = matcher.group(2).replaceAll("\\s+", "");
+            matcher.appendReplacement(buffer, Matcher.quoteReplacement(citations + matcher.group(1)));
+        }
+        matcher.appendTail(buffer);
+        return buffer.toString();
+    }
+
+    private boolean isSentenceEndingPunctuation(char value) {
+        return "。！？；.!?;".indexOf(value) >= 0;
     }
 
     private String prefixUnverified(String line) {
         String trimmed = line.trim();
         if (trimmed.startsWith("待验证") || trimmed.startsWith("- 待验证") || trimmed.startsWith("* 待验证")) {
             return line;
+        }
+        if (trimmed.matches("^\\d+[.、]\\s*待验证[:：].*")) {
+            return line;
+        }
+        if (trimmed.matches("^\\d+[.、]\\s+.*")) {
+            return line.replaceFirst("^(\\s*\\d+[.、]\\s*)", "$1待验证：");
         }
         if (trimmed.startsWith("- ") || trimmed.startsWith("* ")) {
             return line.replaceFirst("^(\\s*[-*]\\s*)", "$1待验证：");
@@ -255,13 +335,10 @@ public class WriterNode implements AgentNode {
             return false;
         }
         String trimmed = line.trim();
-        if (trimmed.startsWith("#") || trimmed.startsWith("|") || trimmed.matches("^[-:| ]+$")) {
+        if (trimmed.startsWith("#") || isMarkdownTableSeparator(trimmed)) {
             return false;
         }
-        if (trimmed.length() < 18) {
-            return false;
-        }
-        String normalized = normalizeText(trimmed);
+        String normalized = normalizeText(tableText(trimmed));
         boolean mentionsCompetitor = run.getRequirement() != null && run.getRequirement().getCompetitors().stream()
                 .filter(AgentUtils::hasText)
                 .anyMatch(competitor -> normalized.contains(normalizeText(competitor)));
@@ -273,7 +350,7 @@ public class WriterNode implements AgentNode {
     }
 
     private List<String> citationsForLine(AnalysisRun run, String line) {
-        Set<String> lineTerms = supportTerms(line);
+        Set<String> lineTerms = supportTerms(tableText(line));
         return run.getClaims().stream()
                 .filter(this::mainReportClaim)
                 .filter(claim -> claimMatchesLine(claim, lineTerms))
@@ -291,6 +368,21 @@ public class WriterNode implements AgentNode {
         Set<String> claimTerms = supportTerms(claim.getContent());
         long overlap = lineTerms.stream().filter(claimTerms::contains).count();
         return overlap >= Math.min(2, Math.min(lineTerms.size(), claimTerms.size()));
+    }
+
+    private boolean isMarkdownTableRow(String line) {
+        return line != null && line.trim().startsWith("|") && line.contains("|");
+    }
+
+    private boolean isMarkdownTableSeparator(String line) {
+        return line != null && line.matches("^\\|?\\s*:?-{2,}:?\\s*(\\|\\s*:?-{2,}:?\\s*)+\\|?\\s*$");
+    }
+
+    private String tableText(String line) {
+        if (!isMarkdownTableRow(line)) {
+            return line;
+        }
+        return line.replace('|', ' ');
     }
 
     private Set<String> supportTerms(String text) {
@@ -353,11 +445,11 @@ public class WriterNode implements AgentNode {
         }
         String mainClaims = run.getClaims().stream()
                 .filter(this::mainReportClaim)
-                .map(this::claimLine)
+                .map(claim -> claimLine(run, claim))
                 .collect(Collectors.joining("\n"));
         String backlogClaims = run.getClaims().stream()
                 .filter(claim -> !mainReportClaim(claim))
-                .map(this::claimLine)
+                .map(claim -> claimLine(run, claim))
                 .collect(Collectors.joining("\n"));
         return """
                 主报告可用结论（只能从这里写主结论、建议优先级和正向判断）:
@@ -386,8 +478,8 @@ public class WriterNode implements AgentNode {
                 && !"NONE".equalsIgnoreCase(textOrDefault(claim.getRecommendedPlacement(), ""));
     }
 
-    private String claimLine(AnalysisClaim claim) {
-        return "- id=%s type=%s confidence=%s status=%s placement=%s eligibleMain=%s dimension=%s competitors=%s evidence=%s reason=%s content=%s".formatted(
+    private String claimLine(AnalysisRun run, AnalysisClaim claim) {
+        return "- id=%s type=%s confidence=%s status=%s placement=%s eligibleMain=%s dimension=%s competitors=%s evidence=%s evidenceAuthority=%s quotes=%s supportReason=%s missingEvidence=%s rewrite=%s reason=%s content=%s".formatted(
                 claim.getId(),
                 claim.getType(),
                 claim.getConfidence(),
@@ -397,9 +489,29 @@ public class WriterNode implements AgentNode {
                 textOrDefault(claim.getDimension(), "-"),
                 claim.getCompetitorNames(),
                 claim.getEvidenceIds(),
+                evidenceAuthoritySummary(run, claim),
+                claim.getEvidenceQuotes(),
+                textOrDefault(claim.getSupportReason(), "-"),
+                claim.getMissingEvidenceTypes(),
+                textOrDefault(claim.getRewriteSuggestion(), "-"),
                 textOrDefault(claim.getPlacementReason(), "-"),
                 claim.getContent()
         );
+    }
+
+    private String evidenceAuthoritySummary(AnalysisRun run, AnalysisClaim claim) {
+        return claim.getEvidenceIds().stream()
+                .map(id -> run.getEvidenceSources().stream()
+                        .filter(source -> id.equals(source.getCitationKey()))
+                        .findFirst()
+                        .map(source -> "%s:%s/%s/%s".formatted(
+                                id,
+                                effectiveSourceAuthority(source),
+                                textOrDefault(source.getSourceQuality(), "UNKNOWN"),
+                                textOrDefault(source.getSourceType(), "unknown")
+                        ))
+                        .orElse(id + ":UNKNOWN"))
+                .collect(Collectors.joining(", "));
     }
 
     private String competitorProfileBlock(AnalysisRun run) {
@@ -459,13 +571,86 @@ public class WriterNode implements AgentNode {
                         source.getCitationKey(),
                         textOrDefault(source.getTitle(), "未命名来源"),
                         textOrDefault(source.getSourceType(), "unknown"),
-                        textOrDefault(source.getSourceAuthority(), "UNKNOWN"),
+                        effectiveSourceAuthority(source),
                         textOrDefault(source.getSourceQuality(), "UNKNOWN"),
                         textOrDefault(source.getCollectionStatus(), "UNKNOWN"),
                         source.getUrl(),
                         abbreviate(source.getSnippet(), 180)
                 ))
                 .collect(Collectors.joining("\n\n"));
+    }
+
+    private String effectiveSourceAuthority(EvidenceSource source) {
+        if (source == null) {
+            return "THIRD_PARTY_GENERAL";
+        }
+        String quality = textOrDefault(source.getSourceQuality(), "UNKNOWN").toUpperCase(Locale.ROOT);
+        String status = textOrDefault(source.getCollectionStatus(), "UNKNOWN").toUpperCase(Locale.ROOT);
+        String authority = textOrDefault(source.getSourceAuthority(), "UNKNOWN");
+        if ("INTERNAL_ONLY".equals(quality) || "USER_PROVIDED".equals(status)) {
+            return "UNKNOWN".equalsIgnoreCase(authority) || "USER_PROVIDED".equalsIgnoreCase(authority)
+                    ? quality
+                    : authority;
+        }
+        if (writerThirdPartyLikeSource(source)) {
+            return "THIRD_PARTY_GENERAL";
+        }
+        return authority;
+    }
+
+    private boolean writerThirdPartyLikeSource(EvidenceSource source) {
+        String authority = textOrDefault(source.getSourceAuthority(), "UNKNOWN").toUpperCase(Locale.ROOT);
+        String sourceType = normalizeText(source.getSourceType());
+        if (authority.startsWith("THIRD_PARTY")
+                || "COMMUNITY".equals(authority)
+                || "SEARCH_SNIPPET".equals(authority)
+                || sourceType.startsWith("third_party")
+                || sourceType.contains("public_review")) {
+            return true;
+        }
+        String host = sourceHost(source.getUrl());
+        return host.endsWith(".ac.cn") || titleSuggestsDifferentPublisher(host, source.getTitle());
+    }
+
+    private String sourceHost(String url) {
+        if (!hasText(url)) {
+            return "";
+        }
+        try {
+            String host = URI.create(url).getHost();
+            return host == null ? "" : host.toLowerCase(Locale.ROOT);
+        } catch (RuntimeException ex) {
+            return "";
+        }
+    }
+
+    private boolean titleSuggestsDifferentPublisher(String host, String title) {
+        if (!hasText(host) || !hasText(title)) {
+            return false;
+        }
+        String root = rootDomain(host);
+        String leadingTitle = normalizeText(title).split("\\s[-|]\\s", 2)[0];
+        if (!hasText(root) || leadingTitle.contains(root)) {
+            return false;
+        }
+        for (String token : leadingTitle.split("[^a-z0-9]+")) {
+            if (token.length() < 3 || GENERIC_TITLE_TOKENS.contains(token)) {
+                continue;
+            }
+            return !root.contains(token) && !token.contains(root);
+        }
+        return false;
+    }
+
+    private String rootDomain(String host) {
+        String[] parts = host.split("\\.");
+        if (parts.length < 2) {
+            return host;
+        }
+        if (parts.length >= 3 && Set.of("com", "net", "org", "ac", "edu", "gov").contains(parts[parts.length - 2])) {
+            return parts[parts.length - 3];
+        }
+        return parts[parts.length - 2];
     }
 
     private String repairPlanBlock(AnalysisRun run) {

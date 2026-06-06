@@ -126,7 +126,97 @@ class WriterNodeTest {
                 .reduce((first, second) -> second)
                 .orElseThrow()
                 .getContent();
-        assertThat(report).contains("路径分明。 [S1]");
+        assertThat(report).contains("路径分明[S1]。");
+    }
+
+    @Test
+    void writerKeepsOrderedListStructureWhenDowngradingUnverifiedLine() {
+        LlmClient llmClient = new LlmClient() {
+            @Override
+            public boolean isAvailable() {
+                return true;
+            }
+
+            @Override
+            public String complete(ChatRequest request) {
+                return """
+                        # Report
+
+                        ## 关键洞察
+                        待验证：2. Cursor 与 Claude Code 在效能提升上更适合大团队。
+                        """;
+            }
+        };
+        WriterNode writer = new WriterNode(llmClient, new FallbackReportDraftFactory());
+        AnalysisRun run = new AnalysisRun(new AnalysisRequirement(
+                "Analyze AI coding tools",
+                "developer tools",
+                List.of("Cursor", "Claude Code"),
+                List.of("developer productivity"),
+                List.of("official_site"),
+                List.of()
+        ));
+
+        writer.execute(run);
+
+        String report = latestReport(run);
+        assertThat(report).contains("2. 待验证：Cursor 与 Claude Code 在效能提升上更适合大团队。");
+        assertThat(report).doesNotContain("待验证：2.");
+    }
+
+    @Test
+    void writerAddsCitationInsideMarkdownTableRows() {
+        LlmClient llmClient = new LlmClient() {
+            @Override
+            public boolean isAvailable() {
+                return true;
+            }
+
+            @Override
+            public String complete(ChatRequest request) {
+                return """
+                        | 维度 | 判断 |
+                        | --- | --- |
+                        | 核心能力 | Cursor 与 Claude Code 在 AI 编程助手的核心能力上路径分明。 |
+                        """;
+            }
+        };
+        WriterNode writer = new WriterNode(llmClient, new FallbackReportDraftFactory());
+        AnalysisRun run = new AnalysisRun(new AnalysisRequirement(
+                "Analyze AI coding tools",
+                "developer tools",
+                List.of("Cursor", "Claude Code"),
+                List.of("core capabilities"),
+                List.of("official_site"),
+                List.of()
+        ));
+        run.getEvidenceSources().add(new EvidenceSource(
+                "S1",
+                "AI coding tools overview",
+                "https://example.test/ai-coding",
+                "official_site",
+                "FETCHED",
+                "LIVE_FETCHED",
+                "HIGH",
+                "NONE",
+                "Cursor and Claude Code have distinct core capability paths for AI coding assistants.",
+                "Cursor and Claude Code have distinct core capability paths for AI coding assistants.",
+                "test evidence"
+        ));
+        AnalysisClaim claim = new AnalysisClaim();
+        claim.setType(ClaimType.COMPARISON);
+        claim.setContent("Cursor 与 Claude Code 在 AI 编程助手的核心能力上路径分明。");
+        claim.setConfidence(ConfidenceLevel.MEDIUM);
+        claim.setSupportStatus("SUPPORTED");
+        claim.setRecommendedPlacement("MATRIX");
+        claim.setEligibleForMainReport(true);
+        claim.setEvidenceIds(List.of("S1"));
+        run.getClaims().add(claim);
+
+        writer.execute(run);
+
+        assertThat(latestReport(run))
+                .contains("| 核心能力 | Cursor 与 Claude Code 在 AI 编程助手的核心能力上路径分明[S1]。 |");
     }
 
     @Test
@@ -181,6 +271,14 @@ class WriterNodeTest {
                 .reduce((first, second) -> second)
                 .orElseThrow()
                 .getContent();
-        assertThat(report).contains("待验证：Cursor 的集成方式能直接提升开发者工作流效率。 [S1]");
+        assertThat(report).contains("待验证：Cursor 的集成方式能直接提升开发者工作流效率[S1]。");
+    }
+
+    private String latestReport(AnalysisRun run) {
+        return run.getArtifacts().stream()
+                .filter(artifact -> artifact.getType() == ArtifactType.REPORT_DRAFT)
+                .reduce((first, second) -> second)
+                .orElseThrow()
+                .getContent();
     }
 }

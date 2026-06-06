@@ -77,9 +77,16 @@ public class FallbackReportDraftFactory {
         String citations = claim.getEvidenceIds().isEmpty()
                 ? "证据不足，待验证"
                 : claim.getEvidenceIds().stream().map(id -> "[" + id + "]").collect(Collectors.joining(" "));
-        return "- [%s/%s] %s %s".formatted(
+        String status = claim.getSupportStatus() == null || claim.getSupportStatus().isBlank()
+                ? "未标注支撑状态"
+                : claim.getSupportStatus();
+        String support = claim.getSupportReason() == null || claim.getSupportReason().isBlank()
+                ? status
+                : status + "：" + claim.getSupportReason();
+        return "- [%s/%s/%s] %s %s".formatted(
                 claim.getType(),
                 claim.getConfidence(),
+                support,
                 claim.getContent(),
                 citations
         );

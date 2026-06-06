@@ -1043,43 +1043,52 @@ export function App() {
   }
 
   function handleLocateFinding(finding: ReviewFinding) {
+    const effectiveCitationKey = finding.citationKey ?? citationKeyFromFinding(finding);
+    const locationType = locationTypeFromFinding(finding, effectiveCitationKey);
     const claim = run?.claims?.find((item) => item.id === finding.claimId);
-    const canLocateInReport = Boolean(reportArtifacts.length);
+    const targetReportArtifact = reportArtifactForFinding(finding, reportArtifacts, reportDisplayArtifact);
 
-    // 质检定位要同时服务两个面板：证据侧栏高亮 citation，主工作台定位报告或 schema。
-    // report 优先，因为用户点击“定位”时最需要看到 Writer 实际要改的句子。
-    if (finding.citationKey) {
-      handleSelectCitation(finding.citationKey);
-    }
-    if (finding.claimId) {
+    if (locationType === "CLAIM" && finding.claimId) {
       setSelectedClaimId(finding.claimId);
+      setMainView("schema");
+      setEventMessage(`已定位到结构化结论 ${finding.claimId}`);
+      return;
     }
 
-    if (finding.artifactId && reportArtifacts.some((artifact) => artifact.id === finding.artifactId)) {
-      setSelectedArtifactId(finding.artifactId);
+    if (locationType === "REPORT_PARAGRAPH" && targetReportArtifact && (finding.paragraphIndex !== undefined || finding.excerpt)) {
+      setSelectedArtifactId(targetReportArtifact.id);
       setArtifactPinned(true);
-    } else if (canLocateInReport) {
-      setArtifactPinned(false);
-    }
-
-    if (canLocateInReport) {
       setArtifactLocateRequest((current) => ({
         requestId: (current?.requestId ?? 0) + 1,
-        artifactId: finding.artifactId,
+        artifactId: targetReportArtifact.id,
         paragraphIndex: finding.paragraphIndex,
         excerpt: finding.excerpt,
         claimId: finding.claimId,
         claimText: claim?.content,
-        citationKey: finding.citationKey
+        citationKey: effectiveCitationKey
       }));
       setMainView("report");
       setEventMessage(`已定位到报告${finding.paragraphIndex !== undefined ? `段落 ${finding.paragraphIndex}` : ""}${finding.claimId ? `，关联结论 ${finding.claimId}` : ""}`);
       return;
     }
 
-    if (finding.claimId) {
+    if (locationType === "EVIDENCE_SOURCE" && effectiveCitationKey) {
+      handleSelectCitation(effectiveCitationKey);
+      setEventMessage(`已定位到证据 [${effectiveCitationKey}]`);
+      return;
+    }
+
+    if (locationType === "SCHEMA") {
       setMainView("schema");
-      setEventMessage(`已定位到结构化结论 ${finding.claimId}`);
+      setEventMessage("已打开结构化信息");
+      return;
+    }
+
+    if (targetReportArtifact) {
+      setSelectedArtifactId(targetReportArtifact.id);
+      setArtifactPinned(true);
+      setMainView("report");
+      setEventMessage("已打开关联报告");
     }
   }
 
@@ -1604,6 +1613,32 @@ function backendStatusBadge(status: BackendStatus): { label: string; tone: "succ
 
 function isReportArtifact(artifact?: AnalysisArtifact) {
   return artifact?.type === "FINAL_REPORT" || artifact?.type === "REPORT_DRAFT";
+}
+
+function citationKeyFromFinding(finding: ReviewFinding) {
+  return /\[(S\d+)]/.exec(`${finding.message ?? ""} ${finding.excerpt ?? ""}`)?.[1];
+}
+
+function locationTypeFromFinding(finding: ReviewFinding, citationKey?: string): ReviewFinding["locationType"] {
+  if (finding.locationType) return finding.locationType;
+  if (finding.paragraphIndex !== undefined) return "REPORT_PARAGRAPH";
+  if (finding.claimId) return "CLAIM";
+  if (citationKey) return "EVIDENCE_SOURCE";
+  if (finding.artifactId) return "GLOBAL_REPORT";
+  if (finding.excerpt) return "REPORT_PARAGRAPH";
+  return undefined;
+}
+
+function reportArtifactForFinding(
+  finding: ReviewFinding,
+  reportArtifacts: AnalysisArtifact[],
+  reportDisplayArtifact?: AnalysisArtifact
+) {
+  if (finding.artifactId) {
+    const matchedArtifact = reportArtifacts.find((artifact) => artifact.id === finding.artifactId);
+    if (matchedArtifact) return matchedArtifact;
+  }
+  return reportDisplayArtifact ?? reportArtifacts.at(-1);
 }
 
 function readScopeDraft(): ScopeDraft | null {

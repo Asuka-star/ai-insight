@@ -1,3 +1,4 @@
+import { useEffect, useRef } from "react";
 import { Boxes, GitPullRequestArrow, ListChecks } from "lucide-react";
 import type { AnalysisClaim, CompetitorProfile, FeatureNode, ResearchPackage, WorkflowTransition } from "../types";
 
@@ -22,6 +23,14 @@ export function SchemaPanel({
 }: SchemaPanelProps) {
   const sourceCount = researchPackage?.sources?.length ?? 0;
   const missingCount = researchPackage?.missingEvidenceTypes?.length ?? 0;
+  const claimRefs = useRef<Record<string, HTMLElement | null>>({});
+
+  useEffect(() => {
+    if (!selectedClaimId) return;
+    const selectedClaim = claimRefs.current[selectedClaimId];
+    if (!selectedClaim) return;
+    selectedClaim.scrollIntoView({ block: "center", behavior: "smooth" });
+  }, [selectedClaimId]);
 
   return (
     <section className={embedded ? "schema-panel embedded" : "panel schema-panel"}>
@@ -240,7 +249,13 @@ export function SchemaPanel({
         </div>
         {claims.length ? (
           claims.map((claim) => (
-            <div className={`schema-card ${selectedClaimId === claim.id ? "active" : ""}`} key={claim.id}>
+            <div
+              className={`schema-card ${selectedClaimId === claim.id ? "active" : ""}`}
+              key={claim.id}
+              ref={(element) => {
+                claimRefs.current[claim.id] = element;
+              }}
+            >
               <span>{claim.type ?? "CLAIM"} / {claim.confidence ?? "MEDIUM"}</span>
               <p>{claim.content}</p>
               <dl className="schema-kv">

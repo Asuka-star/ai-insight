@@ -3,6 +3,7 @@ package com.aiinsight.service;
 import com.aiinsight.model.review.ReviewFinding;
 import com.aiinsight.model.enums.ConfidenceLevel;
 import com.aiinsight.model.enums.ReviewSeverity;
+import com.aiinsight.model.enums.ReviewLocationType;
 import com.aiinsight.model.run.AnalysisRun;
 import com.aiinsight.model.run.EvidenceChunk;
 import com.aiinsight.model.run.EvidenceSource;
@@ -105,6 +106,7 @@ public class CitationCoverageEvaluator {
                 finding.setCitationKey(citationKey);
                 finding.setParagraphIndex(paragraphIndex);
                 finding.setExcerpt(paragraph);
+                finding.setLocationType(ReviewLocationType.REPORT_PARAGRAPH);
                 findings.add(finding);
                 continue;
             }
@@ -137,6 +139,7 @@ public class CitationCoverageEvaluator {
                 );
                 finding.setClaimId(claim.getId());
                 finding.setExcerpt(claim.getContent());
+                finding.setLocationType(ReviewLocationType.CLAIM);
                 findings.add(finding);
                 continue;
             }
@@ -151,6 +154,7 @@ public class CitationCoverageEvaluator {
                     finding.setClaimId(claim.getId());
                     finding.setCitationKey(evidenceId);
                     finding.setExcerpt(claim.getContent());
+                    finding.setLocationType(ReviewLocationType.CLAIM);
                     findings.add(finding);
                     continue;
                 }
@@ -264,6 +268,7 @@ public class CitationCoverageEvaluator {
                 finding.setClaimId(claim.getId());
                 finding.setFactId(factId);
                 finding.setExcerpt(claim.getContent());
+                finding.setLocationType(ReviewLocationType.CLAIM);
                 findings.add(finding);
                 continue;
             }
@@ -298,6 +303,7 @@ public class CitationCoverageEvaluator {
         finding.setFactId(fact.getId());
         finding.setCitationKey(evidenceId);
         finding.setExcerpt(fact.getValue());
+        finding.setLocationType(ReviewLocationType.CLAIM);
         if (fact.getChunkKeys() != null && !fact.getChunkKeys().isEmpty()) {
             finding.setChunkKey(fact.getChunkKeys().get(0));
         }

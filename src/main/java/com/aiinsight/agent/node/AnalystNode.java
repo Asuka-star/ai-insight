@@ -50,6 +50,7 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
+import java.net.URI;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.LinkedHashSet;
@@ -78,6 +79,12 @@ public class AnalystNode implements AgentNode {
             "analysis", "competitive", "advantage", "risk", "opportunity", "recommendation",
             "支持", "提供", "功能", "能力", "用户", "产品", "可以", "用于", "适用", "覆盖", "包括",
             "风险", "机会", "建议", "分析", "竞品", "结论", "证据", "不足", "待验证"
+    );
+    private static final Set<String> GENERIC_TITLE_TOKENS = Set.of(
+            "docs", "doc", "guide", "guides", "documentation", "pricing", "plans", "plan",
+            "enterprise", "deployment", "overview", "security", "trust", "privacy", "product",
+            "features", "feature", "integration", "integrations", "agent", "agents", "skills",
+            "workflow", "workflows", "code", "coding", "developer", "developers"
     );
     private static final Set<String> HIGH_PRECISION_SUPPORT_TERMS = Set.of(
             "sso", "scim", "saml", "soc", "soc2", "soc 2", "rbac", "iso", "hipaa", "gdpr",
@@ -183,21 +190,24 @@ public class AnalystNode implements AgentNode {
 
                 输出约束：
                 1. 只输出 JSON，不要 Markdown 代码块。
-                2. claims 必须是数组，最多 8 条；每条 claim 包含 type、content、confidence、dimension、supportStatus、recommendedPlacement、competitorNames、factIds、evidenceIds、chunkKeys。
+                2. claims 必须是数组，最多 8 条；每条 claim 包含 type、content、confidence、dimension、supportStatus、recommendedPlacement、supportReason、evidenceQuotes、missingEvidenceTypes、rewriteSuggestion、competitorNames、factIds、evidenceIds、chunkKeys。
                 3. type 只能取 FACT、COMPARISON、STRENGTH、WEAKNESS、OPPORTUNITY、RISK、RECOMMENDATION。
                 4. confidence 只能取 LOW、MEDIUM、HIGH。
                 5. content 不超过 120 字，必须围绕用户关注维度、业务目标或已采集证据生成。
                 6. evidenceIds 只能使用已知证据编号；证据不足时可以为空，但 content 必须明确写“待验证”或“证据不足”。
                 7. supportStatus 只能取 SUPPORTED、PARTIAL、UNVERIFIED；recommendedPlacement 只能取 MATRIX、SWOT、VALIDATION_BACKLOG、NONE。
-                8. MATRIX/SWOT 只给有 evidenceIds 且 confidence 为 MEDIUM/HIGH 的结论；LOW、UNVERIFIED 或无 evidenceIds 的结论必须放 VALIDATION_BACKLOG 或 NONE。
-                9. 不要输出矩阵、SWOT、报告正文或其他展示型字段。
-                10. 不要编造价格、营收、客户案例、市场份额或证据中没有的信息。
-                11. 不要把“证据不足”本身当成主要洞察；RISK 类型最多 1 条，其余优先产出有证据支撑的差异、取舍和建议。
-                12. 对已有 strong/medium 证据覆盖的维度，不要写“待验证”；应给出保守但可行动的判断。
-                13. 如果 Reviewer 修复计划包含结构化修复任务，必须逐条处理 task；不要原样保留 task.currentText 中被点名的问题结论。
-                14. 无法找到更强证据时，不要继续维护原 claim 的强判断；必须降为 LOW，并在 content 写明“证据不足/待验证”。
-                15. 如果 task 指出 citation mismatch，不要继续把同一个 citationKey 绑定到相同判断；改用更相关证据，或清空 evidenceIds 并降级。
-                16. 返工输出必须相对原 affected claim 有可见变化：改证据、改置信度、改措辞或删除/替换该 claim。
+                8. evidenceQuotes 是你从已知证据或 chunk 中摘出的短支撑片段；SUPPORTED 必须至少给 1 条 evidenceQuote，PARTIAL 给能部分支撑的片段，UNVERIFIED 留空。
+                9. supportReason 用一句话说明 evidenceQuotes 如何支撑 content；如果只是部分支撑，必须写清楚边界。
+                10. missingEvidenceTypes 写仍缺的证据类型；rewriteSuggestion 写更保守、更可被证据支撑的改写方案；没有缺口时用空数组/空字符串。
+                11. MATRIX/SWOT 只给有 evidenceIds、evidenceQuotes 且 confidence 为 MEDIUM/HIGH 的结论；LOW、UNVERIFIED 或无 evidenceIds 的结论必须放 VALIDATION_BACKLOG 或 NONE。
+                12. 不要输出矩阵、SWOT、报告正文或其他展示型字段。
+                13. 不要编造价格、营收、客户案例、市场份额或证据中没有的信息。
+                14. 不要把“证据不足”本身当成主要洞察；RISK 类型最多 1 条，其余优先产出有证据支撑的差异、取舍和建议。
+                15. 对已有 strong/medium 证据覆盖的维度，不要写“待验证”；应给出保守但可行动的判断。
+                16. 如果 Reviewer 修复计划包含结构化修复任务，必须逐条处理 task；不要原样保留 task.currentText 中被点名的问题结论。
+                17. 无法找到更强证据时，不要继续维护原 claim 的强判断；必须降为 LOW，并在 content 写明“证据不足/待验证”。
+                18. 如果 task 指出 citation mismatch，不要继续把同一个 citationKey 绑定到相同判断；改用更相关证据，或清空 evidenceIds 并降级。
+                19. 返工输出必须相对原 affected claim 有可见变化：改证据、改置信度、改措辞或删除/替换该 claim。
 
                 JSON 结构：
                 {
@@ -209,6 +219,10 @@ public class AnalystNode implements AgentNode {
                       "dimension": "用户关注维度",
                       "supportStatus": "SUPPORTED",
                       "recommendedPlacement": "MATRIX",
+                      "supportReason": "证据片段直接说明该能力或事实，因此可以作为保守结论。",
+                      "evidenceQuotes": ["来自证据或 chunk 的短支撑片段"],
+                      "missingEvidenceTypes": [],
+                      "rewriteSuggestion": "",
                       "competitorNames": ["竞品名"],
                       "factIds": ["F1"],
                       "evidenceIds": ["S1"],
@@ -287,12 +301,16 @@ public class AnalystNode implements AgentNode {
         claim.setDimension(normalizeClaimDimension(run, draft.dimension, draft.content));
         claim.setSupportStatus(normalizeSupportStatus(draft.supportStatus));
         claim.setRecommendedPlacement(normalizeRecommendedPlacement(draft.recommendedPlacement, claim.getType()));
+        claim.setSupportReason(sanitizeShortText(draft.supportReason, 220));
+        claim.setRewriteSuggestion(sanitizeShortText(draft.rewriteSuggestion, 220));
         claim.setCompetitorNames(normalizeCompetitorNames(run, draft.competitorNames));
         // evidenceIds 是 claim 进入 Writer/Reviewer 的硬约束，只允许已知 citation；
         // 模型编造的 [S404] 会被过滤，避免后续报告携带不可追溯引用。
         claim.setEvidenceIds(distinctKnownEvidenceIds(run, draft.evidenceIds));
         claim.setFactIds(distinctKnownFactIds(run, draft.factIds));
         claim.setChunkKeys(distinctKnownChunkKeys(run, draft.chunkKeys));
+        claim.setEvidenceQuotes(sanitizeShortList(draft.evidenceQuotes, 4, 180));
+        claim.setMissingEvidenceTypes(sanitizeShortList(draft.missingEvidenceTypes, 4, 80));
         bindClaimFacts(run, claim);
         pruneUnsupportedClaimEvidence(run, claim);
         adjustClaimConfidence(run, claim);
@@ -331,6 +349,10 @@ public class AnalystNode implements AgentNode {
         claim.setDimension(normalizeClaimDimension(run, claim.getDimension(), claim.getContent()));
         claim.setSupportStatus(normalizeSupportStatus(claim.getSupportStatus()));
         claim.setRecommendedPlacement(normalizeRecommendedPlacement(claim.getRecommendedPlacement(), claim.getType()));
+        claim.setSupportReason(sanitizeShortText(claim.getSupportReason(), 220));
+        claim.setRewriteSuggestion(sanitizeShortText(claim.getRewriteSuggestion(), 220));
+        claim.setEvidenceQuotes(sanitizeShortList(claim.getEvidenceQuotes(), 4, 180));
+        claim.setMissingEvidenceTypes(sanitizeShortList(claim.getMissingEvidenceTypes(), 4, 80));
         bindClaimFacts(run, claim);
         pruneUnsupportedClaimEvidence(run, claim);
         if (claim.getEvidenceIds().isEmpty()) {
@@ -631,12 +653,32 @@ public class AnalystNode implements AgentNode {
         if (!claimMentionsAnyCompetitor(claim, sourceText)) {
             return false;
         }
+        if (analystQuoteSupportsEvidence(run, citationKey, claim, sourceText)) {
+            return true;
+        }
         if (supportTextMatches(claim.getContent(), sourceText)) {
             return true;
         }
         return run.getEvidenceChunks().stream()
                 .filter(chunk -> citationKey.equals(chunk.getSourceCitationKey()))
                 .anyMatch(chunk -> supportTextMatches(claim.getContent(), evidenceChunkText(chunk)));
+    }
+
+    private boolean analystQuoteSupportsEvidence(AnalysisRun run,
+                                                 String citationKey,
+                                                 AnalysisClaim claim,
+                                                 String sourceText) {
+        List<String> quotes = safeList(claim.getEvidenceQuotes());
+        if (quotes.isEmpty()) {
+            return false;
+        }
+        if (quotes.stream().anyMatch(quote -> supportTextMatches(quote, sourceText))) {
+            return true;
+        }
+        return run.getEvidenceChunks().stream()
+                .filter(chunk -> citationKey.equals(chunk.getSourceCitationKey()))
+                .map(this::evidenceChunkText)
+                .anyMatch(chunkText -> quotes.stream().anyMatch(quote -> supportTextMatches(quote, chunkText)));
     }
 
     private boolean boundFactSupportsEvidence(AnalysisRun run, String citationKey, AnalysisClaim claim) {
@@ -939,6 +981,23 @@ public class AnalystNode implements AgentNode {
         return PLACEMENT_MATRIX;
     }
 
+    private String sanitizeShortText(String text, int maxLength) {
+        if (!hasText(text)) {
+            return null;
+        }
+        return abbreviate(text.trim(), maxLength);
+    }
+
+    private List<String> sanitizeShortList(List<String> values, int maxItems, int maxLength) {
+        return safeList(values).stream()
+                .filter(AgentUtils::hasText)
+                .map(String::trim)
+                .map(value -> abbreviate(value, maxLength))
+                .distinct()
+                .limit(maxItems)
+                .toList();
+    }
+
     private void refreshClaimAssessment(AnalysisRun run, AnalysisClaim claim) {
         boolean lacksEvidence = claim.getEvidenceIds() == null || claim.getEvidenceIds().isEmpty();
         boolean uncertain = containsUncertaintyMarker(claim.getContent());
@@ -950,7 +1009,16 @@ public class AnalystNode implements AgentNode {
             applyClaimEligibility(claim, "证据不足、待验证或低置信度，不能进入主展示。");
             return;
         }
-        if (run != null && highRiskClaimNeedsStrongerEvidence(run, claim)) {
+        if (SUPPORT_STATUS_UNVERIFIED.equals(claim.getSupportStatus())) {
+            claim.setConfidence(ConfidenceLevel.LOW);
+            if (!PLACEMENT_NONE.equals(claim.getRecommendedPlacement())) {
+                claim.setRecommendedPlacement(PLACEMENT_VALIDATION_BACKLOG);
+            }
+            applyClaimEligibility(claim, "Analyst 已标记为待验证，不能进入主展示。");
+            return;
+        }
+        boolean analystSelfVerified = analystSelfVerified(claim);
+        if (!analystSelfVerified && run != null && highRiskClaimNeedsStrongerEvidence(run, claim)) {
             claim.setSupportStatus(SUPPORT_STATUS_PARTIAL);
             if (claim.getConfidence() == ConfidenceLevel.HIGH) {
                 claim.setConfidence(ConfidenceLevel.MEDIUM);
@@ -961,15 +1029,64 @@ public class AnalystNode implements AgentNode {
             applyClaimEligibility(claim, "价格、安全、权限或部署类结论缺少足够强的一手来源，先放入待验证。");
             return;
         }
-        claim.setSupportStatus(claim.getConfidence() == ConfidenceLevel.HIGH
-                ? SUPPORT_STATUS_SUPPORTED
-                : SUPPORT_STATUS_PARTIAL);
+        if (run != null && analystSelfVerified && !hasStrongFirstPartyEvidence(run, claim)) {
+            claim.setSupportStatus(SUPPORT_STATUS_PARTIAL);
+            if (claim.getConfidence() == ConfidenceLevel.HIGH) {
+                claim.setConfidence(ConfidenceLevel.MEDIUM);
+            }
+            if (!hasText(claim.getSupportReason())) {
+                claim.setSupportReason("证据相关但缺少足够强的一手来源，不能作为高置信优势判断。");
+            }
+        }
+        if (analystSelfVerified
+                && SUPPORT_STATUS_SUPPORTED.equals(claim.getSupportStatus())
+                && safeList(claim.getEvidenceQuotes()).isEmpty()) {
+            claim.setSupportStatus(SUPPORT_STATUS_PARTIAL);
+            if (claim.getConfidence() == ConfidenceLevel.HIGH) {
+                claim.setConfidence(ConfidenceLevel.MEDIUM);
+            }
+            if (!hasText(claim.getSupportReason())) {
+                claim.setSupportReason("Analyst 未提供直接支撑摘录，只能按部分支撑处理。");
+            }
+        } else if (!SUPPORT_STATUS_SUPPORTED.equals(claim.getSupportStatus())
+                && !SUPPORT_STATUS_PARTIAL.equals(claim.getSupportStatus())) {
+            claim.setSupportStatus(claim.getConfidence() == ConfidenceLevel.HIGH
+                    ? SUPPORT_STATUS_SUPPORTED
+                    : SUPPORT_STATUS_PARTIAL);
+        }
         if (!PLACEMENT_MATRIX.equals(claim.getRecommendedPlacement())
                 && !PLACEMENT_SWOT.equals(claim.getRecommendedPlacement())
                 && !PLACEMENT_NONE.equals(claim.getRecommendedPlacement())) {
             claim.setRecommendedPlacement(defaultPlacementFor(claim.getType()));
         }
-        applyClaimEligibility(claim, "证据与置信度满足主展示条件。");
+        applyClaimEligibility(claim, analystSelfVerified
+                ? "Analyst 已给出证据摘录与支撑理由，结构校验通过。"
+                : "证据与置信度满足主展示条件。");
+    }
+
+    private boolean analystSelfVerified(AnalysisClaim claim) {
+        return hasText(claim.getSupportReason())
+                || hasText(claim.getRewriteSuggestion())
+                || !safeList(claim.getEvidenceQuotes()).isEmpty()
+                || !safeList(claim.getMissingEvidenceTypes()).isEmpty();
+    }
+
+    private boolean hasStrongFirstPartyEvidence(AnalysisRun run, AnalysisClaim claim) {
+        Map<String, EvidenceSource> sources = sourceByCitationKey(run);
+        return safeList(claim.getEvidenceIds()).stream()
+                .map(sources::get)
+                .anyMatch(source -> evidenceConfidenceScore(source) >= 3 && firstPartyAuthority(source));
+    }
+
+    private boolean firstPartyAuthority(EvidenceSource source) {
+        if (source == null) {
+            return false;
+        }
+        String authority = normalizeUpper(source.getSourceAuthority());
+        if (authority.startsWith("FIRST_PARTY")) {
+            return true;
+        }
+        return isAuthoritativeSourceType(source) && !thirdPartyLikeSource(source);
     }
 
     private void applyClaimEligibility(AnalysisClaim claim, String reason) {
@@ -1657,16 +1774,17 @@ public class AnalystNode implements AgentNode {
         String quality = normalizeUpper(source.getSourceQuality());
         String status = normalizeUpper(source.getCollectionStatus());
         String freshness = normalizeUpper(source.getFreshness());
+        boolean thirdPartyLike = thirdPartyLikeSource(source);
         if ("UNUSABLE".equals(quality) || "LOW".equals(quality)
                 || "FETCH_FAILED".equals(status) || "BLOCKED_BY_ROBOTS".equals(status)
                 || "SEARCH_RESULT_SNIPPET".equals(freshness)) {
             return 1;
         }
         if ("HIGH".equals(quality)) {
-            return 3;
+            return thirdPartyLike ? 2 : 3;
         }
         if (isAuthoritativeSourceType(source) && ("FETCHED".equals(status) || hasText(source.getRawText()))) {
-            return 3;
+            return thirdPartyLike ? 2 : 3;
         }
         if ("MEDIUM".equals(quality) || ("FETCHED".equals(status) && hasText(source.getSnippet()))) {
             return 2;
@@ -1688,6 +1806,65 @@ public class AnalystNode implements AgentNode {
     private boolean isAuthoritativeSourceType(EvidenceSource source) {
         return Set.of("official_site", "docs", "product_docs", "pricing_page", "release_notes", "technical_blog", "authoritative_media")
                 .contains(normalizeLower(source.getSourceType()));
+    }
+
+    private boolean thirdPartyLikeSource(EvidenceSource source) {
+        String host = sourceHost(source.getUrl());
+        if (host.endsWith(".test") && isAuthoritativeSourceType(source)) {
+            return false;
+        }
+        String authority = normalizeUpper(source.getSourceAuthority());
+        String sourceType = normalizeLower(source.getSourceType());
+        if (authority.startsWith("THIRD_PARTY")
+                || "COMMUNITY".equals(authority)
+                || "SEARCH_SNIPPET".equals(authority)
+                || "UNKNOWN".equals(authority)
+                || sourceType.startsWith("third_party")
+                || sourceType.contains("public_review")) {
+            return true;
+        }
+        return host.endsWith(".ac.cn") || titleSuggestsDifferentPublisher(host, source.getTitle());
+    }
+
+    private String sourceHost(String url) {
+        if (!hasText(url)) {
+            return "";
+        }
+        try {
+            String host = URI.create(url).getHost();
+            return host == null ? "" : host.toLowerCase(Locale.ROOT);
+        } catch (RuntimeException ex) {
+            return "";
+        }
+    }
+
+    private boolean titleSuggestsDifferentPublisher(String host, String title) {
+        if (!hasText(host) || !hasText(title)) {
+            return false;
+        }
+        String root = rootDomain(host);
+        String leadingTitle = normalizeLower(title).split("\\s[-|]\\s", 2)[0];
+        if (!hasText(root) || leadingTitle.contains(root)) {
+            return false;
+        }
+        for (String token : leadingTitle.split("[^a-z0-9]+")) {
+            if (token.length() < 3 || GENERIC_TITLE_TOKENS.contains(token)) {
+                continue;
+            }
+            return !root.contains(token) && !token.contains(root);
+        }
+        return false;
+    }
+
+    private String rootDomain(String host) {
+        String[] parts = host.split("\\.");
+        if (parts.length < 2) {
+            return host;
+        }
+        if (parts.length >= 3 && Set.of("com", "net", "org", "ac", "edu", "gov").contains(parts[parts.length - 2])) {
+            return parts[parts.length - 3];
+        }
+        return parts[parts.length - 2];
     }
 
     private int sourceTypeScore(EvidenceSource source) {
@@ -1846,10 +2023,14 @@ public class AnalystNode implements AgentNode {
         public String dimension;
         public String supportStatus;
         public String recommendedPlacement;
+        public String supportReason;
+        public String rewriteSuggestion;
         public List<String> competitorNames = List.of();
         public List<String> factIds = List.of();
         public List<String> evidenceIds = List.of();
         public List<String> chunkKeys = List.of();
+        public List<String> evidenceQuotes = List.of();
+        public List<String> missingEvidenceTypes = List.of();
     }
 
     private record FactMatch(ExtractedFact fact, int score) {

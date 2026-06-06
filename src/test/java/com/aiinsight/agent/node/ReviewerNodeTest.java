@@ -8,12 +8,14 @@ import com.aiinsight.model.enums.ClaimType;
 import com.aiinsight.model.enums.ConfidenceLevel;
 import com.aiinsight.model.enums.FactType;
 import com.aiinsight.model.enums.ReviewAction;
+import com.aiinsight.model.enums.ReviewLocationType;
 import com.aiinsight.model.run.AnalysisArtifact;
 import com.aiinsight.model.run.AnalysisRun;
 import com.aiinsight.model.run.EvidenceChunk;
 import com.aiinsight.model.run.EvidenceSource;
 import com.aiinsight.model.run.ReviewRepairDelta;
 import com.aiinsight.model.review.ReviewDecision;
+import com.aiinsight.model.review.ReviewRepairTask;
 import com.aiinsight.model.schema.AnalysisClaim;
 import com.aiinsight.model.schema.CompetitorFactSet;
 import com.aiinsight.model.schema.ExtractedFact;
@@ -239,11 +241,109 @@ class ReviewerNodeTest {
                 .anySatisfy(finding -> {
                     assertThat(finding.getSeverity()).isEqualTo(com.aiinsight.model.enums.ReviewSeverity.HIGH);
                     assertThat(finding.getCategory()).isEqualTo("missing_citation");
+                    assertThat(finding.getLocationType()).isEqualTo(ReviewLocationType.REPORT_PARAGRAPH);
                 });
         assertThat(run.getReviewDecision().getAction()).isEqualTo(ReviewAction.REVISE_REPORT);
         assertThat(run.getReviewDecision().getTargetAgent()).isEqualTo(AgentName.WRITER);
         assertThat(run.getReviewDecision().getRepairTasks())
                 .allSatisfy(task -> assertThat(task.getTargetAgent()).isEqualTo(AgentName.WRITER));
+    }
+
+    @Test
+    void normalizesSourceFindingToEvidenceLocationFromMessageCitation() {
+        AnalysisRun run = new AnalysisRun();
+        run.addArtifact(new AnalysisArtifact(
+                ArtifactType.REPORT_DRAFT,
+                "draft",
+                "Cursor enterprise governance needs stronger evidence.",
+                List.of()
+        ));
+        run.getEvidenceSources().add(source("S44", "Cursor pricing page."));
+
+        new ReviewerNode(new CitationCoverageEvaluator(), lowQualitySourceLlmClient(), new FallbackReviewReportFactory()).execute(run);
+
+        assertThat(run.getReviewFindings())
+                .anySatisfy(finding -> {
+                    assertThat(finding.getCategory()).isEqualTo("low_quality_source");
+                    assertThat(finding.getCitationKey()).isEqualTo("S44");
+                    assertThat(finding.getLocationType()).isEqualTo(ReviewLocationType.EVIDENCE_SOURCE);
+                    assertThat(finding.getParagraphIndex()).isNull();
+                });
+    }
+
+    @Test
+    void marksUnmatchedReportFindingAsGlobalReportLocation() {
+        AnalysisRun run = new AnalysisRun();
+        run.addArtifact(new AnalysisArtifact(
+                ArtifactType.REPORT_DRAFT,
+                "draft",
+                "## 关键洞察\n\nCursor has cited enterprise governance evidence [S1].",
+                List.of("S1")
+        ));
+        run.getEvidenceSources().add(source("S1", "Cursor enterprise governance evidence."));
+
+        new ReviewerNode(new CitationCoverageEvaluator(), unmatchedReportGapLlmClient(), new FallbackReviewReportFactory()).execute(run);
+
+        assertThat(run.getReviewFindings())
+                .anySatisfy(finding -> {
+                    assertThat(finding.getCategory()).isEqualTo("report_dimension_coverage_gap");
+                    assertThat(finding.getLocationType()).isEqualTo(ReviewLocationType.GLOBAL_REPORT);
+                    assertThat(finding.getParagraphIndex()).isNull();
+                    assertThat(finding.getExcerpt()).contains("目标用户维度");
+                });
+    }
+
+    @Test
+    void keepsUnlocatedHighLlmFindingBlocking() {
+        AnalysisRun run = new AnalysisRun();
+        run.addArtifact(new AnalysisArtifact(
+                ArtifactType.REPORT_DRAFT,
+                "draft",
+                "Cursor has the strongest enterprise governance advantage.",
+                List.of()
+        ));
+
+        new ReviewerNode(new CitationCoverageEvaluator(), unlocatedHighLlmClient(), new FallbackReviewReportFactory()).execute(run);
+
+        assertThat(run.getReviewFindings())
+                .anySatisfy(finding -> {
+                    assertThat(finding.getSeverity()).isEqualTo(com.aiinsight.model.enums.ReviewSeverity.HIGH);
+                    assertThat(finding.getCategory()).isEqualTo("unsupported_recommendation");
+                    assertThat(finding.getRecommendation()).contains("缺少精确定位");
+                });
+        assertThat(run.getReviewDecision().getAction()).isEqualTo(ReviewAction.REVISE_REPORT);
+        assertThat(run.getReviewDecision().getTargetAgent()).isEqualTo(AgentName.WRITER);
+    }
+
+    @Test
+    void repairVerificationKeepsNewHighFindingsBlocking() {
+        AnalysisRun run = new AnalysisRun();
+        run.addArtifact(new AnalysisArtifact(
+                ArtifactType.REPORT_DRAFT,
+                "draft",
+                "Cursor has the strongest enterprise governance advantage.",
+                List.of()
+        ));
+        ReviewDecision previousDecision = new ReviewDecision();
+        previousDecision.setAction(ReviewAction.REVISE_REPORT);
+        previousDecision.setTargetAgent(AgentName.WRITER);
+        ReviewRepairTask previousTask = new ReviewRepairTask();
+        previousTask.setTargetAgent(AgentName.WRITER);
+        previousTask.setCategory("missing_citation");
+        previousTask.setParagraphIndex(9);
+        previousDecision.setRepairTasks(List.of(previousTask));
+        run.setReviewDecision(previousDecision);
+
+        new ReviewerNode(new CitationCoverageEvaluator(), unlocatedHighLlmClient(), new FallbackReviewReportFactory()).execute(run);
+
+        assertThat(run.getReviewFindings())
+                .anySatisfy(finding -> {
+                    assertThat(finding.getSeverity()).isEqualTo(com.aiinsight.model.enums.ReviewSeverity.HIGH);
+                    assertThat(finding.getMessage()).contains("返工验证模式中发现的新 HIGH 问题");
+                });
+        assertThat(run.getReviewDecision().getAction()).isEqualTo(ReviewAction.REVISE_REPORT);
+        assertThat(run.getRecommendedActions())
+                .anySatisfy(action -> assertThat(action).contains("新 HIGH 问题"));
     }
 
     private LlmClient noopLlmClient() {
@@ -314,6 +414,40 @@ class ReviewerNodeTest {
                         """;
             }
         };
+    }
+
+    private LlmClient unlocatedHighLlmClient() {
+        return fixedLlmFinding("""
+                {
+                  "severity": "HIGH",
+                  "category": "unsupported_recommendation",
+                  "message": "The report makes a strong enterprise recommendation without sufficient support.",
+                  "recommendation": "Downgrade the recommendation or add direct evidence."
+                }
+                """);
+    }
+
+    private LlmClient lowQualitySourceLlmClient() {
+        return fixedLlmFinding("""
+                {
+                  "severity": "MEDIUM",
+                  "category": "low_quality_source",
+                  "message": "Source [S44] is a weak third-party page for enterprise governance.",
+                  "recommendation": "Use a stronger official source."
+                }
+                """);
+    }
+
+    private LlmClient unmatchedReportGapLlmClient() {
+        return fixedLlmFinding("""
+                {
+                  "severity": "MEDIUM",
+                  "category": "report_dimension_coverage_gap",
+                  "message": "Report does not cover the target-user dimension.",
+                  "recommendation": "Add a target-user comparison or keep it as a global gap.",
+                  "excerpt": "关键洞察部分完全没有目标用户维度。"
+                }
+                """);
     }
 
     private LlmClient noisyLlmClient() {

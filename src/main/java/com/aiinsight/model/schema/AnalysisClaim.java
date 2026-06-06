@@ -25,6 +25,8 @@ public class AnalysisClaim {
     private String supportStatus;
     private String recommendedPlacement;
     private String placementReason;
+    private String supportReason;
+    private String rewriteSuggestion;
     private Boolean eligibleForMainReport;
     private Boolean eligibleForMatrix;
     private Boolean eligibleForSwot;
@@ -32,4 +34,6 @@ public class AnalysisClaim {
     private List<String> factIds = new ArrayList<>();
     private List<String> evidenceIds = new ArrayList<>();
     private List<String> chunkKeys = new ArrayList<>();
+    private List<String> evidenceQuotes = new ArrayList<>();
+    private List<String> missingEvidenceTypes = new ArrayList<>();
 }

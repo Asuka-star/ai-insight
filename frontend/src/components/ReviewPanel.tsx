@@ -178,6 +178,8 @@ function DecisionMeta({ label, values, empty }: { label: string; values?: string
 
 function FindingItem({ finding, onLocateFinding }: { finding: ReviewFinding; onLocateFinding?: (finding: ReviewFinding) => void }) {
   const citationKey = citationKeyFromFinding(finding);
+  const locationType = locationTypeFromFinding(finding, citationKey);
+  const canLocate = canLocateFinding(finding, citationKey, locationType);
   return (
     <div className={`finding-item ${finding.severity.toLowerCase()}`}>
       <div className="finding-heading">
@@ -193,9 +195,13 @@ function FindingItem({ finding, onLocateFinding }: { finding: ReviewFinding; onL
         {finding.targetAgent ? <span>建议处理 {AGENT_LABELS[finding.targetAgent] ?? finding.targetAgent}</span> : null}
       </div>
       {finding.excerpt ? <small className="finding-excerpt">{TEXT.excerpt}: {localizeReviewText(finding.excerpt)}</small> : null}
-      {finding.claimId || finding.citationKey || finding.artifactId ? (
-        <button className="finding-locate" type="button" onClick={() => onLocateFinding?.(finding)}>
-          <LocateFixed size={13} /> {locateLabel(finding)}
+      {canLocate ? (
+        <button
+          className="finding-locate"
+          type="button"
+          onClick={() => onLocateFinding?.({ ...finding, citationKey: finding.citationKey ?? citationKey })}
+        >
+          <LocateFixed size={13} /> {locateLabel(finding, citationKey, locationType)}
         </button>
       ) : null}
     </div>
@@ -209,6 +215,25 @@ function hasParagraphIndex(finding: ReviewFinding) {
 function citationKeyFromFinding(finding: ReviewFinding) {
   if (finding.citationKey) return finding.citationKey;
   return /\[(S\d+)]/.exec(`${finding.message} ${finding.excerpt ?? ""}`)?.[1];
+}
+
+function locationTypeFromFinding(finding: ReviewFinding, citationKey?: string) {
+  if (finding.locationType) return finding.locationType;
+  if (hasParagraphIndex(finding)) return "REPORT_PARAGRAPH";
+  if (finding.claimId) return "CLAIM";
+  if (citationKey) return "EVIDENCE_SOURCE";
+  if (finding.artifactId) return "GLOBAL_REPORT";
+  if (finding.excerpt) return "REPORT_PARAGRAPH";
+  return undefined;
+}
+
+function canLocateFinding(finding: ReviewFinding, citationKey: string | undefined, locationType?: ReviewFinding["locationType"]) {
+  if (locationType === "REPORT_PARAGRAPH") return Boolean(hasParagraphIndex(finding) || finding.excerpt);
+  if (locationType === "CLAIM") return Boolean(finding.claimId);
+  if (locationType === "EVIDENCE_SOURCE") return Boolean(citationKey);
+  if (locationType === "GLOBAL_REPORT") return Boolean(finding.artifactId);
+  if (locationType === "SCHEMA") return true;
+  return Boolean(finding.claimId || citationKey);
 }
 
 const severity_LABELS: Record<ReviewFinding["severity"], string> = {
@@ -295,10 +320,12 @@ function rerunLabel(agent: AgentName) {
   return `\u91cd\u8dd1 ${AGENT_LABELS[agent] ?? agent}`;
 }
 
-function locateLabel(finding: ReviewFinding) {
-  if (finding.claimId) return "\u5b9a\u4f4d\u7ed3\u8bba";
-  if (finding.citationKey) return "\u5b9a\u4f4d\u8bc1\u636e";
-  return "\u5b9a\u4f4d\u62a5\u544a";
+function locateLabel(finding: ReviewFinding, citationKey?: string, locationType?: ReviewFinding["locationType"]) {
+  if (locationType === "REPORT_PARAGRAPH") return "\u5b9a\u4f4d\u62a5\u544a";
+  if (locationType === "CLAIM" || finding.claimId) return "\u5b9a\u4f4d\u7ed3\u8bba";
+  if (locationType === "EVIDENCE_SOURCE" || citationKey) return "\u5b9a\u4f4d\u8bc1\u636e";
+  if (locationType === "SCHEMA") return "\u67e5\u770b\u7ed3\u6784\u5316";
+  return "\u67e5\u770b\u62a5\u544a";
 }
 
 function findingCategoryLabel(category: string) {

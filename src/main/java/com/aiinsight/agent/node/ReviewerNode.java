@@ -2,6 +2,7 @@ package com.aiinsight.agent.node;
 
 import com.aiinsight.model.enums.ReviewSeverity;
 import com.aiinsight.model.enums.AgentName;
+import com.aiinsight.model.enums.ReviewLocationType;
 import com.aiinsight.model.run.AnalysisArtifact;
 import com.aiinsight.model.run.AnalysisRun;
 import com.aiinsight.model.enums.ArtifactType;
@@ -45,6 +46,7 @@ import org.springframework.stereotype.Component;
 import org.springframework.util.StringUtils;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -159,19 +161,18 @@ public class ReviewerNode implements AgentNode {
         if (!isRepairVerificationMode(previousDecision)) {
             return;
         }
-        int downgradedNewHighFindings = 0;
+        int newHighFindings = 0;
         for (ReviewFinding finding : run.getReviewFindings()) {
             if (finding.getSeverity() == ReviewSeverity.HIGH
                     && !matchesPreviousRepairTask(finding, previousDecision.getRepairTasks())) {
-                finding.setSeverity(ReviewSeverity.MEDIUM);
-                finding.setMessage("返工验证模式中发现的新问题（不阻断本轮修复验收）：" + finding.getMessage());
-                downgradedNewHighFindings++;
+                finding.setMessage("返工验证模式中发现的新 HIGH 问题：" + finding.getMessage());
+                newHighFindings++;
             }
         }
-        if (downgradedNewHighFindings > 0) {
+        if (newHighFindings > 0) {
             run.getRecommendedActions().add(
-                    "返工验证模式已将 " + downgradedNewHighFindings
-                            + " 个非上一轮 blocker 的新 HIGH 问题降为质量提醒；本轮优先验证上一轮修复任务是否完成。");
+                    "返工验证模式发现 " + newHighFindings
+                            + " 个非上一轮 blocker 的新 HIGH 问题；这些问题将继续参与阻断决策，请一并修复或人工确认。");
         }
     }
 
@@ -1048,6 +1049,8 @@ public class ReviewerNode implements AgentNode {
                 7. HIGH finding 必须填写 paragraphIndex 或 excerpt，方便 Writer 定向修订。
                 8. 不要要求补充真实问卷或访谈；公开资料无法补齐的一手洞察只列为人工补充建议。
                 9. 当结构化 Claims 全部是 UNVERIFIED/VALIDATION_BACKLOG 时，报告说明“证据不足、建议先补证”属于合格的保守结论；不要因为缺少强行选型结论而报 report_actionability_gap。
+                10. 用户指定维度如果在竞品对比、风险与证据缺口或下一步补证清单中被明确覆盖，就不要仅因为“关键洞察”小节未展开而报 HIGH 的 report_dimension_coverage_gap。
+                11. 对 supportStatus=UNVERIFIED 或 VALIDATION_BACKLOG 的维度，报告将其写入风险/补证清单并说明证据不足即可视为覆盖；不要要求 Writer 生成确定性优劣判断。
 
                 用户需求:
                 %s
@@ -1131,9 +1134,6 @@ public class ReviewerNode implements AgentNode {
             return null;
         }
         ReviewSeverity severity = parseSeverity(draft.severity);
-        if (severity == ReviewSeverity.HIGH && !hasFindingLocation(draft)) {
-            severity = ReviewSeverity.MEDIUM;
-        }
         ReviewFinding finding = new ReviewFinding(
                 severity,
                 sanitizeCategory(draft.category),
@@ -1145,9 +1145,14 @@ public class ReviewerNode implements AgentNode {
         finding.setClaimId(blankToNull(draft.claimId));
         finding.setFactId(blankToNull(draft.factId));
         finding.setChunkKey(blankToNull(draft.chunkKey));
-        finding.setCitationKey(sanitizeCitationKey(draft.citationKey));
+        finding.setCitationKey(firstCitationKey(draft.citationKey, draft.message, draft.excerpt));
         finding.setParagraphIndex(draft.paragraphIndex);
         finding.setExcerpt(blankToNull(abbreviate(draft.excerpt, MAX_LLM_FINDING_EXCERPT_LENGTH)));
+        if (severity == ReviewSeverity.HIGH && !hasFindingLocation(draft)) {
+            finding.setRecommendation(abbreviate(
+                    finding.getRecommendation() + " 该 HIGH 问题缺少精确定位，请补充 claimId、citationKey、paragraphIndex 或 excerpt 后定向修复。",
+                    MAX_LLM_FINDING_RECOMMENDATION_LENGTH));
+        }
         return finding;
     }
 
@@ -1195,6 +1200,19 @@ public class ReviewerNode implements AgentNode {
         return matcher.find() ? matcher.group() : null;
     }
 
+    private String firstCitationKey(String... values) {
+        if (values == null) {
+            return null;
+        }
+        for (String value : values) {
+            String citationKey = sanitizeCitationKey(value);
+            if (citationKey != null) {
+                return citationKey;
+            }
+        }
+        return null;
+    }
+
     private ReviewSeverity parseSeverity(String value) {
         if (!StringUtils.hasText(value)) {
             return ReviewSeverity.MEDIUM;
@@ -1207,12 +1225,23 @@ public class ReviewerNode implements AgentNode {
     }
 
     private String findingSignature(ReviewFinding finding) {
-        return "%s|%s|%s|%s".formatted(
+        return "%s|%s|claim=%s|fact=%s|chunk=%s|citation=%s|paragraph=%s|excerpt=%s".formatted(
                 finding.getSeverity(),
                 nullToEmpty(finding.getCategory()),
                 nullToEmpty(finding.getClaimId()),
-                nullToEmpty(finding.getCitationKey()) + "|" + nullToEmpty(finding.getMessage())
+                nullToEmpty(finding.getFactId()),
+                nullToEmpty(finding.getChunkKey()),
+                nullToEmpty(finding.getCitationKey()),
+                finding.getParagraphIndex() == null ? "-" : finding.getParagraphIndex(),
+                shortFindingTextHash(finding.getExcerpt())
         );
+    }
+
+    private String shortFindingTextHash(String value) {
+        if (!StringUtils.hasText(value)) {
+            return "-";
+        }
+        return Integer.toHexString(normalizeLower(value).replaceAll("\\s+", " ").trim().hashCode());
     }
 
     private String claimsBlock(AnalysisRun run) {
@@ -1252,7 +1281,7 @@ public class ReviewerNode implements AgentNode {
         }
         return run.getClaims().stream()
                 .limit(10)
-                .map(claim -> "- id=%s type=%s confidence=%s status=%s placement=%s dimension=%s evidence=%s facts=%s chunks=%s content=%s".formatted(
+                .map(claim -> "- id=%s type=%s confidence=%s status=%s placement=%s dimension=%s evidence=%s facts=%s chunks=%s quotes=%s supportReason=%s missingEvidence=%s rewrite=%s content=%s".formatted(
                         claim.getId(),
                         claim.getType(),
                         claim.getConfidence(),
@@ -1262,6 +1291,10 @@ public class ReviewerNode implements AgentNode {
                         claim.getEvidenceIds(),
                         claim.getFactIds(),
                         claim.getChunkKeys(),
+                        claim.getEvidenceQuotes(),
+                        textOrDash(claim.getSupportReason()),
+                        claim.getMissingEvidenceTypes(),
+                        textOrDash(claim.getRewriteSuggestion()),
                         abbreviate(claim.getContent(), 140)
                 ))
                 .collect(Collectors.joining("\n"));
@@ -1294,6 +1327,10 @@ public class ReviewerNode implements AgentNode {
                 .map(claim -> """
                         - claimId=%s type=%s confidence=%s status=%s placement=%s dimension=%s competitors=%s factIds=%s chunkKeys=%s
                           content=%s
+                          analystSupport=%s
+                          analystQuotes=%s
+                          missingEvidence=%s
+                          rewrite=%s
                           evidence=%s
                         """.formatted(
                         claim.getId(),
@@ -1306,6 +1343,10 @@ public class ReviewerNode implements AgentNode {
                         claim.getFactIds(),
                         claim.getChunkKeys(),
                         abbreviate(claim.getContent(), 180),
+                        textOrDash(claim.getSupportReason()),
+                        claim.getEvidenceQuotes(),
+                        claim.getMissingEvidenceTypes(),
+                        textOrDash(claim.getRewriteSuggestion()),
                         evidenceSnippets(run, claim.getEvidenceIds())
                 ))
                 .collect(Collectors.joining("\n"));
@@ -1460,12 +1501,105 @@ public class ReviewerNode implements AgentNode {
     }
 
     private void enrichFindingLocations(AnalysisRun run, AnalysisArtifact draft) {
+        String[] reportBlocks = reportBlocks(draft.getContent());
         for (var finding : run.getReviewFindings()) {
             finding.setArtifactId(draft.getId());
+            boolean validReportLocation = normalizeReportLocation(finding, reportBlocks);
             if (finding.getClaimId() == null || finding.getClaimId().isBlank()) {
                 finding.setClaimId(matchClaimId(run, finding.getExcerpt()));
             }
+            finding.setLocationType(inferLocationType(finding, validReportLocation));
         }
+    }
+
+    private boolean normalizeReportLocation(ReviewFinding finding, String[] reportBlocks) {
+        Integer paragraphIndex = finding.getParagraphIndex();
+        String excerpt = finding.getExcerpt();
+        if (StringUtils.hasText(excerpt)) {
+            int matchedIndex = findReportBlockIndex(reportBlocks, excerpt);
+            if (matchedIndex >= 0) {
+                finding.setParagraphIndex(matchedIndex);
+                return true;
+            }
+        }
+        if (paragraphIndex != null && paragraphIndex >= 0 && paragraphIndex < reportBlocks.length) {
+            return true;
+        }
+        return false;
+    }
+
+    private String[] reportBlocks(String content) {
+        if (!StringUtils.hasText(content)) {
+            return new String[0];
+        }
+        return Arrays.stream(content.split("\\n\\s*\\n"))
+                .map(String::trim)
+                .toArray(String[]::new);
+    }
+
+    private int findReportBlockIndex(String[] reportBlocks, String excerpt) {
+        String normalizedExcerpt = normalizeLocatorText(excerpt);
+        if (!StringUtils.hasText(normalizedExcerpt)) {
+            return -1;
+        }
+        for (int index = 0; index < reportBlocks.length; index++) {
+            String normalizedBlock = normalizeLocatorText(reportBlocks[index]);
+            if (normalizedBlock.contains(normalizedExcerpt)) {
+                return index;
+            }
+            for (String snippet : locatorSnippets(normalizedExcerpt)) {
+                if (normalizedBlock.contains(snippet)) {
+                    return index;
+                }
+            }
+        }
+        return -1;
+    }
+
+    private List<String> locatorSnippets(String normalizedExcerpt) {
+        if (!StringUtils.hasText(normalizedExcerpt)) {
+            return List.of();
+        }
+        List<String> snippets = new ArrayList<>();
+        for (String part : normalizedExcerpt.split("[。！？；;\\n\\r|]+")) {
+            String snippet = part.trim();
+            if (snippet.length() >= 12) {
+                snippets.add(snippet);
+            }
+        }
+        return snippets.stream()
+                .sorted((left, right) -> Integer.compare(right.length(), left.length()))
+                .limit(4)
+                .toList();
+    }
+
+    private String normalizeLocatorText(String value) {
+        if (!StringUtils.hasText(value)) {
+            return "";
+        }
+        return value.toLowerCase(Locale.ROOT)
+                .replaceAll("[`*_#\\[\\](){}<>|>~\\-:：]", " ")
+                .replaceAll("\\s+", " ")
+                .trim();
+    }
+
+    private ReviewLocationType inferLocationType(ReviewFinding finding, boolean validReportLocation) {
+        if (validReportLocation) {
+            return ReviewLocationType.REPORT_PARAGRAPH;
+        }
+        if (StringUtils.hasText(finding.getClaimId())) {
+            return ReviewLocationType.CLAIM;
+        }
+        if (StringUtils.hasText(finding.getCitationKey())) {
+            return ReviewLocationType.EVIDENCE_SOURCE;
+        }
+        String category = normalizeLower(finding.getCategory());
+        if (category.contains("schema") || category.contains("matrix") || category.contains("swot")
+                || category.contains("fact") || StringUtils.hasText(finding.getFactId())
+                || StringUtils.hasText(finding.getChunkKey())) {
+            return ReviewLocationType.SCHEMA;
+        }
+        return ReviewLocationType.GLOBAL_REPORT;
     }
 
     private String matchClaimId(AnalysisRun run, String excerpt) {

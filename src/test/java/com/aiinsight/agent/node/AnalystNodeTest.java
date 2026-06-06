@@ -49,6 +49,13 @@ class AnalystNodeTest {
                               "type": "OPPORTUNITY",
                               "content": "Cursor Composer can be used as a benchmark for multi-file editing workflow.",
                               "confidence": "MEDIUM",
+                              "dimension": "features",
+                              "supportStatus": "SUPPORTED",
+                              "recommendedPlacement": "MATRIX",
+                              "supportReason": "Evidence states Composer supports the workflow directly.",
+                              "evidenceQuotes": ["Cursor Composer supports multi-file editing workflow"],
+                              "missingEvidenceTypes": [],
+                              "rewriteSuggestion": "",
                               "competitorNames": ["Cursor"],
                               "evidenceIds": ["S1"]
                             }
@@ -92,10 +99,15 @@ class AnalystNodeTest {
 
         new AnalystNode(llmClient, new ObjectMapper(), new FallbackAnalysisDraftFactory()).execute(run);
 
-        assertThat(promptCapture.get()).contains("Extractor facts", "id=F1", "S1-C1");
+        assertThat(promptCapture.get())
+                .contains("Extractor facts", "id=F1", "S1-C1")
+                .contains("supportReason", "evidenceQuotes", "missingEvidenceTypes", "rewriteSuggestion");
         assertThat(run.getClaims()).hasSize(1);
         assertThat(run.getClaims().get(0).getFactIds()).containsExactly("F1");
         assertThat(run.getClaims().get(0).getChunkKeys()).containsExactly("S1-C1");
+        assertThat(run.getClaims().get(0).getSupportReason()).contains("Composer supports");
+        assertThat(run.getClaims().get(0).getEvidenceQuotes())
+                .containsExactly("Cursor Composer supports multi-file editing workflow");
     }
 
     @Test
@@ -651,6 +663,150 @@ class AnalystNodeTest {
                     assertThat(claim.getConfidence()).isEqualTo(ConfidenceLevel.LOW);
                     assertThat(claim.getEvidenceIds()).isEmpty();
                     assertThat(claim.getContent()).contains("SSO", "SCIM");
+                });
+    }
+
+    @Test
+    void analystSelfVerifiedClaimIsNotDowngradedByBroadRiskKeywords() {
+        LlmClient llmClient = new LlmClient() {
+            @Override
+            public boolean isAvailable() {
+                return true;
+            }
+
+            @Override
+            public String complete(ChatRequest request) {
+                return """
+                        {
+                          "claims": [
+                            {
+                              "type": "FACT",
+                              "content": "Cursor provides SAML security controls for enterprise governance.",
+                              "confidence": "HIGH",
+                              "dimension": "企业治理",
+                              "supportStatus": "SUPPORTED",
+                              "recommendedPlacement": "MATRIX",
+                              "supportReason": "The cited product documentation directly mentions SAML security controls.",
+                              "evidenceQuotes": ["Cursor provides SAML security controls"],
+                              "missingEvidenceTypes": [],
+                              "rewriteSuggestion": "",
+                              "competitorNames": ["Cursor"],
+                              "evidenceIds": ["S1"],
+                              "chunkKeys": ["S1-C1"]
+                            }
+                          ]
+                        }
+                        """;
+            }
+        };
+        AnalysisRun run = new AnalysisRun(new AnalysisRequirement(
+                "Analyze Cursor security governance",
+                "AI coding tools",
+                List.of("Cursor"),
+                List.of("企业治理"),
+                List.of("official_site"),
+                List.of()
+        ));
+        run.getEvidenceSources().add(new EvidenceSource(
+                "S1",
+                "Cursor enterprise security docs",
+                "https://example.test/cursor/security",
+                "product_docs",
+                "FETCHED",
+                "LIVE_FETCHED",
+                "HIGH",
+                "NONE",
+                "Cursor provides SAML security controls for enterprise governance.",
+                "Cursor provides SAML security controls for enterprise governance.",
+                "test evidence"
+        ));
+        run.getEvidenceSources().get(0).setSourceAuthority("FIRST_PARTY_DOCS");
+        run.getEvidenceChunks().add(new EvidenceChunk(
+                "S1-C1",
+                "S1",
+                1,
+                "Cursor enterprise security docs",
+                "https://example.test/cursor/security",
+                "Cursor provides SAML security controls for enterprise governance."
+        ));
+
+        new AnalystNode(llmClient, new ObjectMapper(), new FallbackAnalysisDraftFactory()).execute(run);
+
+        assertThat(run.getClaims())
+                .singleElement()
+                .satisfies(claim -> {
+                    assertThat(claim.getSupportStatus()).isEqualTo("SUPPORTED");
+                    assertThat(claim.getConfidence()).isEqualTo(ConfidenceLevel.HIGH);
+                    assertThat(claim.getRecommendedPlacement()).isEqualTo("MATRIX");
+                    assertThat(claim.getEligibleForMainReport()).isTrue();
+                    assertThat(claim.getEvidenceQuotes()).containsExactly("Cursor provides SAML security controls");
+                    assertThat(claim.getPlacementReason()).contains("Analyst 已给出证据摘录");
+                });
+    }
+
+    @Test
+    void thirdPartySelfVerifiedClaimCannotStayHighSupported() {
+        LlmClient llmClient = new LlmClient() {
+            @Override
+            public boolean isAvailable() {
+                return true;
+            }
+
+            @Override
+            public String complete(ChatRequest request) {
+                return """
+                        {
+                          "claims": [
+                            {
+                              "type": "OPPORTUNITY",
+                              "content": "Claude Code 的 Agent Skills 在结构化企业级自动化工作流方面具有明确优势。",
+                              "confidence": "HIGH",
+                              "dimension": "Agent 工作流",
+                              "supportStatus": "SUPPORTED",
+                              "recommendedPlacement": "MATRIX",
+                              "supportReason": "第三方指南描述了 Agent Skills 的工作流结构。",
+                              "evidenceQuotes": ["Agent Skills define autonomous workflows"],
+                              "missingEvidenceTypes": [],
+                              "rewriteSuggestion": "",
+                              "competitorNames": ["Claude Code"],
+                              "evidenceIds": ["S1"]
+                            }
+                          ]
+                        }
+                        """;
+            }
+        };
+        AnalysisRun run = new AnalysisRun(new AnalysisRequirement(
+                "Analyze Claude Code",
+                "AI coding tools",
+                List.of("Claude Code"),
+                List.of("Agent 工作流"),
+                List.of("official_site"),
+                List.of()
+        ));
+        run.getEvidenceSources().add(new EvidenceSource(
+                "S1",
+                "Claude Code Agent Skills - Verdent Guides",
+                "https://www.verdent.ai/guides/claude-code-agent-skills",
+                "third_party_docs",
+                "FETCHED",
+                "LIVE_FETCHED",
+                "MEDIUM",
+                "NONE",
+                "Agent Skills define autonomous workflows within Claude Code.",
+                "Agent Skills define autonomous workflows within Claude Code.",
+                "test evidence"
+        ));
+        run.getEvidenceSources().get(0).setSourceAuthority("THIRD_PARTY_GENERAL");
+
+        new AnalystNode(llmClient, new ObjectMapper(), new FallbackAnalysisDraftFactory()).execute(run);
+
+        assertThat(run.getClaims())
+                .singleElement()
+                .satisfies(claim -> {
+                    assertThat(claim.getConfidence()).isEqualTo(ConfidenceLevel.MEDIUM);
+                    assertThat(claim.getSupportStatus()).isEqualTo("PARTIAL");
+                    assertThat(claim.getEligibleForMainReport()).isTrue();
                 });
     }
 

@@ -255,6 +255,7 @@ export interface ArtifactLocateRequest {
 export interface ReviewFinding {
   id: string;
   severity: "HIGH" | "MEDIUM" | "LOW";
+  locationType?: "REPORT_PARAGRAPH" | "CLAIM" | "EVIDENCE_SOURCE" | "GLOBAL_REPORT" | "SCHEMA";
   targetAgent?: AgentName;
   category: string;
   message: string;

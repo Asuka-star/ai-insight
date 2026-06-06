@@ -22,24 +22,24 @@ public class SourceTypeClassifier {
             return "public_review";
         }
         if (containsAny(combined, "/pricing", "/plans", " pricing", " plans")) {
-            return isFirstPartyReferenceUrl(url) ? "pricing_page" : "third_party_pricing_reference";
+            return isFirstPartyReferenceUrl(url, title) ? "pricing_page" : "third_party_pricing_reference";
         }
         if (containsAny(combined, "/security", "/trust", "/privacy", " security", " compliance", " permissions")) {
-            return isFirstPartyReferenceUrl(url) ? "security_docs" : "third_party_article";
+            return isFirstPartyReferenceUrl(url, title) ? "security_docs" : "third_party_article";
         }
         if (containsAny(combined, "/enterprise", " enterprise", "/product/", "/products/")) {
-            return isFirstPartyReferenceUrl(url) || looksLikeOfficialHost(url) ? "official_site" : "third_party_article";
+            return isFirstPartyReferenceUrl(url, title) || looksLikeOfficialHost(url, title) ? "official_site" : "third_party_article";
         }
         if (containsAny(combined, "/integrations", "/integration", " integrations", " api ")) {
-            return isFirstPartyReferenceUrl(url) ? "integration_docs" : "third_party_article";
+            return isFirstPartyReferenceUrl(url, title) ? "integration_docs" : "third_party_article";
         }
         if (containsAny(combined, "/docs", "/doc", "/help", "/reference", "/guide", " documentation", " docs")) {
-            return isFirstPartyReferenceUrl(url) ? "docs" : "third_party_docs";
+            return isFirstPartyReferenceUrl(url, title) ? "docs" : "third_party_docs";
         }
         if (containsAny(combined, "/release", "/changelog", "release notes", "changelog")) {
-            return isFirstPartyReferenceUrl(url) ? "release_notes" : "article";
+            return isFirstPartyReferenceUrl(url, title) ? "release_notes" : "article";
         }
-        if (looksLikeOfficialHost(url)) {
+        if (looksLikeOfficialHost(url, title)) {
             return "official_site";
         }
         return "article";
@@ -94,7 +94,7 @@ public class SourceTypeClassifier {
         if (containsAny(normalizedType, "docs", "security", "integration")) {
             return "FIRST_PARTY_DOCS";
         }
-        if (looksLikeOfficialHost(url) || "pricing_page".equals(normalizedType)) {
+        if (looksLikeOfficialHost(url, "") || "pricing_page".equals(normalizedType)) {
             return "FIRST_PARTY_OFFICIAL";
         }
         return "UNKNOWN";
@@ -114,7 +114,7 @@ public class SourceTypeClassifier {
         return StringUtils.hasText(root) ? root : host;
     }
 
-    private boolean isFirstPartyReferenceUrl(String url) {
+    private boolean isFirstPartyReferenceUrl(String url, String title) {
         ParsedUrl parsed = parse(url);
         if (parsed == null || !StringUtils.hasText(parsed.host())) {
             return false;
@@ -122,7 +122,9 @@ public class SourceTypeClassifier {
         if (isLocalHost(parsed.host())) {
             return true;
         }
-        if (parsed.host().endsWith(".test") || isThirdPartyHost(parsed.host())) {
+        if (parsed.host().endsWith(".test")
+                || isThirdPartyHost(parsed.host())
+                || titleSuggestsDifferentPublisher(parsed.host(), title)) {
             return false;
         }
         if (containsAny(parsed.host(), "docs.", "doc.", "help.", "support.", "developer.", "developers.", "api.", "reference.", "learn.")) {
@@ -132,10 +134,10 @@ public class SourceTypeClassifier {
         if (containsAny(root, "-", "learn", "log", "tutorial", "guide", "unofficial", "awesome")) {
             return false;
         }
-        return looksLikeOfficialHost(url) || looksLikeReferencePath(parsed.path());
+        return looksLikeOfficialHost(url, title) || looksLikeReferencePath(parsed.path());
     }
 
-    private boolean looksLikeOfficialHost(String url) {
+    private boolean looksLikeOfficialHost(String url, String title) {
         ParsedUrl parsed = parse(url);
         if (parsed == null) {
             return false;
@@ -144,6 +146,7 @@ public class SourceTypeClassifier {
                 && !isLocalHost(parsed.host())
                 && !parsed.host().endsWith(".test")
                 && !isThirdPartyHost(parsed.host())
+                && !titleSuggestsDifferentPublisher(parsed.host(), title)
                 && looksLikeOfficialPath(parsed.path());
     }
 
@@ -215,12 +218,35 @@ public class SourceTypeClassifier {
         return containsAny(
                 host,
                 "medium.", "substack.", "reddit.", "github.", "github.io", "gitbook.", "readthedocs.",
+                ".ac.cn",
                 "forum", "community", "news.", "learn-", "claudelog.", "cursor101.", "aicursor.",
                 "forbes.", "techcrunch.", "theverge.", "wired.", "bloomberg.", "reuters.",
                 "businessinsider.", "zdnet.", "cnbc.", "crunchbase.", "wikipedia.",
                 "youtube.", "youtu.be", "vimeo.", "bilibili.", "linkedin.", "twitter.", "x.com",
                 "facebook.", "g2.", "capterra.", "trustpilot."
         );
+    }
+
+    private boolean titleSuggestsDifferentPublisher(String host, String title) {
+        if (!StringUtils.hasText(host) || !StringUtils.hasText(title)) {
+            return false;
+        }
+        String root = rootDomain(host);
+        String normalizedTitle = normalize(title);
+        if (!StringUtils.hasText(root)) {
+            return false;
+        }
+        String leadingTitle = normalizedTitle.split("\\s[-|]\\s", 2)[0];
+        if (leadingTitle.contains(root)) {
+            return false;
+        }
+        for (String token : leadingTitle.split("[^a-z0-9]+")) {
+            if (token.length() < 3 || GENERIC_TITLE_TOKENS.contains(token)) {
+                continue;
+            }
+            return !root.contains(token) && !token.contains(root);
+        }
+        return false;
     }
 
     private boolean isLocalHost(String host) {
@@ -262,6 +288,13 @@ public class SourceTypeClassifier {
     private String normalize(String value) {
         return value == null ? "" : value.toLowerCase(Locale.ROOT).trim();
     }
+
+    private static final java.util.Set<String> GENERIC_TITLE_TOKENS = java.util.Set.of(
+            "docs", "doc", "guide", "guides", "documentation", "pricing", "plans", "plan",
+            "enterprise", "deployment", "overview", "security", "trust", "privacy", "product",
+            "features", "feature", "integration", "integrations", "agent", "agents", "skills",
+            "workflow", "workflows", "code", "coding", "developer", "developers"
+    );
 
     private record ParsedUrl(String host, String path) {
     }
