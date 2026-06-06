@@ -15,6 +15,8 @@ interface ArtifactViewerProps {
 export function ArtifactViewer({ artifact, sources = [], onSelectCitation, locateRequest }: ArtifactViewerProps) {
   const readerRef = useRef<HTMLElement>(null);
   const sourcesByKey = useMemo(() => new Map(sources.map((source) => [source.citationKey, source])), [sources]);
+  const artifactLabel = artifact ? ARTIFACT_LABELS[artifact.type] ?? artifact.type : "";
+  const citationCount = artifact?.citationKeys?.length ?? 0;
 
   useEffect(() => {
     if (!artifact || !locateRequest || !readerRef.current) return;
@@ -37,25 +39,31 @@ export function ArtifactViewer({ artifact, sources = [], onSelectCitation, locat
       <div className="empty-state">
         <FileText size={22} />
         <strong>暂无产物</strong>
-        <p>创建任务后会显示报告、矩阵、复核结果和结构化 结构化信息。</p>
+        <p>创建任务后会显示报告、矩阵、复核结果和结构化信息。</p>
       </div>
     );
   }
 
   return (
     <article className="artifact-reader" ref={readerRef}>
-      <div className="artifact-meta">
-        <span>{ARTIFACT_LABELS[artifact.type] ?? artifact.type}</span>
-        <span>v{artifact.version || 1}</span>
-        <span>{artifact.citationKeys?.length ?? 0} 条引用</span>
-      </div>
+      <header className="artifact-reader-header">
+        <div>
+          <p className="eyebrow">{artifactLabel}</p>
+          <h2>{artifact.title || artifactLabel}</h2>
+        </div>
+        <div className="artifact-meta" aria-label="产物元信息">
+          <span>v{artifact.version || 1}</span>
+          <span>{citationCount} 条引用</span>
+          <span>{sourceCoverageLabel(citationCount, sources.length)}</span>
+        </div>
+      </header>
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
         components={{
           a({ href, children }) {
             const citationKey = citationKeyFromHref(href);
             if (!citationKey) {
-              return <a href={href}>{children}</a>;
+              return <a href={href} target="_blank" rel="noreferrer">{children}</a>;
             }
             const source = sourcesByKey.get(citationKey);
             return (
@@ -67,6 +75,13 @@ export function ArtifactViewer({ artifact, sources = [], onSelectCitation, locat
               >
                 {children}
               </button>
+            );
+          },
+          table({ children }) {
+            return (
+              <div className="artifact-table-wrap">
+                <table>{children}</table>
+              </div>
             );
           }
         }}
@@ -102,6 +117,12 @@ function citationQualityClass(source?: EvidenceSource) {
   const quality = source?.sourceQuality?.toLowerCase();
   if (!quality) return "";
   return `quality-${quality}`;
+}
+
+function sourceCoverageLabel(citationCount: number, sourceCount: number) {
+  if (!sourceCount) return "暂无来源";
+  if (!citationCount) return `${sourceCount} 个来源`;
+  return `${sourceCount} 个来源可查`;
 }
 
 function findLocateTarget(reader: HTMLElement, markdown: string, request: ArtifactLocateRequest) {

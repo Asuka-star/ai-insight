@@ -2,8 +2,9 @@ import { ChevronDown, MessageSquareText, SendHorizontal } from "lucide-react";
 import type { AgentName, AnalysisContextMessage, ContextIntent } from "../types";
 import { AGENTS, AGENT_LABELS } from "../constants";
 import { formatTime } from "../utils";
+import { SegmentedTabs, type SegmentedTabOption } from "./SegmentedTabs";
 
-const intentOptions: Array<{ label: string; value: ContextIntent }> = [
+const intentOptions: Array<SegmentedTabOption<ContextIntent>> = [
   { label: "调整范围", value: "ADJUST_SCOPE" },
   { label: "指定重跑", value: "REQUEST_RERUN" },
   { label: "修订报告", value: "REVISE_REPORT" }
@@ -42,6 +43,12 @@ export function ContextPanel({
   const submitDisabled = intent === "REQUEST_RERUN"
     ? !effectiveTargetAgent
     : !value.trim();
+  const handleIntentChange = (nextIntent: ContextIntent) => {
+    onIntentChange(nextIntent);
+    if (nextIntent === "REQUEST_RERUN") {
+      onValueChange("");
+    }
+  };
 
   return (
     <section className={`panel context-panel collapsible-panel ${collapsed ? "collapsed" : ""}`}>
@@ -69,23 +76,13 @@ export function ContextPanel({
 
       {collapsed ? null : (
         <>
-      <div className="intent-tabs">
-        {intentOptions.map((option) => (
-          <button
-            key={option.value}
-            type="button"
-            className={intent === option.value ? "selected" : ""}
-            onClick={() => {
-              onIntentChange(option.value);
-              if (option.value === "REQUEST_RERUN") {
-                onValueChange("");
-              }
-            }}
-          >
-            {option.label}
-          </button>
-        ))}
-      </div>
+      <SegmentedTabs
+        ariaLabel="上下文补充类型"
+        options={intentOptions}
+        value={intent}
+        onChange={handleIntentChange}
+        className="intent-tabs"
+      />
 
       {intent === "REQUEST_RERUN" ? null : (
         <textarea

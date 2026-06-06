@@ -45,10 +45,12 @@ import { ArtifactVersionsPanel } from "./components/ArtifactVersionsPanel";
 import { HistoryDrawer } from "./components/HistoryDrawer";
 import { DeleteHistoryDialog } from "./components/DeleteHistoryDialog";
 import { ResourcePackDrawer } from "./components/ResourcePackDrawer";
+import { SegmentedTabs, type SegmentedTabOption } from "./components/SegmentedTabs";
 
 type MainView = "dag" | "research" | "report" | "schema" | "matrix" | "versions";
 type LeftPanelId = "scope" | "context" | "evidence";
 type RightPanelId = "timeline" | "collection" | "evidence" | "review" | "metrics";
+type BackendStatus = "checking" | "connected" | "failed";
 
 const MIN_LEFT_RAIL_WIDTH = 240;
 const MAX_LEFT_RAIL_WIDTH = 420;
@@ -126,7 +128,7 @@ export function App() {
   });
   const [localScopeConfirmed, setLocalScopeConfirmed] = useState(false);
   const [eventMessage, setEventMessage] = useState("等待填写范围确认");
-  const [backendOk, setBackendOk] = useState(false);
+  const [backendStatus, setBackendStatus] = useState<BackendStatus>("checking");
   const [isCreating, setIsCreating] = useState(false);
   const [pendingClarificationRunId, setPendingClarificationRunId] = useState<string>();
   const [isScopeBusy, setIsScopeBusy] = useState(false);
@@ -162,7 +164,7 @@ export function App() {
   const loadHistory = useCallback(async () => {
     const runs = await listRunSummaries();
     setHistoryRuns(runs);
-    setBackendOk(true);
+    setBackendStatus("connected");
     return runs;
   }, []);
 
@@ -175,7 +177,7 @@ export function App() {
       const latest = await getRun(runId);
       if (requestToken !== workspaceRequestTokenRef.current) return;
       window.localStorage.setItem(CURRENT_RUN_STORAGE_KEY, runId);
-      setBackendOk(true);
+      setBackendStatus("connected");
       setRun(latest);
       setArtifactPinned(false);
       setSelectedArtifactId(undefined);
@@ -192,7 +194,7 @@ export function App() {
     } catch (error) {
       if (requestToken !== workspaceRequestTokenRef.current) return;
       window.localStorage.removeItem(CURRENT_RUN_STORAGE_KEY);
-      setBackendOk(false);
+      setBackendStatus("failed");
       setEventMessage(error instanceof Error ? `历史会话恢复失败：${error.message}` : "历史会话恢复失败");
     } finally {
       if (requestToken === workspaceRequestTokenRef.current) {
@@ -210,7 +212,7 @@ export function App() {
     const latest = await getRun(id);
     if (window.localStorage.getItem(CURRENT_RUN_STORAGE_KEY) !== id) return;
     window.localStorage.setItem(CURRENT_RUN_STORAGE_KEY, id);
-    setBackendOk(true);
+    setBackendStatus("connected");
     setRun((current) => mergeRunSnapshotWithLocalRunningStep(current, latest));
     setHistoryRuns((runs) => upsertHistorySummary(runs, summaryFromRun(latest)));
   }, [loadHistory, run?.id]);
@@ -288,6 +290,7 @@ export function App() {
     let cancelled = false;
     async function restoreWorkspace() {
       try {
+        setBackendStatus("checking");
         const runs = await loadHistory();
         if (cancelled) return;
         const storedRunId = window.localStorage.getItem(CURRENT_RUN_STORAGE_KEY);
@@ -304,7 +307,7 @@ export function App() {
         await selectRun(storedRunId);
       } catch (error) {
         if (cancelled) return;
-        setBackendOk(false);
+        setBackendStatus("failed");
         setEventMessage(error instanceof Error ? error.message : "后端连接失败");
       }
     }
@@ -356,7 +359,7 @@ export function App() {
     events.addEventListener("run_snapshot", (event) => {
       const snapshot = safeParseRunSnapshot(event);
       if (!snapshot || snapshot.id !== activeRunId || !isCurrentWorkspaceRun(snapshot.id)) return;
-      setBackendOk(true);
+      setBackendStatus("connected");
       setRun((current) => mergeRunSnapshotWithLocalRunningStep(current, snapshot));
       if (isClarificationSettled(snapshot)) {
         setPendingClarificationRunId(undefined);
@@ -627,7 +630,7 @@ export function App() {
     setEventMessage("正在删除历史会话");
     try {
       await deleteRun(summary.id);
-      setBackendOk(true);
+      setBackendStatus("connected");
       setHistoryRuns((runs) => runs.filter((item) => item.id !== summary.id));
       if (window.localStorage.getItem(CURRENT_RUN_STORAGE_KEY) === summary.id) {
         window.localStorage.removeItem(CURRENT_RUN_STORAGE_KEY);
@@ -639,7 +642,7 @@ export function App() {
       setDeleteCandidate(undefined);
       setEventMessage("历史会话已删除");
     } catch (error) {
-      setBackendOk(false);
+      setBackendStatus("failed");
       setEventMessage(error instanceof Error ? `历史会话删除失败：${error.message}` : "历史会话删除失败");
     } finally {
       setDeletingRunId(undefined);
@@ -670,7 +673,7 @@ export function App() {
         maxReviewReworkAttempts
       });
       if (requestToken !== workspaceRequestTokenRef.current) return;
-      setBackendOk(true);
+      setBackendStatus("connected");
       setRun(nextRun);
       if (!isClarificationSettled(nextRun)) {
         setPendingClarificationRunId(nextRun.id);
@@ -682,7 +685,7 @@ export function App() {
     } catch (error) {
       if (requestToken !== workspaceRequestTokenRef.current) return;
       setPendingClarificationRunId(undefined);
-      setBackendOk(false);
+      setBackendStatus("failed");
       setEventMessage(error instanceof Error ? error.message : "范围确认生成失败");
     } finally {
       if (requestToken === workspaceRequestTokenRef.current) {
@@ -1172,13 +1175,14 @@ export function App() {
     }
   ] : [];
 
-  const mainTabs: Array<{ key: MainView; label: string }> = [
-    { key: "dag", label: "智能体流程" },
-    { key: "report", label: "报告" },
-    { key: "research", label: "问卷访谈" },
-    { key: "schema", label: "结构化信息" },
-    { key: "matrix", label: "竞品矩阵" },
-    { key: "versions", label: "全部产物" }
+  const backendBadge = backendStatusBadge(backendStatus);
+  const mainTabs: Array<SegmentedTabOption<MainView>> = [
+    { value: "dag", label: "智能体流程" },
+    { value: "report", label: "报告" },
+    { value: "research", label: "问卷访谈" },
+    { value: "schema", label: "结构化信息" },
+    { value: "matrix", label: "竞品矩阵" },
+    { value: "versions", label: "全部产物" }
   ];
 
   return (
@@ -1201,7 +1205,7 @@ export function App() {
           <button className="toolbar-button" type="button" onClick={handleNewRun}>
             <Plus size={16} /> 新建分析
           </button>
-          <StatusBadge label={backendOk ? "后端已连接" : "后端未连接"} tone={backendOk ? "success" : "danger"} />
+          <StatusBadge label={backendBadge.label} tone={backendBadge.tone} />
           <StatusBadge label={displayRunPhase(String(resolveRunPhase(run)))} tone={statusTone(run?.status)} />
           <button className="icon-button" type="button" onClick={() => refreshRun()} aria-label="刷新任务">
             <RefreshCw size={17} />
@@ -1319,18 +1323,7 @@ export function App() {
               </div>
               <span className="event-line">{eventMessage}</span>
             </div>
-            <div className="main-tabs">
-              {mainTabs.map((tab) => (
-                <button
-                  key={tab.key}
-                  type="button"
-                  className={mainView === tab.key ? "selected" : ""}
-                  onClick={() => setMainView(tab.key)}
-                >
-                  {tab.label}
-                </button>
-              ))}
-            </div>
+            <SegmentedTabs ariaLabel="主工作区视图" options={mainTabs} value={mainView} onChange={setMainView} />
 
             {mainView === "dag" ? (
               <Suspense fallback={<PanelLoading label="正在加载工作流视图" />}>
@@ -1601,6 +1594,12 @@ function statusTone(status?: string) {
   if (status === "FAILED") return "danger";
   if (status === "RUNNING" || status === "PENDING") return "running";
   return "neutral";
+}
+
+function backendStatusBadge(status: BackendStatus): { label: string; tone: "success" | "running" | "danger" } {
+  if (status === "connected") return { label: "后端已连接", tone: "success" };
+  if (status === "failed") return { label: "连接失败", tone: "danger" };
+  return { label: "连接检测中", tone: "running" };
 }
 
 function isReportArtifact(artifact?: AnalysisArtifact) {
