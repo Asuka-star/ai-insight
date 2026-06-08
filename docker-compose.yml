@@ -9,11 +9,52 @@ services:
       - "5433:5432"
     volumes:
       - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ai_insight"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   redis:
     image: redis:7.4-alpine
     ports:
       - "6379:6379"
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      # PostgreSQL (uses docker network service name)
+      POSTGRES_URL: jdbc:postgresql://postgres:5432/ai_insight
+      POSTGRES_USER: ai_insight
+      POSTGRES_PASSWORD: ai_insight
+      # LLM API keys (read from .env file)
+      XIAOMI_LLM_API_KEY: ${XIAOMI_LLM_API_KEY:-}
+      XIAOMI_LLM_BASE_URL: ${XIAOMI_LLM_BASE_URL:-https://token-plan-cn.xiaomimimo.com/v1}
+      XIAOMI_LLM_MODEL: ${XIAOMI_LLM_MODEL:-mimo-v2.5-pro}
+      DOUBAO_LLM_API_KEY: ${DOUBAO_LLM_API_KEY:-}
+      DOUBAO_LLM_BASE_URL: ${DOUBAO_LLM_BASE_URL:-https://ark.cn-beijing.volces.com/api/v3}
+      DOUBAO_LLM_ENDPOINT_ID: ${DOUBAO_LLM_ENDPOINT_ID:-}
+      # Search API
+      TAVILY_API_KEY: ${TAVILY_API_KEY:-}
+      # Embedding API
+      AI_INSIGHT_EMBEDDING_API_KEY: ${AI_INSIGHT_EMBEDDING_API_KEY:-}
+      AI_INSIGHT_EMBEDDING_BASE_URL: ${AI_INSIGHT_EMBEDDING_BASE_URL:-https://api.openai.com/v1}
+      AI_INSIGHT_EMBEDDING_MODEL: ${AI_INSIGHT_EMBEDDING_MODEL:-text-embedding-3-small}
+      # Web renderer
+      AI_INSIGHT_WEB_RENDERER_ENABLED: ${AI_INSIGHT_WEB_RENDERER_ENABLED:-true}
+      AI_INSIGHT_WEB_RENDERER_HEADLESS: "true"
+      AI_INSIGHT_WEB_RENDERER_BROWSER_CHANNEL: chromium
+      # HTTP proxy (optional)
+      AI_INSIGHT_PROXY_ENABLED: ${AI_INSIGHT_PROXY_ENABLED:-false}
+      AI_INSIGHT_PROXY_URL: ${AI_INSIGHT_PROXY_URL:-}
+    restart: unless-stopped
 
 volumes:
   postgres-data:

@@ -1,0 +1,35 @@
+# Build artifacts
+target/
+frontend/node_modules/
+frontend/dist/
+
+# IDE and editor
+.idea/
+.vscode/
+*.iml
+*.iws
+*.ipr
+
+# Git
+.git/
+.gitignore
+
+# Docs and dev-only files
+docs/
+*.md
+.codex/
+.playwright-mcp/
+logs/
+
+# Docker
+Dockerfile
+.dockerignore
+docker-compose*.yml
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Environment (secrets)
+.env
+.env.*
