@@ -158,6 +158,7 @@ public class AnalysisLangGraphWorkflow {
     private Map<String, Object> routeFromReview(AnalysisGraphState state) {
         AnalysisRun run = repository.findById(state.runId()).orElseThrow(() -> new RunNotFoundException(state.runId()));
         if (run.getStatus() == AnalysisStatus.CANCELLED) {
+            nodeExecutor.clearPendingAutoCascadeSnapshot(run.getId());
             throw new CancellationException("Analysis workflow cancelled: " + run.getId());
         }
         int attempts = state.reworkAttempts();
@@ -186,9 +187,17 @@ public class AnalysisLangGraphWorkflow {
                 transition.getResolutionStatus(),
                 reviewFinishReason(run, attempts, maxAttempts, route, repeatedBlockers));
         if (!ROUTE_FINISH.equals(route)) {
+            // 自动重跑开始前捕获级联快照，用于后续记录完整级联 delta（与手动重跑逻辑对齐）
+            if (!nodeExecutor.hasPendingAutoCascadeSnapshot(run.getId())) {
+                AgentName targetAgent = decision != null ? decision.getTargetAgent() : null;
+                WorkflowNodeExecutor.RepairSnapshot cascadeSnapshot = nodeExecutor.captureAutoCascadeSnapshot(run.getId(), targetAgent);
+                nodeExecutor.storePendingAutoCascadeSnapshot(run.getId(), cascadeSnapshot);
+            }
             attempts++;
             eventBroker.publish(run, "review_rework_started", "复核 Agent 请求打回路径：" + route);
         } else if (attempts > 0) {
+            // 自动重跑级联完成后，消费快照记录完整级联 delta，前端可展示改善效果
+            nodeExecutor.consumeAutoCascadeDelta(run.getId());
             eventBroker.publish(run, "review_rework_completed", "复核打回流程已完成");
         }
         return Map.of(

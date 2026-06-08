@@ -42,6 +42,7 @@ public class DocumentIngestionService {
     private final AnalysisRunRepository repository;
     private final AnalysisEventBroker eventBroker;
     private final Executor documentIngestionExecutor;
+    private final PiiDesensitizer piiDesensitizer;
 
     @Autowired
     public DocumentIngestionService(DocumentTextExtractor documentTextExtractor,
@@ -49,19 +50,21 @@ public class DocumentIngestionService {
                                     EvidenceEmbeddingService evidenceEmbeddingService,
                                     AnalysisRunRepository repository,
                                     AnalysisEventBroker eventBroker,
-                                    @Qualifier("documentIngestionTaskExecutor") Executor documentIngestionExecutor) {
+                                    @Qualifier("documentIngestionTaskExecutor") Executor documentIngestionExecutor,
+                                    PiiDesensitizer piiDesensitizer) {
         this.documentTextExtractor = documentTextExtractor;
         this.evidenceChunkService = evidenceChunkService;
         this.evidenceEmbeddingService = evidenceEmbeddingService;
         this.repository = repository;
         this.eventBroker = eventBroker;
         this.documentIngestionExecutor = documentIngestionExecutor == null ? Runnable::run : documentIngestionExecutor;
+        this.piiDesensitizer = piiDesensitizer == null ? new PiiDesensitizer() : piiDesensitizer;
     }
 
     public DocumentIngestionService(DocumentTextExtractor documentTextExtractor,
                                     EvidenceChunkService evidenceChunkService,
                                     EvidenceEmbeddingService evidenceEmbeddingService) {
-        this(documentTextExtractor, evidenceChunkService, evidenceEmbeddingService, null, null, Runnable::run);
+        this(documentTextExtractor, evidenceChunkService, evidenceEmbeddingService, null, null, Runnable::run, null);
     }
 
     public AnalysisRun ingest(AnalysisRun run,
@@ -161,6 +164,15 @@ public class DocumentIngestionService {
         markStage(run, citationKey, "PARSING", "正在解析文档文本");
         ExtractedDocumentText extracted = documentTextExtractor.extract(upload.filename(), upload.contentType(), upload.bytes());
         String rawText = truncateIfNeeded(run, extracted.text());
+
+        // PII 脱敏：对上传文档的原始文本进行敏感信息检测与替换
+        PiiDesensitizer.DesensitizeResult piiResult = piiDesensitizer.desensitizeWithFindings(rawText);
+        if (piiResult.hasFindings()) {
+            rawText = piiResult.getText();
+            markStage(run, citationKey, "PII_DESENSITIZED",
+                    "检测到 PII（" + String.join("、", piiResult.getFindings()) + "），已自动脱敏。");
+        }
+
         EvidenceSource finalSource = buildSource(citationKey, extracted, title, sourceType, sensitive, notes, rawText);
         finalSource.setGlobalResource(globalResource);
         EvidenceSource source = sourceByCitationKey(run, citationKey);

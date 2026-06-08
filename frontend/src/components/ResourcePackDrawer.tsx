@@ -277,6 +277,8 @@ function stageLabel(stage?: string) {
       return "排队中";
     case "PARSING":
       return "解析中";
+    case "PII_DESENSITIZED":
+      return "PII 脱敏中";
     case "CHUNKING":
       return "切片中";
     case "EMBEDDING":

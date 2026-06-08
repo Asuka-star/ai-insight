@@ -33,6 +33,8 @@ import java.util.Comparator;
 import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.CancellationException;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
 import java.util.stream.Collectors;
 
 import static com.aiinsight.util.AgentUtils.hasText;
@@ -47,6 +49,8 @@ public class WorkflowNodeExecutor {
 
     private final AnalysisRunRepository repository;
     private final AnalysisEventBroker eventBroker;
+    // 自动重跑级联快照：在 REVIEW_GATE 路由到重跑前捕获，在最终 PASS 时用于记录完整级联 delta。
+    private final ConcurrentMap<UUID, RepairSnapshot> pendingAutoCascadeSnapshots = new ConcurrentHashMap<>();
 
     public AnalysisRun executeNode(UUID runId, AgentNode node, String inputSummary) {
         AnalysisRun run = repository.findById(runId).orElseThrow(() -> new RunNotFoundException(runId));
@@ -101,6 +105,7 @@ public class WorkflowNodeExecutor {
             pauseForReadableEvents();
             return run;
         } catch (CancellationException ex) {
+            pendingAutoCascadeSnapshots.remove(runId);
             AnalysisRun latest = repository.findById(runId).orElse(run);
             markCancelled(latest, step, trace, ex, startedAt);
             repository.save(latest);
@@ -111,6 +116,7 @@ public class WorkflowNodeExecutor {
                     step.getId());
             throw ex;
         } catch (RuntimeException ex) {
+            pendingAutoCascadeSnapshots.remove(runId);
             step.fail(ex.getMessage());
             AgentTraceContext.recordError(ex);
             completeTrace(trace, step, run, "FAILED", startedAt);
@@ -208,6 +214,56 @@ public class WorkflowNodeExecutor {
         recordRepairDelta(run, agentName, before, false, true, "手动级联重跑");
         repository.save(run);
         return run;
+    }
+
+    /**
+     * 在 REVIEW_GATE 路由到打回路径前调用，捕获级联快照。
+     * 后续 REVIEW_GATE 路由到 FINISH 时用 {@link #consumeAutoCascadeDelta} 记录完整级联 delta。
+     */
+    void storePendingAutoCascadeSnapshot(UUID runId, RepairSnapshot snapshot) {
+        if (snapshot != null) {
+            pendingAutoCascadeSnapshots.put(runId, snapshot);
+        }
+    }
+
+    /**
+     * 捕获当前状态的快照，用于自动重跑级联起点。
+     *
+     * @param runId     运行 ID
+     * @param agentName 被打回的目标 Agent，用于 delta 展示和 materiallyChanged 判断
+     */
+    RepairSnapshot captureAutoCascadeSnapshot(UUID runId, AgentName agentName) {
+        AnalysisRun run = repository.findById(runId).orElseThrow(() -> new RunNotFoundException(runId));
+        return RepairSnapshot.capture(run, agentName != null ? agentName : AgentName.RESEARCHER);
+    }
+
+    /**
+     * 在 REVIEW_GATE 路由到 FINISH 且有过自动重跑时调用。
+     * 消费之前存储的快照，记录完整的级联 delta，展示自动重跑的改善效果。
+     */
+    void consumeAutoCascadeDelta(UUID runId) {
+        RepairSnapshot before = pendingAutoCascadeSnapshots.remove(runId);
+        if (before == null) {
+            return;
+        }
+        AnalysisRun run = repository.findById(runId).orElseThrow(() -> new RunNotFoundException(runId));
+        // 强制 active=true 以确保 delta 被记录，不受 repairDecision 状态影响
+        RepairSnapshot activeBefore = new RepairSnapshot(
+                before.agentName(), true, before.findings(), before.highFindings(),
+                before.evidenceSources(), before.claims(), before.claimCoverage(),
+                before.coverageGaps(), before.artifacts(), before.claimsFingerprint(),
+                before.reportFingerprint(), before.evidenceFingerprint(),
+                before.profileFingerprint(), before.factFingerprint());
+        recordRepairDelta(run, before.agentName(), activeBefore, false, true, "自动重跑");
+        repository.save(run);
+    }
+
+    boolean hasPendingAutoCascadeSnapshot(UUID runId) {
+        return pendingAutoCascadeSnapshots.containsKey(runId);
+    }
+
+    void clearPendingAutoCascadeSnapshot(UUID runId) {
+        pendingAutoCascadeSnapshots.remove(runId);
     }
 
     private void recordRepairDelta(AnalysisRun run, AgentNode node, RepairSnapshot before) {

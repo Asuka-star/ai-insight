@@ -481,7 +481,8 @@ class AnalysisWorkflowServiceTest {
                 EvidenceEmbeddingService.disabled(),
                 repository,
                 eventBroker,
-                queuedIngestion::set
+                queuedIngestion::set,
+                null
         );
         AnalysisWorkflowService service = newService(
                 repository,
@@ -537,7 +538,8 @@ class AnalysisWorkflowServiceTest {
                 EvidenceEmbeddingService.disabled(),
                 repository,
                 eventBroker,
-                Runnable::run
+                Runnable::run,
+                null
         );
         AnalysisWorkflowService service = newService(
                 repository,
@@ -575,7 +577,8 @@ class AnalysisWorkflowServiceTest {
                 EvidenceEmbeddingService.disabled(),
                 repository,
                 eventBroker,
-                Runnable::run
+                Runnable::run,
+                null
         );
         AnalysisWorkflowService service = newService(
                 repository,
@@ -4677,7 +4680,8 @@ class AnalysisWorkflowServiceTest {
                 sourceCollectionService,
                 new EvidenceChunkService(),
                 EvidenceEmbeddingService.disabled(),
-                documentIngestionService
+                documentIngestionService,
+                null
         );
     }
 

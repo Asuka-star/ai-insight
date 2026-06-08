@@ -38,6 +38,16 @@ public class SurveyResultImportService {
     private static final int MAX_FINDINGS = 12;
     private static final int MAX_VALUES_PER_QUESTION = 8;
 
+    private final PiiDesensitizer piiDesensitizer;
+
+    public SurveyResultImportService() {
+        this.piiDesensitizer = new PiiDesensitizer();
+    }
+
+    public SurveyResultImportService(PiiDesensitizer piiDesensitizer) {
+        this.piiDesensitizer = piiDesensitizer == null ? new PiiDesensitizer() : piiDesensitizer;
+    }
+
     public byte[] buildQuestionnaireDslText(AnalysisRun run) {
         Questionnaire questionnaire = questionnaireOrNull(run);
         List<String> blocks = new ArrayList<>();
@@ -244,18 +254,34 @@ public class SurveyResultImportService {
             return "- No open feedback column was imported.";
         }
         List<String> feedback = new ArrayList<>();
+        List<String> piiTypes = new ArrayList<>();
         for (List<String> row : sheet.rows()) {
             for (int index : indexes) {
                 String value = cell(row, index);
                 if (StringUtils.hasText(value)) {
-                    feedback.add("- " + trim(value, 220));
+                    // PII 脱敏：对问卷开放式反馈进行敏感信息检测与替换
+                    PiiDesensitizer.DesensitizeResult piiResult = piiDesensitizer.desensitizeWithFindings(value);
+                    if (piiResult.hasFindings()) {
+                        piiTypes.addAll(piiResult.getFindings());
+                    }
+                    feedback.add("- " + trim(piiResult.getText(), 220));
                 }
                 if (feedback.size() >= 8) {
-                    return String.join("\n", feedback);
+                    break;
                 }
             }
+            if (feedback.size() >= 8) {
+                break;
+            }
         }
-        return feedback.isEmpty() ? "- No open feedback column was imported." : String.join("\n", feedback);
+        if (feedback.isEmpty()) {
+            return "- No open feedback column was imported.";
+        }
+        if (!piiTypes.isEmpty()) {
+            List<String> distinct = piiTypes.stream().distinct().collect(Collectors.toList());
+            feedback.add("- [系统提示] 开放式反馈中检测到 PII（" + String.join("、", distinct) + "），已自动脱敏。");
+        }
+        return String.join("\n", feedback);
     }
 
     private boolean rowHasAnswer(List<String> row, List<Integer> questionIndexes) {

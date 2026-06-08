@@ -79,6 +79,7 @@ public class AnalysisWorkflowService {
     private final EvidenceChunkService evidenceChunkService;
     private final EvidenceEmbeddingService evidenceEmbeddingService;
     private final DocumentIngestionService documentIngestionService;
+    private final PiiDesensitizer piiDesensitizer;
     private final ConcurrentMap<UUID, AgentName> activeReruns = new ConcurrentHashMap<>();
     private InterviewInsightExtractor interviewInsightExtractor = new InterviewInsightExtractor();
     private SurveyInsightExtractor surveyInsightExtractor = new SurveyInsightExtractor();
@@ -97,7 +98,8 @@ public class AnalysisWorkflowService {
             SourceCollectionService sourceCollectionService,
             EvidenceChunkService evidenceChunkService,
             EvidenceEmbeddingService evidenceEmbeddingService,
-            DocumentIngestionService documentIngestionService) {
+            DocumentIngestionService documentIngestionService,
+            PiiDesensitizer piiDesensitizer) {
         this.repository = repository;
         this.normalizer = normalizer;
         this.eventBroker = eventBroker;
@@ -113,6 +115,7 @@ public class AnalysisWorkflowService {
         this.documentIngestionService = documentIngestionService == null
                 ? new DocumentIngestionService(new DocumentTextExtractor(), evidenceChunkService, evidenceEmbeddingService)
                 : documentIngestionService;
+        this.piiDesensitizer = piiDesensitizer == null ? new PiiDesensitizer() : piiDesensitizer;
     }
 
     public AnalysisWorkflowService(AnalysisRunRepository repository,
@@ -139,6 +142,7 @@ public class AnalysisWorkflowService {
                 sourceCollectionService,
                 evidenceChunkService,
                 evidenceEmbeddingService,
+                null,
                 null);
     }
 
@@ -165,6 +169,7 @@ public class AnalysisWorkflowService {
                 sourceCollectionService,
                 evidenceChunkService,
                 EvidenceEmbeddingService.disabled(),
+                null,
                 null);
     }
 
@@ -990,6 +995,13 @@ public class AnalysisWorkflowService {
     }
 
     private String attachUserEvidence(AnalysisRun run, UserProvidedEvidence evidence) {
+        // PII 脱敏：对用户提供的文本进行敏感信息检测与替换
+        PiiDesensitizer.DesensitizeResult piiResult = piiDesensitizer.desensitizeWithFindings(evidence.getContent());
+        if (piiResult.hasFindings()) {
+            evidence.setContent(piiResult.getText());
+            run.getRecommendedActions().add("检测到 PII（" + String.join("、", piiResult.getFindings()) + "），已自动脱敏。");
+        }
+
         run.getUserProvidedEvidence().add(evidence);
         String citationKey = nextCitationKey(run);
         EvidenceSource source = sourceCollectionService.fromUserProvidedEvidence(citationKey, evidence);
