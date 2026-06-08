@@ -174,7 +174,7 @@ class AnalystNodeTest {
                 .orElseThrow()
                 .getContent();
         assertThat(matrix)
-                .contains("Cursor Composer is a useful benchmark")
+                .doesNotContain("Cursor Composer is a useful benchmark")
                 .doesNotContain("UNSUPPORTED MATRIX TEXT");
         assertThat(swot)
                 .contains("Cursor Composer is a useful benchmark")

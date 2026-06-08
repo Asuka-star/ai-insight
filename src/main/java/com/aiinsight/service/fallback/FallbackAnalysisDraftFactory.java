@@ -214,27 +214,13 @@ public class FallbackAnalysisDraftFactory {
                         citationText(profile.getEvidenceIds())
                 ))
                 .collect(Collectors.joining("\n"));
-        String claimRows = claims.stream()
-                .map(claim -> "| %s | %s | %s | %s |".formatted(
-                        claim.getType(),
-                        claim.getConfidence(),
-                        claim.getContent(),
-                        citationText(claim.getEvidenceIds())
-                ))
-                .collect(Collectors.joining("\n"));
         return """
                 ## 竞品横向矩阵
 
                 | 竞品 | 主要优势 | 潜在弱势 | 定价判断 | 证据 |
                 | --- | --- | --- | --- | --- |
                 %s
-
-                ## 结构化结论
-
-                | 类型 | 置信度 | 结论 | 证据 |
-                | --- | --- | --- | --- |
-                %s
-                """.formatted(rows, claimRows);
+                """.formatted(rows);
     }
 
     private String swotContent(AnalysisRun run, List<AnalysisClaim> claims) {

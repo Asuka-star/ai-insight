@@ -378,6 +378,27 @@ class AnalysisWorkflowServiceTest {
     }
 
     @Test
+    void addsUserProvidedUrlAsFetchedSource() {
+        AnalysisWorkflowService service = newService();
+        CreateAnalysisRunRequest request = new CreateAnalysisRunRequest();
+        request.setPrompt("Analyze Cursor and Claude Code.");
+        var run = service.createDraft(request);
+
+        AddUserEvidenceRequest evidenceRequest = new AddUserEvidenceRequest();
+        evidenceRequest.setSourceType("url");
+        evidenceRequest.setUrl("https://cursor.example.test");
+
+        var updated = service.addEvidence(run.getId(), evidenceRequest);
+
+        assertThat(updated.getEvidenceSources()).hasSize(1);
+        assertThat(updated.getEvidenceSources().get(0).getSourceType()).isEqualTo("user_source_url");
+        assertThat(updated.getEvidenceSources().get(0).getUrl()).isEqualTo("https://cursor.example.test");
+        assertThat(updated.getEvidenceChunks()).isNotEmpty();
+        assertThat(updated.getResearchPackage().getSources()).hasSize(1);
+        assertThat(updated.getRecommendedActions()).anyMatch(action -> action.contains("公开来源 S1 已加入"));
+    }
+
+    @Test
     void addsUploadedDocumentAsCitableSourceChunkAndRetrievalCandidate() {
         AnalysisWorkflowService service = newService();
         CreateAnalysisRunRequest request = new CreateAnalysisRunRequest();
@@ -894,7 +915,7 @@ class AnalysisWorkflowServiceTest {
     }
 
     @Test
-    void blocksRequirementChangesAfterRunSucceeded() {
+    void allowsRequirementChangesAfterRunSucceeded() {
         AnalysisWorkflowService service = newService();
         CreateAnalysisRunRequest request = new CreateAnalysisRunRequest();
         request.setPrompt("Analyze Notion and Confluence for AI document collaboration.");
@@ -904,9 +925,10 @@ class AnalysisWorkflowServiceTest {
         update.setOutputGoal("Change after completion");
 
         assertThat(finished.getStatus()).isEqualTo(AnalysisStatus.SUCCEEDED);
-        assertThatThrownBy(() -> service.updateRequirement(finished.getId(), update))
-                .isInstanceOf(InvalidRunStateException.class)
-                .hasMessageContaining("SUCCEEDED");
+        var updated = service.updateRequirement(finished.getId(), update);
+        assertThat(updated.getStatus()).isEqualTo(AnalysisStatus.PENDING);
+        assertThat(updated.getRequirement().getOutputGoal()).isEqualTo("Change after completion");
+        assertThat(updated.getClarificationDraft().isConfirmed()).isTrue();
     }
 
     @Test
@@ -1252,7 +1274,7 @@ class AnalysisWorkflowServiceTest {
         assertThat(finished.getArtifacts())
                 .filteredOn(artifact -> artifact.getType() == ArtifactType.COMPETITIVE_MATRIX)
                 .last()
-                .satisfies(artifact -> assertThat(artifact.getContent()).contains("结构化结论", "价格策略", "权限治理", "AI 搜索", "用户评价"));
+                .satisfies(artifact -> assertThat(artifact.getContent()).contains("待验证结论", "价格策略", "权限治理", "AI 搜索", "用户评价"));
     }
 
     @Test
@@ -1436,7 +1458,7 @@ class AnalysisWorkflowServiceTest {
                 .reduce((first, second) -> second)
                 .orElseThrow()
                 .getContent();
-        String matrixSummary = matrixContent.substring(0, matrixContent.indexOf("## 结构化结论明细"));
+        String matrixSummary = matrixContent.substring(0, matrixContent.indexOf("## 待验证结论"));
         assertThat(matrixSummary)
                 .contains("Confluence", "Prioritize enterprise admin controls", "Official docs support enterprise admin controls")
                 .doesNotContain("Unverified broad fact");

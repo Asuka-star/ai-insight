@@ -1,5 +1,5 @@
-import { useEffect, useRef } from "react";
-import { Boxes, GitPullRequestArrow, ListChecks } from "lucide-react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
+import { Boxes, ChevronDown, ListChecks } from "lucide-react";
 import type { AnalysisClaim, CompetitorProfile, FeatureNode, ResearchPackage, WorkflowTransition } from "../types";
 
 interface SchemaPanelProps {
@@ -8,9 +8,12 @@ interface SchemaPanelProps {
   claims: AnalysisClaim[];
   transitions: WorkflowTransition[];
   selectedClaimId?: string;
+  selectedClaimRequestId?: number;
   embedded?: boolean;
   onSelectCitation?: (citationKey: string) => void;
 }
+
+type SectionKey = "research" | "claims" | "profiles";
 
 export function SchemaPanel({
   researchPackage,
@@ -18,19 +21,42 @@ export function SchemaPanel({
   claims,
   transitions,
   selectedClaimId,
+  selectedClaimRequestId,
   embedded,
   onSelectCitation
 }: SchemaPanelProps) {
   const sourceCount = researchPackage?.sources?.length ?? 0;
   const missingCount = researchPackage?.missingEvidenceTypes?.length ?? 0;
   const claimRefs = useRef<Record<string, HTMLElement | null>>({});
+  const [collapsedSections, setCollapsedSections] = useState<Record<SectionKey, boolean>>({
+    research: false,
+    claims: false,
+    profiles: false
+  });
 
   useEffect(() => {
     if (!selectedClaimId) return;
+    if (collapsedSections.claims) {
+      setCollapsedSections((current) => {
+        if (!current.claims) return current;
+        return {
+          ...current,
+          claims: false
+        };
+      });
+      return;
+    }
     const selectedClaim = claimRefs.current[selectedClaimId];
     if (!selectedClaim) return;
     selectedClaim.scrollIntoView({ block: "center", behavior: "smooth" });
-  }, [selectedClaimId]);
+  }, [collapsedSections.claims, selectedClaimId, selectedClaimRequestId]);
+
+  const toggleSection = (key: SectionKey) => {
+    setCollapsedSections((current) => ({
+      ...current,
+      [key]: !current[key]
+    }));
+  };
 
   return (
     <section className={embedded ? "schema-panel embedded" : "panel schema-panel"}>
@@ -56,15 +82,17 @@ export function SchemaPanel({
         </div>
       ) : null}
 
-      <div className="schema-section">
-        <div className="schema-heading">
-          <ListChecks size={15} />
-          <strong>采集资料包</strong>
-        </div>
+      <SchemaSection
+        collapsed={collapsedSections.research}
+        icon={<ListChecks size={15} />}
+        title="采集资料包"
+        onToggle={() => toggleSection("research")}
+      >
         <div className="schema-card">
           <span>ResearchPackage</span>
           <p>{sourceCount ? `已采集 ${sourceCount} 条来源` : "暂无资料来源"}</p>
           <small>采集时间：{formatDateTime(researchPackage?.collectedAt)}</small>
+
           {researchPackage?.sources?.length ? (
             <div className="schema-chip-list">
               {researchPackage.sources.map((source) => (
@@ -81,6 +109,7 @@ export function SchemaPanel({
               ))}
             </div>
           ) : null}
+
           {researchPackage?.interviewInsights?.length ? (
             <div className="schema-detail-grid research-plan-grid">
               <section className="schema-detail wide">
@@ -109,18 +138,22 @@ export function SchemaPanel({
                         </div>
                         <div>
                           <dt>引用</dt>
-                          <dd><EvidenceChips values={insight.evidenceId ? [insight.evidenceId] : []} onSelectCitation={onSelectCitation} /></dd>
+                          <dd>
+                            <EvidenceChips
+                              values={insight.evidenceId ? [insight.evidenceId] : []}
+                              onSelectCitation={onSelectCitation}
+                            />
+                          </dd>
                         </div>
                       </dl>
-                      {insight.directQuotes?.length ? (
-                        <small>{insight.directQuotes.join(" / ")}</small>
-                      ) : null}
+                      {insight.directQuotes?.length ? <small>{insight.directQuotes.join(" / ")}</small> : null}
                     </div>
                   ))}
                 </div>
               </section>
             </div>
           ) : null}
+
           {researchPackage?.surveyInsights?.length ? (
             <div className="schema-detail-grid research-plan-grid">
               <section className="schema-detail wide">
@@ -161,11 +194,13 @@ export function SchemaPanel({
               </section>
             </div>
           ) : null}
+
           {researchPackage?.researchPlan ? (
             <div className="schema-detail-grid research-plan-grid">
               <section className="schema-detail wide">
                 <strong>调研目标</strong>
                 <p>{researchPackage.researchPlan.objective || "暂无调研目标。"}</p>
+
                 {researchPackage.researchPlan.evidenceGaps?.length ? (
                   <div className="schema-chip-list">
                     {researchPackage.researchPlan.evidenceGaps.map((gap) => (
@@ -173,6 +208,7 @@ export function SchemaPanel({
                     ))}
                   </div>
                 ) : null}
+
                 {researchPackage.researchPlan.searchQueries?.length ? (
                   <div className="schema-list">
                     {researchPackage.researchPlan.searchQueries.map((query) => (
@@ -183,6 +219,7 @@ export function SchemaPanel({
                     ))}
                   </div>
                 ) : null}
+
                 {researchPackage.actualSearchQueries?.length ? (
                   <div className="schema-list">
                     {researchPackage.actualSearchQueries.map((query) => (
@@ -195,7 +232,7 @@ export function SchemaPanel({
                 ) : null}
               </section>
 
-              <section className="schema-detail">
+              <section className="schema-detail wide">
                 <strong>公开资料任务</strong>
                 {researchPackage.researchPlan.publicSourceTasks?.length ? (
                   <div className="schema-list">
@@ -211,42 +248,17 @@ export function SchemaPanel({
                   <p className="muted-text">暂无公开资料任务。</p>
                 )}
               </section>
-
-              <section className="schema-detail">
-                <strong>{researchPackage.researchPlan.questionnaire?.title || "问卷草案"}</strong>
-                <p>{researchPackage.researchPlan.questionnaire?.targetRespondents || "目标样本待确认。"}</p>
-                <div className="schema-list">
-                  {(researchPackage.researchPlan.questionnaire?.questions ?? []).map((question, index) => (
-                    <div className="schema-list-item" key={`${question.dimension}-${index}`}>
-                      <strong>{question.dimension || "调研维度"}</strong>
-                      <p>{question.question}</p>
-                      <small>{question.options?.join(" / ")}</small>
-                    </div>
-                  ))}
-                </div>
-              </section>
-
-              <section className="schema-detail wide">
-                <strong>{researchPackage.researchPlan.interviewGuide?.title || "访谈提纲"}</strong>
-                <p>目标角色：{joinOrEmpty(researchPackage.researchPlan.interviewGuide?.targetRoles)}</p>
-                <div className="schema-list">
-                  {(researchPackage.researchPlan.interviewGuide?.questions ?? []).map((question, index) => (
-                    <div className="schema-list-item" key={`${question}-${index}`}>
-                      <p>{question}</p>
-                    </div>
-                  ))}
-                </div>
-              </section>
             </div>
           ) : null}
         </div>
-      </div>
+      </SchemaSection>
 
-      <div className="schema-section">
-        <div className="schema-heading">
-          <ListChecks size={15} />
-          <strong>分析结论</strong>
-        </div>
+      <SchemaSection
+        collapsed={collapsedSections.claims}
+        icon={<ListChecks size={15} />}
+        title="分析结论"
+        onToggle={() => toggleSection("claims")}
+      >
         {claims.length ? (
           claims.map((claim) => (
             <div
@@ -277,13 +289,14 @@ export function SchemaPanel({
         ) : (
           <p className="muted-text">暂无结构化结论。</p>
         )}
-      </div>
+      </SchemaSection>
 
-      <div className="schema-section">
-        <div className="schema-heading">
-          <Boxes size={15} />
-          <strong>竞品画像</strong>
-        </div>
+      <SchemaSection
+        collapsed={collapsedSections.profiles}
+        icon={<Boxes size={15} />}
+        title="竞品画像"
+        onToggle={() => toggleSection("profiles")}
+      >
         {profiles.length ? (
           profiles.map((profile) => (
             <div className="schema-card" key={profile.productName ?? profile.companyName}>
@@ -329,14 +342,20 @@ export function SchemaPanel({
                 <section className="schema-detail">
                   <strong>定价模型</strong>
                   <p>{profile.pricingModel?.strategySummary || "暂无定价摘要。"}</p>
-                  <small>{profile.pricingModel?.hasFreePlan ? "包含免费版线索" : "免费版待验证"} / <EvidenceChips values={profile.pricingModel?.evidenceIds} onSelectCitation={onSelectCitation} inline /></small>
+                  <small>
+                    {profile.pricingModel?.hasFreePlan ? "包含免费版线索" : "免费版待验证"} /{" "}
+                    <EvidenceChips values={profile.pricingModel?.evidenceIds} onSelectCitation={onSelectCitation} inline />
+                  </small>
                   {profile.pricingModel?.plans?.length ? (
                     <div className="schema-list">
                       {profile.pricingModel.plans.map((plan, index) => (
                         <div className="schema-list-item" key={`${plan.name}-${index}`}>
                           <strong>{plan.name || "未命名套餐"}</strong>
                           <p>{plan.priceText || "价格待验证"} · {plan.billingCycle || "周期待验证"}</p>
-                          <small>{plan.targetSegment || "目标客群待验证"} / <EvidenceChips values={plan.evidenceIds} onSelectCitation={onSelectCitation} inline /></small>
+                          <small>
+                            {plan.targetSegment || "目标客群待验证"} /{" "}
+                            <EvidenceChips values={plan.evidenceIds} onSelectCitation={onSelectCitation} inline />
+                          </small>
                           <div className="schema-chip-list">
                             {(plan.includedFeatures ?? []).map((feature) => (
                               <span className="schema-chip" key={feature}>{feature}</span>
@@ -387,26 +406,35 @@ export function SchemaPanel({
         ) : (
           <p className="muted-text">暂无竞品画像。</p>
         )}
-      </div>
-
-      <div className="schema-section">
-        <div className="schema-heading">
-          <GitPullRequestArrow size={15} />
-          <strong>复核路由</strong>
-        </div>
-        {transitions.length ? (
-          transitions.map((transition) => (
-            <div className="schema-route" key={transition.id}>
-              <span>{transition.route}</span>
-              <p>{transition.sourceNode} {"->"} {transition.targetNode}</p>
-              <small>{transition.reviewAction ?? "PASS"} / 第 {transition.attempt + 1} 次判断</small>
-            </div>
-          ))
-        ) : (
-          <p className="muted-text">暂无 REVIEW_GATE 决策。</p>
-        )}
-      </div>
+      </SchemaSection>
     </section>
+  );
+}
+
+function SchemaSection({
+  collapsed,
+  icon,
+  title,
+  onToggle,
+  children
+}: {
+  collapsed: boolean;
+  icon: ReactNode;
+  title: string;
+  onToggle: () => void;
+  children: ReactNode;
+}) {
+  return (
+    <div className={`schema-section ${collapsed ? "collapsed" : ""}`}>
+      <button className="schema-heading-toggle" type="button" aria-expanded={!collapsed} onClick={onToggle}>
+        <div className="schema-heading">
+          {icon}
+          <strong>{title}</strong>
+        </div>
+        <ChevronDown size={14} />
+      </button>
+      {collapsed ? null : children}
+    </div>
   );
 }
 

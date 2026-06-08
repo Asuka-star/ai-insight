@@ -14,15 +14,19 @@ interface ArtifactViewerProps {
 
 export function ArtifactViewer({ artifact, sources = [], onSelectCitation, locateRequest }: ArtifactViewerProps) {
   const readerRef = useRef<HTMLElement>(null);
+  const handledLocateKeyRef = useRef<string>();
   const sourcesByKey = useMemo(() => new Map(sources.map((source) => [source.citationKey, source])), [sources]);
   const artifactLabel = artifact ? ARTIFACT_LABELS[artifact.type] ?? artifact.type : "";
   const citationCount = artifact?.citationKeys?.length ?? 0;
 
   useEffect(() => {
     if (!artifact || !locateRequest || !readerRef.current) return;
-    if (locateRequest.artifactId && locateRequest.artifactId !== artifact.id && !isReportArtifact(artifact)) return;
+    if (locateRequest.artifactId && locateRequest.artifactId !== artifact.id) return;
+    const requestKey = `${locateRequest.requestId}:${artifact.id}`;
+    if (handledLocateKeyRef.current === requestKey) return;
     const target = findLocateTarget(readerRef.current, artifact.content ?? "", locateRequest);
     if (!target) return;
+    handledLocateKeyRef.current = requestKey;
 
     // 定位结果用滚动加短暂闪烁表达，避免用户只看到视图跳转却找不到具体句子。
     target.scrollIntoView({ block: "center", behavior: "smooth" });
@@ -30,9 +34,9 @@ export function ArtifactViewer({ artifact, sources = [], onSelectCitation, locat
     window.requestAnimationFrame(() => {
       target.classList.add("artifact-locate-flash");
     });
-    const timer = window.setTimeout(() => target.classList.remove("artifact-locate-flash"), 2200);
+    const timer = window.setTimeout(() => target.classList.remove("artifact-locate-flash"), 1400);
     return () => window.clearTimeout(timer);
-  }, [artifact, locateRequest]);
+  }, [artifact?.content, artifact?.id, locateRequest]);
 
   if (!artifact) {
     return (
@@ -90,10 +94,6 @@ export function ArtifactViewer({ artifact, sources = [], onSelectCitation, locat
       </ReactMarkdown>
     </article>
   );
-}
-
-function isReportArtifact(artifact: AnalysisArtifact) {
-  return artifact.type === "REPORT_DRAFT" || artifact.type === "FINAL_REPORT";
 }
 
 function linkifyCitations(markdown: string) {

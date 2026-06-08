@@ -162,9 +162,9 @@ export interface AddContextRequest {
 }
 
 export interface AddUserEvidenceRequest {
-  title: string;
+  title?: string;
   sourceType?: "url" | "interview" | "survey" | "note" | string;
-  content: string;
+  content?: string;
   url?: string;
   sensitive?: boolean;
 }

@@ -35,19 +35,6 @@ final class AnalysisProductRenderer {
         String rows = competitors.stream()
                 .map(competitor -> matrixRowForCompetitor(run, competitor, claims))
                 .collect(Collectors.joining("\n"));
-        String claimRows = claims.stream()
-                .filter(claim -> matrixClaim(claim) || swotClaim(claim))
-                .map(claim -> "| %s | %s | %s | %s | %s | %s | %s | %s |".formatted(
-                        claim.getType(),
-                        claim.getConfidence(),
-                        textOrDash(claim.getSupportStatus()),
-                        textOrDash(claim.getRecommendedPlacement()),
-                        textOrDash(claim.getDimension()),
-                        competitorText(claim.getCompetitorNames()),
-                        escapeCell(claim.getContent()),
-                        citationText(claim.getEvidenceIds())
-                ))
-                .collect(Collectors.joining("\n"));
         String dimensionRows = dimensionCoverageRows(run, claims);
         String backlogRows = validationBacklogRows(claims);
         return """
@@ -63,14 +50,7 @@ final class AnalysisProductRenderer {
                 | --- | --- | --- | --- |
                 %s
 
-                ## 结构化结论明细
-
-                | 类型 | 置信度 | 支撑状态 | 放置建议 | 维度 | 竞品 | 结论 | 证据 |
-                | --- | --- | --- | --- | --- | --- | --- | --- |
-                %s
-
                 ## 待验证结论
-
                 | 维度 | 结论 | 原因 |
                 | --- | --- | --- |
                 %s
@@ -79,7 +59,6 @@ final class AnalysisProductRenderer {
                 """.formatted(
                 rows.isBlank() ? "| - | 暂无结构化结论。 | LOW | 证据不足 |" : rows,
                 dimensionRows,
-                claimRows.isBlank() ? "| - | LOW | UNVERIFIED | VALIDATION_BACKLOG | 综合判断 | - | 暂无结构化结论。 | 证据不足 |" : claimRows,
                 backlogRows
         );
     }

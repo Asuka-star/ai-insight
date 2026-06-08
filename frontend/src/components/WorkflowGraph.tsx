@@ -45,10 +45,13 @@ export function WorkflowGraph({ run, onSelectAgent }: WorkflowGraphProps) {
     const steps = stepsByAgent.get(agent) ?? [];
     const latest = steps.at(-1);
     const visual = AGENT_VISUAL[agent];
+    const layout = graphLayout(agent, index);
     return {
       id: agent,
       type: "agent",
-      position: graphPosition(agent, index),
+      position: layout.position,
+      sourcePosition: layout.sourcePosition,
+      targetPosition: layout.targetPosition,
       data: {
         agent,
         label: AGENT_LABELS[agent],
@@ -106,7 +109,7 @@ export function WorkflowGraph({ run, onSelectAgent }: WorkflowGraphProps) {
         fitView
         minZoom={0.4}
         maxZoom={1.3}
-        fitViewOptions={{ padding: 0.25 }}
+        fitViewOptions={{ padding: 0.18 }}
         proOptions={{ hideAttribution: true }}
       >
         <Background gap={20} size={1} color="#d4ddd8" />
@@ -118,7 +121,7 @@ export function WorkflowGraph({ run, onSelectAgent }: WorkflowGraphProps) {
 
 /* ── Node component ── */
 
-function AgentNode({ data }: NodeProps<Node<AgentNodeData>>) {
+function AgentNode({ data, sourcePosition = Position.Right, targetPosition = Position.Left }: NodeProps<Node<AgentNodeData>>) {
   const { status, count, accent, Icon, onSelectAgent, agent, label, stage } = data;
   const cls = statusClass(status);
 
@@ -129,7 +132,7 @@ function AgentNode({ data }: NodeProps<Node<AgentNodeData>>) {
       style={{ "--accent": accent } as React.CSSProperties}
       onClick={() => onSelectAgent(agent)}
     >
-      <Handle type="target" position={Position.Left} className="flow-handle" />
+      <Handle type="target" position={targetPosition} className="flow-handle" />
       <div className="flow-node__icon">
         <Icon size={22} />
       </div>
@@ -138,7 +141,7 @@ function AgentNode({ data }: NodeProps<Node<AgentNodeData>>) {
         <span className="flow-node__stage">{stage}</span>
       </div>
       <StatusBadge status={status} count={count} />
-      <Handle type="source" position={Position.Right} className="flow-handle" />
+      <Handle type="source" position={sourcePosition} className="flow-handle" />
     </button>
   );
 }
@@ -161,16 +164,51 @@ function StatusBadge({ status, count }: { status: StepStatus | "PENDING"; count:
 
 /* ── Layout ── */
 
-function graphPosition(agent: AgentName, index: number) {
-  // CLARIFIER sits offset above the main pipeline
-  if (agent === "CLARIFIER") {
-    return { x: 0, y: 10 };
-  }
-  // Main pipeline: horizontal line with slight vertical stagger
-  const mainIndex = index - 1; // 0-based from RESEARCHER
-  return {
-    x: 220 + mainIndex * 240,
-    y: 55 + (mainIndex % 2 === 0 ? 0 : 40)
+function graphLayout(agent: AgentName, index: number) {
+  const compactLayout: Record<AgentName, {
+    position: { x: number; y: number };
+    sourcePosition: Position;
+    targetPosition: Position;
+  }> = {
+    CLARIFIER: {
+      position: { x: 56, y: 34 },
+      sourcePosition: Position.Right,
+      targetPosition: Position.Left
+    },
+    RESEARCHER: {
+      position: { x: 328, y: 34 },
+      sourcePosition: Position.Right,
+      targetPosition: Position.Left
+    },
+    EXTRACTOR: {
+      position: { x: 600, y: 34 },
+      sourcePosition: Position.Bottom,
+      targetPosition: Position.Left
+    },
+    ANALYST: {
+      position: { x: 600, y: 198 },
+      sourcePosition: Position.Left,
+      targetPosition: Position.Top
+    },
+    WRITER: {
+      position: { x: 328, y: 198 },
+      sourcePosition: Position.Left,
+      targetPosition: Position.Right
+    },
+    REVIEWER: {
+      position: { x: 56, y: 198 },
+      sourcePosition: Position.Top,
+      targetPosition: Position.Right
+    }
+  };
+
+  return compactLayout[agent] ?? {
+    position: {
+      x: 56 + (index % 3) * 272,
+      y: 34 + Math.floor(index / 3) * 164
+    },
+    sourcePosition: Position.Right,
+    targetPosition: Position.Left
   };
 }
 

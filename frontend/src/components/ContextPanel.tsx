@@ -1,25 +1,13 @@
-import { ChevronDown, MessageSquareText, SendHorizontal } from "lucide-react";
-import type { AgentName, AnalysisContextMessage, ContextIntent } from "../types";
+import { ChevronDown, RotateCcw } from "lucide-react";
+import type { AgentName } from "../types";
 import { AGENTS, AGENT_LABELS } from "../constants";
-import { formatTime } from "../utils";
-import { SegmentedTabs, type SegmentedTabOption } from "./SegmentedTabs";
-
-const intentOptions: Array<SegmentedTabOption<ContextIntent>> = [
-  { label: "调整范围", value: "ADJUST_SCOPE" },
-  { label: "指定重跑", value: "REQUEST_RERUN" },
-  { label: "修订报告", value: "REVISE_REPORT" }
-];
 
 const rerunnableAgents = AGENTS.filter((agent) => agent !== "CLARIFIER");
 
 interface ContextPanelProps {
-  messages: AnalysisContextMessage[];
-  value: string;
-  intent: ContextIntent;
+  runReady?: boolean;
   targetAgent?: AgentName;
   disabled?: boolean;
-  onValueChange: (value: string) => void;
-  onIntentChange: (intent: ContextIntent) => void;
   onTargetAgentChange: (agent?: AgentName) => void;
   onSubmit: () => void;
   collapsed?: boolean;
@@ -27,45 +15,34 @@ interface ContextPanelProps {
 }
 
 export function ContextPanel({
-  messages,
-  value,
-  intent,
+  runReady,
   targetAgent,
   disabled,
-  onValueChange,
-  onIntentChange,
   onTargetAgentChange,
   onSubmit,
   collapsed = false,
   onToggle
 }: ContextPanelProps) {
   const effectiveTargetAgent = targetAgent === "CLARIFIER" ? undefined : targetAgent;
-  const submitDisabled = intent === "REQUEST_RERUN"
-    ? !effectiveTargetAgent
-    : !value.trim();
-  const handleIntentChange = (nextIntent: ContextIntent) => {
-    onIntentChange(nextIntent);
-    if (nextIntent === "REQUEST_RERUN") {
-      onValueChange("");
-    }
-  };
+  const submitDisabled = !effectiveTargetAgent;
+  const summary = effectiveTargetAgent ? `已选 ${AGENT_LABELS[effectiveTargetAgent]}` : (runReady ? "待选择 Agent" : "等待创建任务");
 
   return (
     <section className={`panel context-panel collapsible-panel ${collapsed ? "collapsed" : ""}`}>
       <div className="section-title collapsible-title">
         <div>
-          <p className="eyebrow">上下文</p>
-          <h2>补充上下文</h2>
-          {collapsed ? <small className="collapse-summary">{messages.length ? `${messages.length} 条补充` : "暂无上下文补充"}</small> : null}
+          <p className="eyebrow">控制</p>
+          <h2>指定重跑</h2>
+          {collapsed ? <small className="collapse-summary">{summary}</small> : null}
         </div>
         <div className="collapse-actions">
-          <MessageSquareText size={18} />
+          <RotateCcw size={18} />
           {onToggle ? (
             <button
               className="collapse-toggle"
               type="button"
               aria-expanded={!collapsed}
-              aria-label={collapsed ? "展开补充上下文" : "折叠补充上下文"}
+              aria-label={collapsed ? "展开指定重跑" : "折叠指定重跑"}
               onClick={onToggle}
             >
               <ChevronDown size={16} />
@@ -76,54 +53,30 @@ export function ContextPanel({
 
       {collapsed ? null : (
         <>
-      <SegmentedTabs
-        ariaLabel="上下文补充类型"
-        options={intentOptions}
-        value={intent}
-        onChange={handleIntentChange}
-        className="intent-tabs"
-      />
+          <div className="question-box quiet">
+            <strong>从指定节点重放主流程</strong>
+            <p>选择一个 Agent 后，系统会从该节点重新执行，并顺序刷新下游报告与复核结果。</p>
+          </div>
 
-      {intent === "REQUEST_RERUN" ? null : (
-        <textarea
-          value={value}
-          onChange={(event) => onValueChange(event.target.value)}
-          placeholder="请输入补充背景、范围调整、证据材料或报告修订要求"
-          rows={4}
-        />
-      )}
+          <label className="context-target">
+            目标 Agent
+            <select value={effectiveTargetAgent ?? ""} onChange={(event) => onTargetAgentChange(event.target.value as AgentName || undefined)}>
+              <option value="">请选择要重跑的 Agent</option>
+              {rerunnableAgents.map((agent) => (
+                <option key={agent} value={agent}>
+                  {AGENT_LABELS[agent]}
+                </option>
+              ))}
+            </select>
+          </label>
 
-      {intent === "REQUEST_RERUN" ? (
-        <label className="context-target">
-          目标 Agent
-          <select value={effectiveTargetAgent ?? ""} onChange={(event) => onTargetAgentChange(event.target.value as AgentName || undefined)}>
-            <option value="">请选择要重跑的 Agent</option>
-            {rerunnableAgents.map((agent) => (
-              <option key={agent} value={agent}>
-                {AGENT_LABELS[agent]}
-              </option>
-            ))}
-          </select>
-        </label>
-      ) : null}
+          <button className="primary-button" type="button" onClick={onSubmit} disabled={disabled || submitDisabled}>
+            <RotateCcw size={15} /> 开始重跑
+          </button>
 
-      <button className="primary-button" type="button" onClick={onSubmit} disabled={disabled || submitDisabled}>
-        <SendHorizontal size={15} /> {intent === "REQUEST_RERUN" ? "重跑 Agent" : "提交补充"}
-      </button>
-
-      <div className="context-list">
-        {messages.length ? (
-          messages.map((message) => (
-            <div className="context-item" key={message.id}>
-              <span>{message.intent}</span>
-              <p>{message.content}</p>
-              <small>{message.role} · {formatTime(message.createdAt)}</small>
-            </div>
-          ))
-        ) : (
-          <p className="muted-text">暂无上下文补充。后端接口接入后，用户的调整范围、补资料和重跑指令会沉淀在这里。</p>
-        )}
-      </div>
+          <p className="muted-text">
+            范围调整请在上方“范围确认”中完成，资料补充请使用下方“补充资料”。
+          </p>
         </>
       )}
     </section>

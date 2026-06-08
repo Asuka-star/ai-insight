@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from "react";
-import { ClipboardList, DownloadCloud, FileSpreadsheet, MessageSquareText, Pencil, Plus, RefreshCw, Save, Trash2, UploadCloud, X } from "lucide-react";
+import { useEffect, useMemo, useState, type Dispatch, type SetStateAction } from "react";
+import { ClipboardList, DownloadCloud, FileSpreadsheet, MessageSquareText, Pencil, Plus, RefreshCw, Save, Trash2, X } from "lucide-react";
 import type { InterviewGuide, InterviewInsight, Questionnaire, SurveyInsight, SurveyQuestion, SurveyResultImport } from "../types";
 
 interface ResearchDesignPanelProps {
@@ -14,7 +14,6 @@ interface ResearchDesignPanelProps {
   pendingRevisionReason?: string;
   onDownloadTemplate?: () => void;
   onSaveQuestionnaire?: (questionnaire: Questionnaire) => void;
-  onImportSurveyResults?: (file: File) => void;
   onApplyResearchInputs?: () => void;
 }
 
@@ -30,10 +29,8 @@ export function ResearchDesignPanel({
   pendingRevisionReason,
   onDownloadTemplate,
   onSaveQuestionnaire,
-  onImportSurveyResults,
   onApplyResearchInputs
 }: ResearchDesignPanelProps) {
-  const importInputRef = useRef<HTMLInputElement>(null);
   const [editingQuestionnaire, setEditingQuestionnaire] = useState(false);
   const [draftQuestionnaire, setDraftQuestionnaire] = useState<Questionnaire>(() => editableQuestionnaire(questionnaire));
   const questions = questionnaire?.questions ?? [];
@@ -62,25 +59,9 @@ export function ResearchDesignPanel({
           <button type="button" className="secondary-button" onClick={onDownloadTemplate} disabled={disabled || busy || !questions.length}>
             <DownloadCloud size={15} /> 导出调研问卷
           </button>
-          <button type="button" className="primary-button" onClick={() => importInputRef.current?.click()} disabled={disabled || busy}>
-            <UploadCloud size={15} /> 导入调研数据
-          </button>
           <p className="research-format-note">
-            导出 TXT：腾讯问卷内容 DSL，可粘贴到腾讯问卷建题；导入 CSV/XLSX：每行一份答卷，表头保留题干。
+            导出 TXT：腾讯问卷内容 DSL，可粘贴到腾讯问卷建题
           </p>
-          <input
-            ref={importInputRef}
-            type="file"
-            accept=".csv,.xlsx,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            hidden
-            onChange={(event) => {
-              const file = event.currentTarget.files?.[0];
-              event.currentTarget.value = "";
-              if (file) {
-                onImportSurveyResults?.(file);
-              }
-            }}
-          />
         </div>
       </section>
 

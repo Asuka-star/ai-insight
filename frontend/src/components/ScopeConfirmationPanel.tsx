@@ -1,5 +1,5 @@
 import { memo, useCallback, useEffect, useState } from "react";
-import { CheckCircle2, ClipboardCheck, PlayCircle, RefreshCw } from "lucide-react";
+import { CheckCircle2, ClipboardCheck, Pencil, PlayCircle, RefreshCw, X } from "lucide-react";
 import type { AnalysisRun, ClarificationItem, ClarificationOption } from "../types";
 import { displayRunPhase, resolveRunPhase } from "../utils";
 import { CollapsiblePanel } from "./CollapsiblePanel";
@@ -20,10 +20,15 @@ interface ScopeConfirmationPanelProps {
   onSourceUrlsChange: (value: string) => void;
   onMaxReviewReworkAttemptsChange: (value: number) => void;
   onApplyClarificationOption: (field: string, values: string[]) => void;
+  onManualEdit?: () => void;
   onCreate: () => void;
   onReclarify: () => void;
   onConfirm: () => void;
   onStart: () => void;
+  editing?: boolean;
+  requiresReclarify?: boolean;
+  onStartEditing?: () => void;
+  onCancelEditing?: () => void;
   processingResourceCount?: number;
   creating: boolean;
   busy: boolean;
@@ -47,10 +52,15 @@ export function ScopeConfirmationPanel({
   onSourceUrlsChange,
   onMaxReviewReworkAttemptsChange,
   onApplyClarificationOption,
+  onManualEdit,
   onCreate,
   onReclarify,
   onConfirm,
   onStart,
+  editing = false,
+  requiresReclarify = false,
+  onStartEditing,
+  onCancelEditing,
   processingResourceCount = 0,
   creating,
   busy,
@@ -62,38 +72,40 @@ export function ScopeConfirmationPanel({
   const draft = run?.clarificationDraft;
   const questions = draft?.clarificationQuestions ?? [];
   const clarificationItems = draft?.clarificationItems ?? [];
-  const isConfirmed = Boolean(draft?.confirmed || localConfirmed);
+  const isConfirmed = Boolean(localConfirmed);
   const waitingForClarification = creating && !isConfirmed;
-  const pendingQuestions = isConfirmed || waitingForClarification ? [] : questions;
-  const pendingClarificationItems = isConfirmed || waitingForClarification
+  const pendingQuestions = isConfirmed || waitingForClarification || requiresReclarify ? [] : questions;
+  const pendingClarificationItems = isConfirmed || waitingForClarification || requiresReclarify
     ? []
     : clarificationItems.filter((item) => item.field !== "sourcePreferences");
   const phaseText = String(phase);
   const hasDraft = Boolean(run && draft);
   const hasClarificationRequests = pendingQuestions.length > 0 || pendingClarificationItems.length > 0;
   const agentRunning = Boolean(run?.steps?.some((step) => step.status === "RUNNING"));
-  const scopeEditable = !busy && !creating && !agentRunning && (!run || ["DRAFT", "AWAITING_CONFIRMATION", "PENDING"].includes(phaseText));
-  // Clarifier 没产出待确认项时，用户无需再点一次“确认范围”，启动前会直接保存当前结构化范围。
-  const canStartWithoutConfirm = hasDraft && !hasClarificationRequests;
   const mainAnalysisStarted = Boolean(run?.steps?.some((step) => step.agentName !== "CLARIFIER"));
+  const scopeEditable = !busy && !creating && !agentRunning && (!run || !mainAnalysisStarted || editing);
+  // Clarifier 没产出待确认项时，用户无需再点一次“确认范围”，启动前会直接保存当前结构化范围。
+  const canStartWithoutConfirm = hasDraft && !requiresReclarify && !hasClarificationRequests;
   const hasScopeInput = [industry, competitors, dimensions, outputGoal, sourceUrls].some((value) => value.trim());
   const canCreate = !run && !busy && !creating && hasScopeInput;
-  const canConfirm = Boolean(run) && hasClarificationRequests && !busy && !agentRunning && ["DRAFT", "AWAITING_CONFIRMATION", "PENDING"].includes(phaseText);
-  const canReclarify = Boolean(run) && !busy && !agentRunning && ["DRAFT", "AWAITING_CONFIRMATION", "PENDING"].includes(phaseText);
+  const canEditExistingScope = Boolean(run) && mainAnalysisStarted && !busy && !creating && !agentRunning;
+  const canConfirm = Boolean(run) && scopeEditable && hasClarificationRequests && !busy && !agentRunning;
+  const canReclarify = Boolean(run) && scopeEditable && !busy && !agentRunning;
   // 用户资源还在解析时不能开始主流程，避免 Agent 读取到空文本的 PROCESSING 占位来源。
   const canStart = Boolean(run)
     && !busy
     && !agentRunning
     && processingResourceCount === 0
-    && !mainAnalysisStarted
+    && scopeEditable
     && (isConfirmed || canStartWithoutConfirm)
-    && ["AWAITING_CONFIRMATION", "PENDING", "NEEDS_USER_INPUT"].includes(phaseText);
+    && ["AWAITING_CONFIRMATION", "PENDING", "NEEDS_USER_INPUT", "SUCCEEDED", "FAILED"].includes(phaseText);
   const summary = displayRunPhase(String(phase));
 
   const handleManualEdit = useCallback((update: () => void) => {
     setFormEditVersion((version) => version + 1);
+    onManualEdit?.();
     update();
-  }, []);
+  }, [onManualEdit]);
 
   return (
     <CollapsiblePanel
@@ -159,6 +171,11 @@ export function ScopeConfirmationPanel({
           <strong>等待范围确认内容</strong>
           <p>填写范围信息后，这里会展示待确认的问题和结构化范围。</p>
         </div>
+      ) : requiresReclarify ? (
+        <div className="question-box quiet">
+          <strong>请先重新澄清范围</strong>
+          <p>当前展示的是上一次分析留下的澄清草稿。编辑范围后，请先点击“重新澄清”生成新的确认内容。</p>
+        </div>
       ) : isConfirmed ? (
         <div className="question-box done">
           <strong>范围已确认</strong>
@@ -211,6 +228,16 @@ export function ScopeConfirmationPanel({
           </button>
         ) : (
           <>
+            {canEditExistingScope && !editing ? (
+              <button type="button" onClick={onStartEditing} disabled={!canEditExistingScope}>
+                <Pencil size={15} /> 编辑范围
+              </button>
+            ) : null}
+            {canEditExistingScope && editing ? (
+              <button type="button" onClick={onCancelEditing} disabled={busy || agentRunning}>
+                <X size={15} /> 取消编辑
+              </button>
+            ) : null}
             <button type="button" onClick={onReclarify} disabled={!canReclarify}>
               <RefreshCw size={15} /> 重新澄清
             </button>
@@ -230,8 +257,12 @@ export function ScopeConfirmationPanel({
         <p className="scope-hint"><ClipboardCheck size={14} /> 直接填写范围信息，生成确认内容后再启动分析。</p>
       ) : processingResourceCount > 0 ? (
         <p className="scope-hint"><ClipboardCheck size={14} /> {processingResourceCount} 个用户资源正在处理，完成后即可开始 Agent 分析。</p>
+      ) : canEditExistingScope && !editing ? (
+        <p className="scope-hint"><ClipboardCheck size={14} /> 当前范围为只读。点击“编辑范围”后可重新澄清并再次启动分析。</p>
+      ) : scopeEditable ? (
+        <p className="scope-hint"><ClipboardCheck size={14} /> 需要调整范围时，直接在这里修改并重新澄清或确认即可。</p>
       ) : !scopeEditable ? (
-        <p className="scope-hint"><ClipboardCheck size={14} /> 分析开始后范围已锁定，避免执行产物与分析范围不一致。</p>
+        <p className="scope-hint"><ClipboardCheck size={14} /> 当前任务正在执行中，执行完成后可重新编辑范围。</p>
       ) : null}
     </CollapsiblePanel>
   );

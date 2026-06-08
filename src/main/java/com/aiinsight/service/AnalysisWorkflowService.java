@@ -474,14 +474,20 @@ public class AnalysisWorkflowService {
     public AnalysisRun addEvidence(UUID runId, AddUserEvidenceRequest request) {
         AnalysisRun run = get(runId);
         ensureEvidenceAcceptable(run);
-        UserProvidedEvidence evidence = new UserProvidedEvidence(
-                request.getTitle(),
-                request.getSourceType(),
-                request.getContent(),
-                request.getUrl(),
-                request.isSensitive());
-        String citationKey = attachUserEvidence(run, evidence);
-        if (isResearchInputType(request.getSourceType())) {
+        String sourceType = normalizeUserEvidenceSourceType(request.getSourceType());
+        String citationKey;
+        if (containsIgnoreCase(sourceType, "url")) {
+            citationKey = attachUserUrlEvidence(run, request.getUrl());
+        } else {
+            UserProvidedEvidence evidence = new UserProvidedEvidence(
+                    defaultUserEvidenceTitle(sourceType, request.getTitle()),
+                    sourceType,
+                    requireEvidenceContent(runId, request.getContent(), sourceType),
+                    request.getUrl(),
+                    request.isSensitive());
+            citationKey = attachUserEvidence(run, evidence);
+        }
+        if (isResearchInputType(sourceType)) {
             refreshResearchInputInsights(run);
             markResearchInputPending(run, "新增调研资料 " + citationKey + " 待应用到分析链路");
         }
@@ -871,8 +877,7 @@ public class AnalysisWorkflowService {
 
     private void ensureRequirementEditable(AnalysisRun run) {
         if (run.getStatus() == AnalysisStatus.RUNNING || run.getStatus() == AnalysisStatus.REVIEWING
-                || run.getStatus() == AnalysisStatus.REVISING || run.getStatus() == AnalysisStatus.SUCCEEDED
-                || run.getStatus() == AnalysisStatus.CANCELLED) {
+                || run.getStatus() == AnalysisStatus.REVISING || run.getStatus() == AnalysisStatus.CANCELLED) {
             throw new InvalidRunStateException(run.getId(), "requirement cannot be updated from " + run.getStatus());
         }
     }
@@ -1014,6 +1019,52 @@ public class AnalysisWorkflowService {
         run.getResearchPackage().setCollectedAt(Instant.now());
         run.getRecommendedActions().add("用户证据 " + citationKey + " 已加入。可重跑 RESEARCHER 或下游 Agent 刷新输出。");
         return citationKey;
+    }
+
+    private String attachUserUrlEvidence(AnalysisRun run, String url) {
+        if (!StringUtils.hasText(url)) {
+            throw new InvalidRunStateException(run.getId(), "url evidence requires a public URL");
+        }
+        String citationKey = nextCitationKey(run);
+        EvidenceSource source = sourceCollectionService.fromUserProvidedUrl(citationKey, url.trim());
+        if (source == null) {
+            throw new InvalidRunStateException(run.getId(), "failed to fetch usable content from url evidence");
+        }
+        run.getEvidenceSources().add(source);
+        if ("FETCHED".equalsIgnoreCase(source.getCollectionStatus()) && StringUtils.hasText(source.getRawText())) {
+            run.getEvidenceChunks().addAll(evidenceEmbeddingService.embedChunks(evidenceChunkService.chunk(List.of(source))));
+        }
+        run.getResearchPackage().setSources(new ArrayList<>(run.getEvidenceSources()));
+        run.getResearchPackage().setCollectedAt(Instant.now());
+        run.getRecommendedActions().add("公开来源 " + citationKey + " 已加入。可重跑 RESEARCHER 或下游 Agent 刷新输出。");
+        if (!"FETCHED".equalsIgnoreCase(source.getCollectionStatus())) {
+            run.getRecommendedActions().add("公开来源 " + citationKey + " 需要关注：" + source.getSnippet());
+        }
+        return citationKey;
+    }
+
+    private String normalizeUserEvidenceSourceType(String sourceType) {
+        return StringUtils.hasText(sourceType) ? sourceType.trim() : "note";
+    }
+
+    private String defaultUserEvidenceTitle(String sourceType, String requestedTitle) {
+        if (StringUtils.hasText(requestedTitle)) {
+            return requestedTitle.trim();
+        }
+        if (containsIgnoreCase(sourceType, "interview")) {
+            return "访谈摘要";
+        }
+        if (containsIgnoreCase(sourceType, "survey")) {
+            return "问卷摘要";
+        }
+        return "用户补充资料";
+    }
+
+    private String requireEvidenceContent(UUID runId, String content, String sourceType) {
+        if (!StringUtils.hasText(content)) {
+            throw new InvalidRunStateException(runId, sourceType + " evidence requires text content");
+        }
+        return content.trim();
     }
 
     private void keepOnlyLatestSurveyEvidence(AnalysisRun run, EvidenceSource latestSource, UserProvidedEvidence latestEvidence) {

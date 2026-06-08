@@ -17,8 +17,8 @@ import {
   Sparkles,
   UploadCloud
 } from "lucide-react";
-import type { AgentStep, AnalysisContextMessage, AgentName, AnalysisArtifact, ArtifactLocateRequest, AnalysisRun, AnalysisRunMetrics, AnalysisRunSummary, ContextIntent, Questionnaire, ReviewFinding, RunEvent } from "./types";
-import { addContext, addEvidence, clarifyRequirement, createRun, deleteDocument, deleteRun, downloadSurveyTemplate, getRun, getRunMetrics, importSurveyResults, listRunSummaries, rerunAgent, startAnalysis, updateRequirement, updateSurveyQuestionnaire, uploadDocument } from "./api";
+import type { AgentStep, AgentName, AnalysisArtifact, ArtifactLocateRequest, AnalysisRun, AnalysisRunMetrics, AnalysisRunSummary, Questionnaire, ReviewFinding, RunEvent } from "./types";
+import { addEvidence, clarifyRequirement, createRun, deleteDocument, deleteRun, downloadSurveyTemplate, getRun, getRunMetrics, importSurveyResults, listRunSummaries, rerunAgent, startAnalysis, updateRequirement, updateSurveyQuestionnaire, uploadDocument } from "./api";
 import { AGENT_LABELS, ARTIFACT_LABELS } from "./constants";
 import {
   calculateRunMetrics,
@@ -35,21 +35,19 @@ import { StatusBadge } from "./components/StatusBadge";
 import { AgentTimeline } from "./components/AgentTimeline";
 import { EvidencePanel } from "./components/EvidencePanel";
 import { ReviewPanel } from "./components/ReviewPanel";
-import { ResearchCollectionPanel } from "./components/ResearchCollectionPanel";
 import { ResearchDesignPanel } from "./components/ResearchDesignPanel";
 import { CollapsiblePanel } from "./components/CollapsiblePanel";
 import { TraceDrawer } from "./components/TraceDrawer";
 import { ScopeConfirmationPanel } from "./components/ScopeConfirmationPanel";
 import { ContextPanel } from "./components/ContextPanel";
-import { ArtifactVersionsPanel } from "./components/ArtifactVersionsPanel";
 import { HistoryDrawer } from "./components/HistoryDrawer";
 import { DeleteHistoryDialog } from "./components/DeleteHistoryDialog";
 import { ResourcePackDrawer } from "./components/ResourcePackDrawer";
 import { SegmentedTabs, type SegmentedTabOption } from "./components/SegmentedTabs";
 
-type MainView = "dag" | "research" | "report" | "schema" | "matrix" | "versions";
+type MainView = "dag" | "research" | "report" | "schema" | "matrix" | "swot";
 type LeftPanelId = "scope" | "context" | "evidence";
-type RightPanelId = "timeline" | "collection" | "evidence" | "review" | "metrics";
+type RightPanelId = "timeline" | "evidence" | "review" | "metrics";
 type BackendStatus = "checking" | "connected" | "failed";
 
 const MIN_LEFT_RAIL_WIDTH = 240;
@@ -77,6 +75,7 @@ export function App() {
   const initialScopeDraftRef = useRef(readScopeDraft());
   const workspaceRef = useRef<HTMLElement>(null);
   const leftRailRef = useRef<HTMLElement>(null);
+  const surveyImportInputRef = useRef<HTMLInputElement>(null);
   const [run, setRun] = useState<AnalysisRun | null>(null);
   const [serverRunMetrics, setServerRunMetrics] = useState<AnalysisRunMetrics | null>(null);
   const [historyRuns, setHistoryRuns] = useState<AnalysisRunSummary[]>([]);
@@ -91,19 +90,16 @@ export function App() {
   const [selectedCitationKey, setSelectedCitationKey] = useState<string>();
   const [selectedCitationRequestId, setSelectedCitationRequestId] = useState(0);
   const [selectedClaimId, setSelectedClaimId] = useState<string>();
+  const [selectedClaimRequestId, setSelectedClaimRequestId] = useState(0);
   const [artifactLocateRequest, setArtifactLocateRequest] = useState<ArtifactLocateRequest>();
   const [selectedAgent, setSelectedAgent] = useState<AgentName | null>(null);
   const [traceDrawerAgent, setTraceDrawerAgent] = useState<AgentName | null>(null);
-  const [contextText, setContextText] = useState("");
-  const [contextIntent, setContextIntent] = useState<ContextIntent>("ADJUST_SCOPE");
   const [contextTargetAgent, setContextTargetAgent] = useState<AgentName>();
   const [rerunningAgent, setRerunningAgent] = useState<AgentName | null>(null);
   const [surveyBusy, setSurveyBusy] = useState(false);
-  const [evidenceTitle, setEvidenceTitle] = useState("");
-  const [evidenceSourceType, setEvidenceSourceType] = useState("note");
+  const [evidenceSourceType, setEvidenceSourceType] = useState("url");
   const [evidenceUrl, setEvidenceUrl] = useState("");
   const [evidenceContent, setEvidenceContent] = useState("");
-  const [evidenceSensitive, setEvidenceSensitive] = useState(false);
   const [isAddingEvidence, setIsAddingEvidence] = useState(false);
   const [documentFile, setDocumentFile] = useState<File | null>(null);
   const [documentTitle, setDocumentTitle] = useState("");
@@ -112,7 +108,6 @@ export function App() {
   const [documentNotes, setDocumentNotes] = useState("");
   const [isUploadingDocument, setIsUploadingDocument] = useState(false);
   const [documentInputKey, setDocumentInputKey] = useState(0);
-  const [localContextMessages, setLocalContextMessages] = useState<AnalysisContextMessage[]>([]);
   const [mainView, setMainView] = useState<MainView>("dag");
   const [collapsedLeftPanels, setCollapsedLeftPanels] = useState<Record<LeftPanelId, boolean>>({
     scope: false,
@@ -121,12 +116,13 @@ export function App() {
   });
   const [collapsedRightPanels, setCollapsedRightPanels] = useState<Record<RightPanelId, boolean>>({
     timeline: true,
-    collection: false,
     evidence: false,
     review: false,
     metrics: true
   });
   const [localScopeConfirmed, setLocalScopeConfirmed] = useState(false);
+  const [scopeEditMode, setScopeEditMode] = useState(false);
+  const [scopeNeedsReclarify, setScopeNeedsReclarify] = useState(false);
   const [eventMessage, setEventMessage] = useState("等待填写范围确认");
   const [backendStatus, setBackendStatus] = useState<BackendStatus>("checking");
   const [isCreating, setIsCreating] = useState(false);
@@ -143,7 +139,16 @@ export function App() {
   const refreshTimerRef = useRef<number>();
   const refreshTimerRunIdRef = useRef<string>();
   const workspaceRequestTokenRef = useRef(0);
-  // Requirement may change without changing run.id, for example after ADJUST_SCOPE context.
+  const handleMainViewChange = useCallback((nextView: MainView) => {
+    if (nextView !== "schema") {
+      setSelectedClaimId(undefined);
+    }
+    if (nextView !== "report") {
+      setArtifactLocateRequest(undefined);
+    }
+    setMainView(nextView);
+  }, []);
+  // Requirement may change without changing run.id after re-clarify or requirement updates.
   // Keep a narrow sync key so the editable scope form follows backend scope updates.
   const scopeSyncKey = useMemo(() => {
     if (!run?.id) return "";
@@ -186,8 +191,9 @@ export function App() {
       setSelectedAgent(null);
       setRerunningAgent(null);
       setPendingClarificationRunId(undefined);
+      setScopeEditMode(false);
+      setScopeNeedsReclarify(false);
       setMainView("dag");
-      setLocalContextMessages([]);
       setEventMessage("历史会话已恢复");
       setHistoryOpen(false);
       setHistoryRuns((runs) => upsertHistorySummary(runs, summaryFromRun(latest)));
@@ -432,6 +438,10 @@ export function App() {
     return [...(run?.artifacts ?? [])].reverse().find((artifact) => artifact.type === "COMPETITIVE_MATRIX");
   }, [run?.artifacts]);
 
+  const swotArtifact = useMemo(() => {
+    return [...(run?.artifacts ?? [])].reverse().find((artifact) => artifact.type === "SWOT_ANALYSIS");
+  }, [run?.artifacts]);
+
   useEffect(() => {
     if (selectedArtifact && selectedArtifact.id !== selectedArtifactId) {
       setSelectedArtifactId(selectedArtifact.id);
@@ -452,6 +462,19 @@ export function App() {
     setMaxReviewReworkAttempts(run.maxReviewReworkAttempts ?? 1);
     setLocalScopeConfirmed(Boolean(run.clarificationDraft?.confirmed));
   }, [scopeSyncKey]);
+
+  const restoreScopeFormFromRun = useCallback((sourceRun: AnalysisRun | null) => {
+    if (!sourceRun?.id) return;
+    const scope = sourceRun.clarificationDraft ?? sourceRun.requirement;
+    if (!scope) return;
+    setIndustry(scope.industry ?? "");
+    setCompetitors((scope.competitors ?? []).join(", "));
+    setDimensions((scope.dimensions ?? []).join(", "));
+    setOutputGoal(scope.outputGoal ?? "");
+    setSourceUrls((scope.sourceUrls ?? []).join("\n"));
+    setMaxReviewReworkAttempts(sourceRun.maxReviewReworkAttempts ?? 1);
+    setLocalScopeConfirmed(Boolean(sourceRun.clarificationDraft?.confirmed));
+  }, []);
 
   useEffect(() => {
     if (run?.id) return;
@@ -508,13 +531,6 @@ export function App() {
   useEffect(() => {
     resetLeftRailHorizontalScroll();
   }, [collapsedLeftPanels, resetLeftRailHorizontalScroll]);
-
-  useEffect(() => {
-    if (contextIntent === "ADD_EVIDENCE") {
-      setContextIntent("ADJUST_SCOPE");
-      setContextText("");
-    }
-  }, [contextIntent]);
 
   const handleSelectCitation = useCallback((citationKey: string) => {
     setSelectedCitationKey(citationKey);
@@ -594,16 +610,14 @@ export function App() {
     setSelectedCitationKey(undefined);
     setSelectedClaimId(undefined);
     setSelectedAgent(null);
-    setContextText("");
-    setContextIntent("ADJUST_SCOPE");
     setContextTargetAgent(undefined);
     setRerunningAgent(null);
-    setEvidenceTitle("");
+    setEvidenceSourceType("url");
     setEvidenceUrl("");
     setEvidenceContent("");
-    setEvidenceSensitive(false);
-    setLocalContextMessages([]);
     setLocalScopeConfirmed(false);
+    setScopeEditMode(false);
+    setScopeNeedsReclarify(false);
     setIsCreating(false);
     setIsHistoryLoading(false);
     setMainView("dag");
@@ -657,7 +671,6 @@ export function App() {
     setSelectedCitationKey(undefined);
     setSelectedAgent(null);
     setPendingClarificationRunId(undefined);
-    setLocalContextMessages([]);
     try {
       const competitorList = splitList(competitors);
       const dimensionList = splitList(dimensions);
@@ -681,6 +694,8 @@ export function App() {
       requestRunRefresh(nextRun.id);
       removeScopeDraft();
       window.localStorage.setItem(CURRENT_RUN_STORAGE_KEY, nextRun.id);
+      setScopeEditMode(false);
+      setScopeNeedsReclarify(false);
       setHistoryRuns((runs) => upsertHistorySummary(runs, summaryFromRun(nextRun)));
     } catch (error) {
       if (requestToken !== workspaceRequestTokenRef.current) return;
@@ -710,6 +725,8 @@ export function App() {
       });
       if (requestToken !== workspaceRequestTokenRef.current) return;
       setRun(nextRun);
+      setScopeEditMode(true);
+      setScopeNeedsReclarify(false);
       setEventMessage("分析范围已确认");
     } catch (error) {
       if (requestToken !== workspaceRequestTokenRef.current) return;
@@ -738,6 +755,25 @@ export function App() {
     setEventMessage("已应用澄清选项，请确认范围");
   }, []);
 
+  const handleManualScopeEdit = useCallback(() => {
+    setLocalScopeConfirmed(false);
+    setScopeNeedsReclarify(true);
+  }, []);
+
+  const handleStartScopeEdit = useCallback(() => {
+    setScopeEditMode(true);
+    setLocalScopeConfirmed(false);
+    setScopeNeedsReclarify(true);
+    setEventMessage("已进入范围编辑，可重新澄清后再次启动分析");
+  }, []);
+
+  const handleCancelScopeEdit = useCallback(() => {
+    restoreScopeFormFromRun(run);
+    setScopeEditMode(false);
+    setScopeNeedsReclarify(false);
+    setEventMessage("已取消范围编辑");
+  }, [restoreScopeFormFromRun, run]);
+
   async function handleReclarifyScope() {
     if (!run) return;
     const requestToken = ++workspaceRequestTokenRef.current;
@@ -755,6 +791,8 @@ export function App() {
       });
       if (requestToken !== workspaceRequestTokenRef.current) return;
       setRun(nextRun);
+      setScopeEditMode(true);
+      setScopeNeedsReclarify(false);
       setLocalScopeConfirmed(Boolean(nextRun.clarificationDraft?.confirmed));
       setEventMessage("范围已重新澄清");
     } catch (error) {
@@ -770,7 +808,6 @@ export function App() {
   async function handleStartAnalysis() {
     if (!run) return;
     if (runMutationDisabled) return;
-    if (hasMainAnalysisStarted(run)) return;
     const requestToken = ++workspaceRequestTokenRef.current;
     setIsScopeBusy(true);
     setEventMessage("正在保存范围并启动 Agent 分析");
@@ -787,6 +824,8 @@ export function App() {
       const nextRun = await startAnalysis(run.id);
       if (requestToken !== workspaceRequestTokenRef.current) return;
       setRun(nextRun);
+      setScopeEditMode(false);
+      setScopeNeedsReclarify(false);
       setMainView("dag");
     } catch (error) {
       if (requestToken !== workspaceRequestTokenRef.current) return;
@@ -802,82 +841,37 @@ export function App() {
     }
   }
 
-  async function handleSubmitContext() {
-    if (!run) return;
-    const trimmedContextText = contextText.trim();
-    const rerunTargetAgent = contextIntent === "REQUEST_RERUN" && contextTargetAgent !== "CLARIFIER"
-      ? contextTargetAgent
-      : undefined;
-    if (contextIntent === "REQUEST_RERUN" && contextTargetAgent === "CLARIFIER") {
+  async function handleSubmitRerun() {
+    if (!contextTargetAgent || contextTargetAgent === "CLARIFIER") {
       setContextTargetAgent(undefined);
       return;
     }
-    if (contextIntent === "REQUEST_RERUN") {
-      if (!rerunTargetAgent) return;
-      setContextText("");
-      await handleRerun(rerunTargetAgent);
-      return;
-    }
-    if (!rerunTargetAgent && !trimmedContextText) return;
-    const runId = run.id;
-    if (!trimmedContextText) {
-      if (rerunTargetAgent) {
-        await handleRerun(rerunTargetAgent);
-      }
-      return;
-    }
-    // 先乐观展示用户补充，后端写入成功后再以服务端状态为准，保证弱网下交互不显得断档。
-    const optimisticMessage: AnalysisContextMessage = {
-      id: `local-${Date.now()}`,
-      role: "USER",
-      intent: contextIntent,
-      content: trimmedContextText,
-      targetAgent: rerunTargetAgent,
-      createdAt: new Date().toISOString()
-    };
-    setLocalContextMessages((messages) => [optimisticMessage, ...messages]);
-    setContextText("");
-    setEventMessage("正在提交上下文补充");
-    try {
-      const nextRun = await addContext(runId, {
-        content: optimisticMessage.content,
-        intent: contextIntent,
-        targetAgent: rerunTargetAgent
-      });
-      if (!isCurrentWorkspaceRun(runId)) return;
-      setRun(nextRun);
-      setLocalContextMessages([]);
-      if (rerunTargetAgent) {
-        await handleRerun(rerunTargetAgent);
-        return;
-      }
-      setEventMessage("上下文已写入任务");
-    } catch (error) {
-      if (!isCurrentWorkspaceRun(runId)) return;
-      setEventMessage(error instanceof Error ? `上下文提交失败，已在前端暂存：${error.message}` : "上下文提交失败，已在前端暂存");
-    }
+    await handleRerun(contextTargetAgent);
   }
 
   async function handleAddEvidence() {
-    if (!run || runMutationDisabled || !evidenceTitle.trim() || !evidenceContent.trim()) return;
+    if (!run || runMutationDisabled) return;
+    const normalizedType = evidenceSourceType.toLowerCase();
+    const normalizedUrl = evidenceUrl.trim();
+    const normalizedContent = evidenceContent.trim();
+    if (normalizedType === "url" && !normalizedUrl) return;
+    if (normalizedType === "interview" && !normalizedContent) return;
+    if (normalizedType === "survey") return;
     const runId = run.id;
     setIsAddingEvidence(true);
-    setEventMessage("正在加入用户资料");
+    setEventMessage(normalizedType === "url" ? "正在加入公开来源" : "正在加入访谈资料");
     try {
       const nextRun = await addEvidence(runId, {
-        title: evidenceTitle.trim(),
-        sourceType: evidenceSourceType,
-        content: evidenceContent.trim(),
-        url: evidenceUrl.trim() || undefined,
-        sensitive: evidenceSensitive
+        sourceType: normalizedType,
+        content: normalizedType === "interview" ? normalizedContent : undefined,
+        url: normalizedType === "url" ? normalizedUrl : undefined
       });
       if (!isCurrentWorkspaceRun(runId)) return;
       setRun(nextRun);
-      setEvidenceTitle("");
+      setEvidenceSourceType("url");
       setEvidenceUrl("");
       setEvidenceContent("");
-      setEvidenceSensitive(false);
-      setEventMessage("用户资料已加入证据链");
+      setEventMessage(normalizedType === "url" ? "公开来源已加入证据链" : "访谈资料已加入证据链");
     } catch (error) {
       if (!isCurrentWorkspaceRun(runId)) return;
       setEventMessage(error instanceof Error ? `资料加入失败：${error.message}` : "资料加入失败");
@@ -945,7 +939,6 @@ export function App() {
       const nextRun = await importSurveyResults(runId, file);
       if (!isCurrentWorkspaceRun(runId)) return;
       setRun(nextRun);
-      setMainView("research");
       setHistoryRuns((runs) => upsertHistorySummary(runs, summaryFromRun(nextRun)));
       setEventMessage("问卷结果已导入为待应用调研数据，点击“应用并重跑 Extractor”后刷新分析结论");
     } catch (error) {
@@ -961,7 +954,7 @@ export function App() {
 
   async function handleApplyResearchInputs() {
     if (!run || runMutationDisabled || surveyBusy || rerunningAgent) return;
-    setMainView("dag");
+    handleMainViewChange("dag");
     await handleRerun("EXTRACTOR");
   }
 
@@ -1049,8 +1042,10 @@ export function App() {
     const targetReportArtifact = reportArtifactForFinding(finding, reportArtifacts, reportDisplayArtifact);
 
     if (locationType === "CLAIM" && finding.claimId) {
+      setArtifactLocateRequest(undefined);
       setSelectedClaimId(finding.claimId);
-      setMainView("schema");
+      setSelectedClaimRequestId((requestId) => requestId + 1);
+      handleMainViewChange("schema");
       setEventMessage(`已定位到结构化结论 ${finding.claimId}`);
       return;
     }
@@ -1067,27 +1062,33 @@ export function App() {
         claimText: claim?.content,
         citationKey: effectiveCitationKey
       }));
-      setMainView("report");
+      handleMainViewChange("report");
       setEventMessage(`已定位到报告${finding.paragraphIndex !== undefined ? `段落 ${finding.paragraphIndex}` : ""}${finding.claimId ? `，关联结论 ${finding.claimId}` : ""}`);
       return;
     }
 
     if (locationType === "EVIDENCE_SOURCE" && effectiveCitationKey) {
+      setArtifactLocateRequest(undefined);
+      setSelectedClaimId(undefined);
       handleSelectCitation(effectiveCitationKey);
       setEventMessage(`已定位到证据 [${effectiveCitationKey}]`);
       return;
     }
 
     if (locationType === "SCHEMA") {
-      setMainView("schema");
+      setArtifactLocateRequest(undefined);
+      setSelectedClaimId(undefined);
+      handleMainViewChange("schema");
       setEventMessage("已打开结构化信息");
       return;
     }
 
     if (targetReportArtifact) {
+      setArtifactLocateRequest(undefined);
+      setSelectedClaimId(undefined);
       setSelectedArtifactId(targetReportArtifact.id);
       setArtifactPinned(true);
-      setMainView("report");
+      handleMainViewChange("report");
       setEventMessage("已打开关联报告");
     }
   }
@@ -1191,7 +1192,7 @@ export function App() {
     { value: "research", label: "问卷访谈" },
     { value: "schema", label: "结构化信息" },
     { value: "matrix", label: "竞品矩阵" },
-    { value: "versions", label: "全部产物" }
+    { value: "swot", label: "SWOT 分析" }
   ];
 
   return (
@@ -1240,10 +1241,15 @@ export function App() {
             onSourceUrlsChange={setSourceUrls}
             onMaxReviewReworkAttemptsChange={setMaxReviewReworkAttempts}
             onApplyClarificationOption={handleApplyClarificationOption}
+            onManualEdit={handleManualScopeEdit}
             onCreate={handleCreateRun}
             onReclarify={handleReclarifyScope}
             onConfirm={handleConfirmRequirement}
             onStart={handleStartAnalysis}
+            editing={scopeEditMode}
+            requiresReclarify={scopeNeedsReclarify}
+            onStartEditing={handleStartScopeEdit}
+            onCancelEditing={handleCancelScopeEdit}
             processingResourceCount={processingResourceCount}
             creating={pendingClarification}
             busy={isScopeBusy}
@@ -1252,15 +1258,11 @@ export function App() {
           />
 
           <ContextPanel
-            messages={[...localContextMessages, ...(run?.contextMessages ?? [])]}
-            value={contextText}
-            intent={contextIntent}
+            runReady={Boolean(run)}
             targetAgent={contextTargetAgent}
             disabled={runMutationDisabled}
-            onValueChange={setContextText}
-            onIntentChange={setContextIntent}
             onTargetAgentChange={setContextTargetAgent}
-            onSubmit={handleSubmitContext}
+            onSubmit={handleSubmitRerun}
             collapsed={collapsedLeftPanels.context}
             onToggle={() => toggleLeftPanel("context")}
           />
@@ -1275,40 +1277,77 @@ export function App() {
             className="evidence-input-panel"
           >
             <label>
-              标题
-              <input value={evidenceTitle} onChange={(event) => setEvidenceTitle(event.target.value)} placeholder="例如：内部访谈摘要" />
+              类型
+              <select value={evidenceSourceType} onChange={(event) => setEvidenceSourceType(event.target.value)} disabled={!run || runMutationDisabled}>
+                <option value="url">公开 URL</option>
+                <option value="interview">访谈</option>
+                <option value="survey">问卷</option>
+              </select>
             </label>
-            <div className="evidence-input-grid">
-              <label>
-                类型
-                <select value={evidenceSourceType} onChange={(event) => setEvidenceSourceType(event.target.value)}>
-                  <option value="note">手动资料</option>
-                  <option value="url">公开 URL</option>
-                  <option value="interview">访谈</option>
-                  <option value="survey">问卷</option>
-                </select>
-              </label>
-              <label className="check-row evidence-sensitive">
-                <input type="checkbox" checked={evidenceSensitive} onChange={(event) => setEvidenceSensitive(event.target.checked)} />
-                内部敏感资料
-              </label>
-            </div>
-            <label>
-              URL
-              <input value={evidenceUrl} onChange={(event) => setEvidenceUrl(event.target.value)} placeholder="可选，公开网页或资料链接" />
-            </label>
-            <label>
-              内容
-              <textarea
-                value={evidenceContent}
-                onChange={(event) => setEvidenceContent(event.target.value)}
-                placeholder="粘贴访谈、问卷、网页摘要或手动资料内容"
-                rows={4}
-              />
-            </label>
-            <button className="primary-button" type="button" onClick={handleAddEvidence} disabled={runMutationDisabled || !evidenceTitle.trim() || !evidenceContent.trim()}>
-              <UploadCloud size={15} /> 加入证据链
-            </button>
+
+            {evidenceSourceType === "url" ? (
+              <>
+                <label>
+                  公开 URL
+                  <input
+                    value={evidenceUrl}
+                    onChange={(event) => setEvidenceUrl(event.target.value)}
+                    placeholder="请输入完整 http/https 地址，例如 https://www.notion.com/product"
+                    disabled={!run || runMutationDisabled}
+                  />
+                </label>
+                <p className="muted-text">一次提交一个公开网页 URL。系统会尝试抓取正文并加入证据链。</p>
+                <button className="primary-button" type="button" onClick={handleAddEvidence} disabled={runMutationDisabled || !evidenceUrl.trim()}>
+                  <UploadCloud size={15} /> 加入公开来源
+                </button>
+              </>
+            ) : null}
+
+            {evidenceSourceType === "interview" ? (
+              <>
+                <label>
+                  访谈内容
+                  <textarea
+                    value={evidenceContent}
+                    onChange={(event) => setEvidenceContent(event.target.value)}
+                    placeholder="请输入一段访谈摘要、用户反馈或原始访谈记录"
+                    rows={5}
+                    disabled={!run || runMutationDisabled}
+                  />
+                </label>
+                <p className="muted-text">直接粘贴文本即可，系统会把它作为访谈证据并参与后续结构化洞察。</p>
+                <button className="primary-button" type="button" onClick={handleAddEvidence} disabled={runMutationDisabled || !evidenceContent.trim()}>
+                  <UploadCloud size={15} /> 加入访谈资料
+                </button>
+              </>
+            ) : null}
+
+            {evidenceSourceType === "survey" ? (
+              <>
+                <p className="muted-text">导入 CSV 或 XLSX 问卷结果文件。每行一份答卷，表头保留题干。</p>
+                <button
+                  className="primary-button"
+                  type="button"
+                  onClick={() => surveyImportInputRef.current?.click()}
+                  disabled={runMutationDisabled || surveyBusy}
+                >
+                  <UploadCloud size={15} /> 导入问卷结果
+                </button>
+                <input
+                  ref={surveyImportInputRef}
+                  type="file"
+                  accept=".csv,.xlsx,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                  hidden
+                  onChange={(event) => {
+                    const file = event.currentTarget.files?.[0];
+                    event.currentTarget.value = "";
+                    if (file) {
+                      void handleImportSurveyResults(file);
+                    }
+                  }}
+                />
+              </>
+            ) : null}
           </CollapsiblePanel>
 
         </aside>
@@ -1332,7 +1371,7 @@ export function App() {
               </div>
               <span className="event-line">{eventMessage}</span>
             </div>
-            <SegmentedTabs ariaLabel="主工作区视图" options={mainTabs} value={mainView} onChange={setMainView} />
+            <SegmentedTabs ariaLabel="主工作区视图" options={mainTabs} value={mainView} onChange={handleMainViewChange} />
 
             {mainView === "dag" ? (
               <Suspense fallback={<PanelLoading label="正在加载工作流视图" />}>
@@ -1354,7 +1393,6 @@ export function App() {
                   pendingRevisionReason={run?.pendingResearchInputReason}
                   onDownloadTemplate={handleDownloadSurveyTemplate}
                   onSaveQuestionnaire={handleSaveQuestionnaire}
-                  onImportSurveyResults={handleImportSurveyResults}
                   onApplyResearchInputs={handleApplyResearchInputs}
                 />
               </div>
@@ -1365,8 +1403,9 @@ export function App() {
                 <div className="artifact-toolbar">
                   <span>报告产物</span>
                   <select
-                    value={selectedArtifact?.id ?? ""}
+                    value={reportDisplayArtifact?.id ?? ""}
                     onChange={(event) => {
+                      setArtifactLocateRequest(undefined);
                       setSelectedArtifactId(event.target.value);
                       setArtifactPinned(true);
                     }}
@@ -1399,6 +1438,7 @@ export function App() {
                     claims={run?.claims ?? []}
                     transitions={run?.workflowTransitions ?? []}
                     selectedClaimId={selectedClaimId}
+                    selectedClaimRequestId={selectedClaimRequestId}
                     onSelectCitation={handleSelectCitation}
                   />
                 </Suspense>
@@ -1413,17 +1453,12 @@ export function App() {
               </div>
             ) : null}
 
-            {mainView === "versions" ? (
-              <ArtifactVersionsPanel
-                artifacts={run?.artifacts ?? []}
-                selectedArtifactId={selectedArtifact?.id}
-                onSelectArtifact={(artifactId) => {
-                  const artifact = run?.artifacts.find((item) => item.id === artifactId);
-                  setSelectedArtifactId(artifactId);
-                  setArtifactPinned(true);
-                  setMainView(artifact && isReportArtifact(artifact) ? "report" : "versions");
-                }}
-              />
+            {mainView === "swot" ? (
+              <div className="tab-content">
+                <Suspense fallback={<PanelLoading label="正在加载 SWOT 阅读器" />}>
+                  <ArtifactViewer artifact={swotArtifact} sources={run?.evidenceSources ?? []} onSelectCitation={handleSelectCitation} />
+                </Suspense>
+              </div>
             ) : null}
           </section>
         </section>
@@ -1454,12 +1489,6 @@ export function App() {
               pendingClarification={pendingClarification}
             />
           </CollapsiblePanel>
-
-          <ResearchCollectionPanel
-            plan={run?.researchPackage?.researchCollectionPlan}
-            collapsed={collapsedRightPanels.collection}
-            onToggle={() => toggleRightPanel("collection")}
-          />
 
           <EvidencePanel
             sources={run?.evidenceSources ?? []}
@@ -1812,10 +1841,6 @@ function safeParseRunSnapshot(event: MessageEvent<string>): AnalysisRun | null {
 
 function isCurrentWorkspaceRun(runId: string) {
   return window.localStorage.getItem(CURRENT_RUN_STORAGE_KEY) === runId;
-}
-
-function hasMainAnalysisStarted(run: AnalysisRun) {
-  return run.steps.some((step) => step.agentName !== "CLARIFIER");
 }
 
 function isClarificationSettled(run: AnalysisRun) {

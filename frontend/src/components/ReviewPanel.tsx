@@ -315,13 +315,13 @@ function qualityProfile(groupedFindings: Record<ReviewFinding["severity"], Revie
 
 function rerunLabel(agent: AgentName) {
   if (agent === "RESEARCHER") return "\u8865\u91c7\u8bc1\u636e";
-  if (agent === "ANALYST") return "\u91cd\u505a\u7ed3\u6784\u5316\u5206\u6790";
+  if (agent === "ANALYST") return "\u91cd\u505a\u7ade\u54c1\u5206\u6790";
   if (agent === "WRITER") return "\u4fee\u8ba2\u62a5\u544a\u8349\u7a3f";
   return `\u91cd\u8dd1 ${AGENT_LABELS[agent] ?? agent}`;
 }
 
 function locateLabel(finding: ReviewFinding, citationKey?: string, locationType?: ReviewFinding["locationType"]) {
-  if (locationType === "REPORT_PARAGRAPH") return "\u5b9a\u4f4d\u62a5\u544a";
+  if (locationType === "REPORT_PARAGRAPH") return "\u5b9a\u4f4d\u6bb5\u843d";
   if (locationType === "CLAIM" || finding.claimId) return "\u5b9a\u4f4d\u7ed3\u8bba";
   if (locationType === "EVIDENCE_SOURCE" || citationKey) return "\u5b9a\u4f4d\u8bc1\u636e";
   if (locationType === "SCHEMA") return "\u67e5\u770b\u7ed3\u6784\u5316";

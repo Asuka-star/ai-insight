@@ -62,6 +62,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
@@ -71,6 +72,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
@@ -88,6 +90,8 @@ public class AnalystNode implements AgentNode {
     private final ClaimEvidenceBinder claimEvidenceBinder = new ClaimEvidenceBinder();
     private final AnalysisProductRenderer analysisProductRenderer = new AnalysisProductRenderer();
     private static final TermOptions CLAIM_DEDUP_TERM_OPTIONS = TermOptions.basic(2);
+    @Value("${aiinsight.analyst.llm-product-rendering-enabled:true}")
+    private boolean llmProductRenderingEnabled = false;
 
     @Override
     public AgentName name() {
@@ -124,7 +128,9 @@ public class AnalystNode implements AgentNode {
                 : draft.claims().subList(0, MAX_CLAIMS);
         boundedClaims = stabilizeClaimIds(previousClaims, boundedClaims);
         boundedClaims = applyAnalystRepairGuard(run, boundedClaims);
-        AnalysisDraft finalDraft = renderDraftFromClaims(run, boundedClaims);
+        AnalysisDraft finalDraft = llmAvailable && llmProductRenderingEnabled
+                ? renderDraftFromClaimsWithLlm(run, boundedClaims)
+                : renderDraftFromClaims(run, boundedClaims);
         List<String> citationKeys = artifactCitationKeys(run, finalDraft);
         run.getClaims().addAll(boundedClaims);
         run.addArtifact(new AnalysisArtifact(
@@ -166,10 +172,41 @@ public class AnalystNode implements AgentNode {
             run.getRecommendedActions().add("LLM 分析生成失败，已使用规则分析兜底：" + reasons);
             return null;
         }
+        return new AnalysisDraft(effectiveClaims, fallback.matrixMarkdown(), fallback.swotMarkdown());
+    }
+
+    private AnalysisDraft renderDraftFromClaimsWithLlm(AnalysisRun run, List<AnalysisClaim> claims) {
+        AnalysisDraft deterministic = renderDraftFromClaims(run, claims);
+        AnalystContext context = analystContext(run);
+        CompletableFuture<LlmSubtaskResult<String>> matrixTask = CompletableFuture.supplyAsync(
+                AgentTraceContext.wrap(() -> LlmSubtaskSupport.runSubtask(
+                        "Analyst",
+                        "matrix",
+                        () -> generateMatrixWithLlm(context, claims)
+                ))
+        );
+        CompletableFuture<LlmSubtaskResult<String>> swotTask = CompletableFuture.supplyAsync(
+                AgentTraceContext.wrap(() -> LlmSubtaskSupport.runSubtask(
+                        "Analyst",
+                        "swot",
+                        () -> generateSwotWithLlm(context, claims)
+                ))
+        );
+        CompletableFuture.allOf(matrixTask, swotTask).join();
+
+        LlmSubtaskResult<String> matrixResult = matrixTask.join();
+        LlmSubtaskResult<String> swotResult = swotTask.join();
+        List<LlmSubtaskResult<?>> results = List.of(matrixResult, swotResult);
+        LlmSubtaskSupport.recordSubtaskTrace("Parallel Analyst product subtasks", results);
+        results.stream()
+                .filter(result -> !result.succeeded())
+                .forEach(result -> run.getRecommendedActions().add(
+                        "LLM 分析产物子任务失败，已对该字段使用规则兜底：" + result.name() + " - " + result.errorMessage()));
+
         return new AnalysisDraft(
-                effectiveClaims,
-                analysisProductRenderer.renderMatrix(context.run(), effectiveClaims),
-                analysisProductRenderer.renderSwot(effectiveClaims)
+                claims,
+                matrixResult.succeeded() ? sanitizeCitationText(run, matrixResult.value()) : deterministic.matrixMarkdown(),
+                swotResult.succeeded() ? sanitizeCitationText(run, swotResult.value()) : deterministic.swotMarkdown()
         );
     }
 
@@ -259,6 +296,130 @@ public class AnalystNode implements AgentNode {
             throw new IllegalStateException("无法解析 claims JSON");
         }
         return parsed.claims();
+    }
+
+    private String generateMatrixWithLlm(AnalystContext context, List<AnalysisClaim> claims) {
+        String prompt = """
+                你是竞品分析工作流中的矩阵生成子任务。请基于已给出的结构化 claims 生成最终矩阵 Markdown。
+                只允许使用下方 claims、画像摘要和证据索引中的信息，不要引入新的事实、竞品、引用或判断。
+                输出约束：
+                1. 只输出 JSON，不要输出 Markdown 代码块。
+                2. JSON 结构必须为 {"matrixMarkdown":"..."}。
+                3. matrixMarkdown 必须是 Markdown，保留内联引用 [S1] 形式。
+                4. 优先使用 MEDIUM/HIGH、已绑定 evidenceIds 的 claims；证据不足内容只能进入“待验证结论”区域。
+                5. 主矩阵优先总结 placement=MATRIX 的 claims，并保持输出聚焦，不要附加“结构化结论明细”分区。
+                6. 不要编造新的 citationKey；引用只能来自 claims 中已有 evidenceIds。
+                7. 结构建议保留三部分：主矩阵、用户指定维度覆盖、待验证结论。
+
+                分析需求：
+                %s
+
+                结构化 claims：
+                %s
+
+                竞品画像摘要：
+                %s
+
+                证据索引：
+                %s
+
+                按维度整理的证据覆盖：
+                %s
+
+                研究补充上下文：
+                %s
+                """.formatted(
+                context.requirementSummary(),
+                claimsBlock(claims),
+                context.profileBlock(),
+                context.evidenceIndex(),
+                context.dimensionEvidence(),
+                context.researchContext()
+        );
+        String raw = llmClient.complete(new ChatRequest(
+                List.of(
+                        ChatMessage.system("你是严谨的竞品矩阵生成 Agent，必须严格复用已给出的 claims 与引用。"),
+                        ChatMessage.user(prompt)
+                ),
+                ChatOptions.analyst()
+        ).tagged(name().name(), "matrix"));
+        String markdown = parseMarkdownArtifact(raw, "matrixMarkdown");
+        if (!hasText(markdown)) {
+            throw new IllegalStateException("无法解析 matrixMarkdown");
+        }
+        return markdown;
+    }
+
+    private String generateSwotWithLlm(AnalystContext context, List<AnalysisClaim> claims) {
+        String prompt = """
+                你是竞品分析工作流中的 SWOT 生成子任务。请基于已给出的结构化 claims 生成最终 SWOT Markdown。
+                只允许使用下方 claims、画像摘要和证据索引中的信息，不要引入新的事实、竞品、引用或判断。
+                输出约束：
+                1. 只输出 JSON，不要输出 Markdown 代码块。
+                2. JSON 结构必须为 {"swotMarkdown":"..."}。
+                3. swotMarkdown 必须是 Markdown 表格，保留内联引用 [S1] 形式。
+                4. 必须尝试填充 Strengths、Weaknesses、Opportunities、Threats 四个象限；若某象限确无足够 claims，再写“暂无结构化结论”。
+                5. 可以基于 claims 的类型、内容和证据强度做保守归类，不要求机械遵循 recommendedPlacement。
+                6. 当 STRENGTH/WEAKNESS/COMPARISON/FACT 等高置信度 claims 明确表达优势或短板时，可用于 SWOT 对应象限。
+                7. LOW、UNVERIFIED 或无 evidenceIds 的内容不能写成确定性 SWOT 判断。
+                8. 不要编造新的 citationKey；引用只能来自 claims 中已有 evidenceIds。
+
+                分析需求：
+                %s
+
+                结构化 claims：
+                %s
+
+                竞品画像摘要：
+                %s
+
+                证据索引：
+                %s
+
+                按维度整理的证据覆盖：
+                %s
+
+                研究补充上下文：
+                %s
+                """.formatted(
+                context.requirementSummary(),
+                claimsBlock(claims),
+                context.profileBlock(),
+                context.evidenceIndex(),
+                context.dimensionEvidence(),
+                context.researchContext()
+        );
+        String raw = llmClient.complete(new ChatRequest(
+                List.of(
+                        ChatMessage.system("你是严谨的 SWOT 生成 Agent，必须严格复用已给出的 claims 与引用。"),
+                        ChatMessage.user(prompt)
+                ),
+                ChatOptions.analyst()
+        ).tagged(name().name(), "swot"));
+        String markdown = parseMarkdownArtifact(raw, "swotMarkdown");
+        if (!hasText(markdown)) {
+            throw new IllegalStateException("无法解析 swotMarkdown");
+        }
+        return markdown;
+    }
+
+    private String parseMarkdownArtifact(String raw, String fieldName) {
+        if (!hasText(raw)) {
+            return null;
+        }
+        try {
+            JsonNode root = objectMapper.readTree(JsonResponseExtractor.extractJsonValue(raw));
+            JsonNode field = root.get(fieldName);
+            if (field != null && field.isTextual() && hasText(field.asText())) {
+                return field.asText().trim();
+            }
+            if (root.isTextual() && hasText(root.asText())) {
+                return root.asText().trim();
+            }
+        } catch (IllegalArgumentException | JsonProcessingException ignored) {
+            // Fall back to plain text below.
+        }
+        return raw.trim();
     }
 
     private AnalysisDraft parseAnalysisDraft(String raw, AnalysisRun run) {

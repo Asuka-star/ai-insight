@@ -341,6 +341,10 @@ public class SourceCollectionService {
         return source;
     }
 
+    public EvidenceSource fromUserProvidedUrl(String citationKey, String url) {
+        return fromUserUrl(citationKey, url);
+    }
+
     private String firstPartyResearchNote(String sourceType) {
         if (containsIgnoreCase(sourceType, "interview")) {
             return "First-party interview evidence; keep roles, pains, verbatims and decision signals before report generation.";
