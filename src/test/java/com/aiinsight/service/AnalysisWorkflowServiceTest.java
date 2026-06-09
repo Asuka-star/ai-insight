@@ -32,6 +32,7 @@ import com.aiinsight.model.run.AnalysisRequirement;
 import com.aiinsight.model.run.AnalysisRun;
 import com.aiinsight.model.run.EvidenceSource;
 import com.aiinsight.model.run.ReviewRepairDelta;
+import com.aiinsight.model.run.UserProvidedEvidence;
 import com.aiinsight.model.run.WorkflowTransition;
 import com.aiinsight.model.review.ReviewDecision;
 import com.aiinsight.model.review.ReviewFinding;
@@ -422,7 +423,7 @@ class AnalysisWorkflowServiceTest {
     }
 
     @Test
-    void deletesResearchInsightWithoutRemovingOriginalEvidence() {
+    void deletesResearchInsightAndOriginalResearchEvidence() {
         AnalysisRunRepository repository = new TestAnalysisRunRepository();
         AnalysisWorkflowService service = newService(repository, new AnalysisEventBroker(), new TaskExecutorAdapter(Runnable::run), null);
         AnalysisRun run = new AnalysisRun(new AnalysisRequirement(
@@ -434,17 +435,38 @@ class AnalysisWorkflowServiceTest {
                 List.of()
         ));
         run.setStatus(AnalysisStatus.SUCCEEDED);
-        run.getEvidenceSources().add(new EvidenceSource("S105", "访谈对象 A", "", "访谈纪要"));
+        UserProvidedEvidence interviewEvidence = new UserProvidedEvidence(
+                "访谈对象 A",
+                "interview",
+                "访谈原文",
+                "",
+                false);
+        String interviewUrl = "user-evidence://" + interviewEvidence.getId();
+        run.getEvidenceSources().add(new EvidenceSource("S105", "访谈对象 A", interviewUrl, "user_interview", "访谈纪要", "访谈原文", ""));
+        run.getEvidenceChunks().add(new EvidenceChunk("S105-C1", "S105", 0, "访谈对象 A", interviewUrl, "访谈原文"));
+        run.getUserProvidedEvidence().add(interviewEvidence);
         InterviewInsight interviewInsight = new InterviewInsight();
         interviewInsight.setId("interview-1");
         interviewInsight.setEvidenceId("S105");
         interviewInsight.setScenario("跨文件重构");
         run.getResearchPackage().getInterviewInsights().add(interviewInsight);
+        run.getResearchPackage().getSources().addAll(run.getEvidenceSources());
+        UserProvidedEvidence surveyEvidence = new UserProvidedEvidence(
+                "问卷结果",
+                "survey",
+                "问卷原文",
+                "",
+                false);
+        String surveyUrl = "user-evidence://" + surveyEvidence.getId();
+        run.getEvidenceSources().add(new EvidenceSource("S106", "问卷结果", surveyUrl, "user_survey", "问卷摘要", "问卷原文", ""));
+        run.getEvidenceChunks().add(new EvidenceChunk("S106-C1", "S106", 0, "问卷结果", surveyUrl, "问卷原文"));
+        run.getUserProvidedEvidence().add(surveyEvidence);
         SurveyInsight surveyInsight = new SurveyInsight();
         surveyInsight.setEvidenceId("S106");
         surveyInsight.setTitle("问卷结果");
         surveyInsight.getEvidenceIds().add("S106");
         run.getResearchPackage().getSurveyInsights().add(surveyInsight);
+        run.getResearchPackage().getSources().add(run.getEvidenceSources().get(1));
         repository.save(run);
 
         AnalysisRun afterInterviewDelete = service.deleteResearchInsight(run.getId(), "interview", "interview-1");
@@ -452,13 +474,27 @@ class AnalysisWorkflowServiceTest {
         assertThat(afterInterviewDelete.getResearchPackage().getInterviewInsights()).isEmpty();
         assertThat(afterInterviewDelete.getEvidenceSources())
                 .extracting(EvidenceSource::getCitationKey)
-                .contains("S105");
+                .doesNotContain("S105")
+                .contains("S106");
+        assertThat(afterInterviewDelete.getEvidenceChunks())
+                .extracting(EvidenceChunk::getSourceCitationKey)
+                .doesNotContain("S105");
+        assertThat(afterInterviewDelete.getUserProvidedEvidence())
+                .doesNotContain(interviewEvidence);
 
         AnalysisRun afterSurveyDelete = service.deleteResearchInsight(run.getId(), "survey", "S106");
 
         assertThat(afterSurveyDelete.getResearchPackage().getSurveyInsights()).isEmpty();
+        assertThat(afterSurveyDelete.getEvidenceSources())
+                .extracting(EvidenceSource::getCitationKey)
+                .doesNotContain("S106");
+        assertThat(afterSurveyDelete.getEvidenceChunks())
+                .extracting(EvidenceChunk::getSourceCitationKey)
+                .doesNotContain("S106");
+        assertThat(afterSurveyDelete.getUserProvidedEvidence())
+                .doesNotContain(surveyEvidence);
         assertThat(afterSurveyDelete.getRecommendedActions())
-                .anyMatch(action -> action.contains("结构化洞察已删除"));
+                .anyMatch(action -> action.contains("后续重跑不会再使用这些资料"));
     }
 
     @Test
@@ -1066,10 +1102,8 @@ class AnalysisWorkflowServiceTest {
                 .filteredOn(source -> source.getSourceType() != null && source.getSourceType().contains("interview"))
                 .singleElement()
                 .satisfies(source -> assertThat(source.getRawText()).contains("价格和审计能力"));
-        assertThat(latest.getResearchPackage().getSurveyInsights())
-                .singleElement()
-                .satisfies(insight -> assertThat(insight.getSampleSize()).isEqualTo("2 responses"));
-        assertThat(latest.getResearchPackage().getInterviewInsights()).isNotEmpty();
+        assertThat(latest.getResearchPackage().getSurveyInsights()).isEmpty();
+        assertThat(latest.getResearchPackage().getInterviewInsights()).isEmpty();
         assertThat(latest.isPendingResearchInputRevision()).isTrue();
         assertThat(latest.getUserProvidedEvidence())
                 .filteredOn(evidence -> evidence.getSourceType() != null && evidence.getSourceType().contains("survey"))
@@ -1405,7 +1439,7 @@ class AnalysisWorkflowServiceTest {
                 .filteredOn(artifact -> artifact.getType() == ArtifactType.REPORT_DRAFT)
                 .last()
                 .satisfies(artifact -> assertThat(artifact.getContent())
-                        .contains("结构化结论", "竞品矩阵摘要", "SWOT 摘要", "价格策略", "权限治理", "AI 搜索", "用户评价", "产品规划建议")
+                        .contains("结构化结论", "竞品能力矩阵", "机会与风险摘要", "价格策略", "权限治理", "AI 搜索", "用户评价", "产品规划建议")
                         .doesNotContain("当前竞品普遍围绕协作、知识沉淀、权限管理和 AI 内容生成建设能力"));
     }
 
@@ -1431,7 +1465,7 @@ class AnalysisWorkflowServiceTest {
                 .filteredOn(artifact -> artifact.getType() == ArtifactType.REPORT_DRAFT)
                 .last()
                 .satisfies(artifact -> {
-                    assertThat(artifact.getContent()).contains("结构化结论", "竞品矩阵摘要", "SWOT 摘要", "[S1]");
+                    assertThat(artifact.getContent()).contains("结构化结论", "竞品能力矩阵", "机会与风险摘要", "[S1]");
                     assertThat(artifact.getCitationKeys()).containsExactly("S1");
                 });
     }

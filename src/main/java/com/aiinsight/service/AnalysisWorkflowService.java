@@ -570,26 +570,104 @@ public class AnalysisWorkflowService {
         if (normalizedId.isBlank()) {
             throw new InvalidRunStateException(runId, "research insight id is required");
         }
+        Set<String> removedEvidenceIds = new LinkedHashSet<>();
         boolean removed;
         if ("interview".equals(normalizedType)) {
-            removed = run.getResearchPackage().getInterviewInsights().removeIf(insight ->
-                    normalizedId.equals(insight.getId()) || normalizedId.equals(insight.getEvidenceId()));
+            removed = run.getResearchPackage().getInterviewInsights().removeIf(insight -> {
+                boolean matched = normalizedId.equals(insight.getId()) || normalizedId.equals(insight.getEvidenceId());
+                if (matched) {
+                    collectInsightEvidenceIds(removedEvidenceIds, insight.getEvidenceId());
+                }
+                return matched;
+            });
         } else if ("survey".equals(normalizedType)) {
-            removed = run.getResearchPackage().getSurveyInsights().removeIf(insight ->
-                    normalizedId.equals(String.valueOf(insight.getId()))
-                            || normalizedId.equals(insight.getEvidenceId())
-                            || insight.getEvidenceIds().contains(normalizedId));
+            removed = run.getResearchPackage().getSurveyInsights().removeIf(insight -> {
+                boolean matched = normalizedId.equals(String.valueOf(insight.getId()))
+                        || normalizedId.equals(insight.getEvidenceId())
+                        || safeList(insight.getEvidenceIds()).contains(normalizedId);
+                if (matched) {
+                    collectInsightEvidenceIds(removedEvidenceIds, insight.getEvidenceId());
+                    collectInsightEvidenceIds(removedEvidenceIds, insight.getEvidenceIds());
+                }
+                return matched;
+            });
         } else {
             throw new InvalidRunStateException(runId, "unsupported research insight type: " + insightType);
         }
         if (!removed) {
             throw new InvalidRunStateException(runId, "research insight not found: " + insightId);
         }
+        boolean prunedOriginalEvidence = pruneResearchEvidenceForDeletedInsights(run, removedEvidenceIds);
         run.getResearchPackage().setCollectedAt(Instant.now());
-        run.getRecommendedActions().add("结构化洞察已删除。若需要恢复，可重新应用调研资料或重跑 EXTRACTOR。");
+        if (prunedOriginalEvidence) {
+            markResearchInputPending(run, "结构化洞察及其调研原始证据已删除。后续重跑不会再使用这些资料。");
+        } else {
+            run.getRecommendedActions().add("结构化洞察已删除。未找到可同步移除的调研原始证据。");
+        }
         repository.save(run);
         eventBroker.publish(run, "research_insight_deleted", "结构化洞察已删除");
         return run;
+    }
+
+    private void collectInsightEvidenceIds(Set<String> evidenceIds, String evidenceId) {
+        if (StringUtils.hasText(evidenceId)) {
+            evidenceIds.add(evidenceId.trim());
+        }
+    }
+
+    private void collectInsightEvidenceIds(Set<String> evidenceIds, Collection<String> values) {
+        if (values == null) {
+            return;
+        }
+        values.forEach(value -> collectInsightEvidenceIds(evidenceIds, value));
+    }
+
+    private boolean pruneResearchEvidenceForDeletedInsights(AnalysisRun run, Set<String> evidenceIds) {
+        if (evidenceIds.isEmpty()) {
+            return false;
+        }
+        Set<String> removedCitationKeys = new LinkedHashSet<>();
+        Set<String> removedUrls = new LinkedHashSet<>();
+        run.getEvidenceSources().removeIf(source -> {
+            if (!evidenceIds.contains(source.getCitationKey()) || !isResearchInputType(source.getSourceType())) {
+                return false;
+            }
+            removedCitationKeys.add(source.getCitationKey());
+            if (StringUtils.hasText(source.getUrl())) {
+                removedUrls.add(source.getUrl());
+            }
+            return true;
+        });
+        if (removedCitationKeys.isEmpty() && removedUrls.isEmpty()) {
+            return false;
+        }
+        run.getEvidenceChunks().removeIf(chunk ->
+                removedCitationKeys.contains(chunk.getSourceCitationKey()) || removedUrls.contains(chunk.getUrl()));
+        run.getResearchPackage().getSources().removeIf(source ->
+                removedCitationKeys.contains(source.getCitationKey()) || removedUrls.contains(source.getUrl()));
+        run.getUserProvidedEvidence().removeIf(evidence -> removedUrls.contains(userProvidedEvidenceUrl(evidence)));
+        run.getResearchPackage().getSurveyResultImports().removeIf(result ->
+                safeList(result.getEvidenceIds()).stream().anyMatch(removedCitationKeys::contains));
+        run.getResearchPackage().getInterviewInsights().removeIf(insight -> removedCitationKeys.contains(insight.getEvidenceId()));
+        run.getResearchPackage().getSurveyInsights().removeIf(insight ->
+                removedCitationKeys.contains(insight.getEvidenceId())
+                        || safeList(insight.getEvidenceIds()).stream().anyMatch(removedCitationKeys::contains));
+        run.getResearchPackage().setSources(new ArrayList<>(run.getEvidenceSources()));
+        return true;
+    }
+
+    private String userProvidedEvidenceUrl(UserProvidedEvidence evidence) {
+        if (evidence == null) {
+            return "";
+        }
+        if (StringUtils.hasText(evidence.getUrl())) {
+            return evidence.getUrl();
+        }
+        return evidence.getId() == null ? "" : "user-evidence://" + evidence.getId();
+    }
+
+    private <T> List<T> safeList(List<T> values) {
+        return values == null ? List.of() : values;
     }
 
     public AnalysisRun addDocument(UUID runId,

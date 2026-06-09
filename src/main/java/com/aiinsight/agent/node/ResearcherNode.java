@@ -93,8 +93,8 @@ public class ResearcherNode implements AgentNode {
         run.getResearchPackage().setSources(new ArrayList<>(run.getEvidenceSources()));
         run.getResearchPackage().setMissingEvidenceTypes(new ArrayList<>(researchResult.missingEvidenceTypes()));
         run.getResearchPackage().setResearchPlan(buildResearchPlan(run, recollecting));
-        run.getResearchPackage().getInterviewInsights().clear();
-        run.getResearchPackage().getSurveyInsights().clear();
+        run.getResearchPackage().setInterviewInsights(new ArrayList<>());
+        run.getResearchPackage().setSurveyInsights(new ArrayList<>());
         run.getResearchPackage().setCollectedAt(Instant.now());
         researchCoverageService.refreshCoverage(run);
         AgentTraceContext.recordProcessSummary(researchResult.traceMarkdown());

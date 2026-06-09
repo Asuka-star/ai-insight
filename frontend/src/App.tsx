@@ -1002,7 +1002,7 @@ export function App() {
   async function handleDeleteResearchInsight(insightType: "survey" | "interview", insightId: string) {
     if (!run || runMutationDisabled || surveyBusy || !insightId) return;
     const label = insightType === "survey" ? "问卷洞察" : "访谈洞察";
-    const confirmed = window.confirm(`确定删除这条${label}吗？原始证据会保留。`);
+    const confirmed = window.confirm(`确定删除这条${label}吗？关联的调研原始证据也会移除，后续重跑不会再使用。`);
     if (!confirmed) return;
     const runId = run.id;
     const deletingKey = `${insightType}:${insightId}`;
@@ -1014,7 +1014,7 @@ export function App() {
       if (!isCurrentWorkspaceRun(runId)) return;
       setRun(nextRun);
       setHistoryRuns((runs) => upsertHistorySummary(runs, summaryFromRun(nextRun)));
-      setEventMessage(`${label}已删除，原始证据仍保留`);
+      setEventMessage(`${label}已删除，关联调研资料已从证据链移除`);
     } catch (error) {
       if (!isCurrentWorkspaceRun(runId)) return;
       setEventMessage(error instanceof Error ? `${label}删除失败：${error.message}` : `${label}删除失败`);
