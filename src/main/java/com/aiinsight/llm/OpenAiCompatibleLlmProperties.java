@@ -12,5 +12,9 @@ interface OpenAiCompatibleLlmProperties {
 
     String getModel();
 
+    default String getDisplayModel() {
+        return getModel();
+    }
+
     Duration getTimeout();
 }

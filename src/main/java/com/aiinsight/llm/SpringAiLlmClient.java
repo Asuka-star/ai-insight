@@ -47,7 +47,7 @@ class SpringAiLlmClient implements LlmClient {
     @Override
     public String complete(ChatRequest request) {
         ChatOptions options = request.getOptions() == null ? ChatOptions.deterministic() : request.getOptions();
-        AgentTraceContext.recordModelRequest(properties.getModel(), request);
+        AgentTraceContext.recordModelRequest(traceModelName(), request);
 
         long startedAt = System.currentTimeMillis();
         ChatResponse response = callModel(request, options, startedAt, 1);
@@ -58,7 +58,7 @@ class SpringAiLlmClient implements LlmClient {
             ChatOptions retryOptions = retryOptions(options);
             ChatRequest retryRequest = compactRetryRequest(request);
             log.warn("LLM response blank because output reached length limit; retrying compactly: model={}, agent={}, subtask={}, originalResponseBudget={}, retryResponseBudget={}, sentMaxTokens={}, generationMetadata={}",
-                    properties.getModel(),
+                    traceModelName(),
                     agentLogValue(request),
                     subtaskLogValue(request),
                     options.getMaxTokens(),
@@ -72,7 +72,7 @@ class SpringAiLlmClient implements LlmClient {
 
         if (response == null || response.getResult() == null || response.getResult().getOutput() == null) {
             log.warn("LLM response empty: model={}, agent={}, subtask={}, latencyMs={}, reason=response/result/output null, generationMetadata={}",
-                    properties.getModel(),
+                    traceModelName(),
                     agentLogValue(request),
                     subtaskLogValue(request),
                     System.currentTimeMillis() - startedAt,
@@ -82,7 +82,7 @@ class SpringAiLlmClient implements LlmClient {
         if (!hasText(content)) {
             Usage usage = usage(response);
             log.warn("LLM response blank: model={}, agent={}, subtask={}, latencyMs={}, promptTokens={}, completionTokens={}, generationMetadata={}",
-                    properties.getModel(),
+                    traceModelName(),
                     agentLogValue(request),
                     subtaskLogValue(request),
                     System.currentTimeMillis() - startedAt,
@@ -99,7 +99,7 @@ class SpringAiLlmClient implements LlmClient {
                 usage == null ? null : usage.getCompletionTokens()
         );
         log.info("LLM response completed: model={}, agent={}, subtask={}, latencyMs={}, promptTokens={}, completionTokens={}, generationMetadata={}",
-                properties.getModel(),
+                traceModelName(),
                 agentLogValue(request),
                 subtaskLogValue(request),
                 System.currentTimeMillis() - startedAt,
@@ -108,7 +108,7 @@ class SpringAiLlmClient implements LlmClient {
                 generationMetadata(response));
         if (SEND_MAX_TOKENS && usage != null && usage.getCompletionTokens() != null && usage.getCompletionTokens() >= effectiveOptions.getMaxTokens()) {
             log.warn("LLM response reached maxTokens: model={}, agent={}, subtask={}, maxTokens={}, promptTokens={}, completionTokens={}, generationMetadata={}",
-                    properties.getModel(),
+                    traceModelName(),
                     agentLogValue(request),
                     subtaskLogValue(request),
                     effectiveOptions.getMaxTokens(),
@@ -121,7 +121,7 @@ class SpringAiLlmClient implements LlmClient {
 
     private ChatResponse callModel(ChatRequest request, ChatOptions options, long startedAt, int attempt) {
         log.info("LLM request started: model={}, agent={}, subtask={}, attempt={}, messages={}, temperature={}, responseBudgetMode={}, sentMaxTokens={}",
-                properties.getModel(),
+                traceModelName(),
                 agentLogValue(request),
                 subtaskLogValue(request),
                 attempt,
@@ -140,7 +140,7 @@ class SpringAiLlmClient implements LlmClient {
             return chatModel.call(new Prompt(toSpringMessages(request.getMessages()), springAiOptions));
         } catch (RuntimeException ex) {
             log.error("LLM request failed: model={}, agent={}, subtask={}, attempt={}, latencyMs={}, exceptionType={}, message={}",
-                    properties.getModel(),
+                    traceModelName(),
                     agentLogValue(request),
                     subtaskLogValue(request),
                     attempt,
@@ -150,6 +150,10 @@ class SpringAiLlmClient implements LlmClient {
                     ex);
             throw ex;
         }
+    }
+
+    private String traceModelName() {
+        return hasText(properties.getDisplayModel()) ? properties.getDisplayModel() : properties.getModel();
     }
 
     private boolean shouldRetryBlankLength(ChatResponse response, ChatOptions options) {

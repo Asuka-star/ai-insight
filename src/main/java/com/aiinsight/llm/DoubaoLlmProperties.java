@@ -22,4 +22,9 @@ public class DoubaoLlmProperties implements OpenAiCompatibleLlmProperties {
     public String getModel() {
         return endpointId;
     }
+
+    @Override
+    public String getDisplayModel() {
+        return displayModel;
+    }
 }

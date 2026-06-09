@@ -53,6 +53,8 @@ type BackendStatus = "checking" | "connected" | "failed";
 const MIN_LEFT_RAIL_WIDTH = 240;
 const MAX_LEFT_RAIL_WIDTH = 420;
 const MIN_CENTER_WIDTH = 420;
+const STACKED_RIGHT_RAIL_BREAKPOINT = 1280;
+const STACKED_MIN_CENTER_WIDTH = 460;
 const MIN_RIGHT_RAIL_WIDTH = 280;
 const MAX_RIGHT_RAIL_WIDTH = 520;
 const RESIZE_LAYOUT_RESERVE = 72;
@@ -553,14 +555,17 @@ export function App() {
     const startX = event.clientX;
     const startLeftWidth = leftRailWidth;
     const startRightWidth = rightRailWidth;
+    const rightRailStacked = window.matchMedia(`(max-width: ${STACKED_RIGHT_RAIL_BREAKPOINT}px)`).matches;
     document.body.classList.add("is-resizing-rail");
 
     const handlePointerMove = (moveEvent: PointerEvent) => {
       const deltaX = moveEvent.clientX - startX;
       if (side === "left") {
+        const centerMinWidth = rightRailStacked ? STACKED_MIN_CENTER_WIDTH : MIN_CENTER_WIDTH;
+        const reservedRightRailWidth = rightRailStacked ? 0 : startRightWidth;
         const maxWidth = Math.min(
           MAX_LEFT_RAIL_WIDTH,
-          workspaceWidth - startRightWidth - MIN_CENTER_WIDTH - RESIZE_LAYOUT_RESERVE
+          workspaceWidth - reservedRightRailWidth - centerMinWidth - RESIZE_LAYOUT_RESERVE
         );
         setLeftRailWidth(clamp(startLeftWidth + deltaX, MIN_LEFT_RAIL_WIDTH, Math.max(MIN_LEFT_RAIL_WIDTH, maxWidth)));
         return;
