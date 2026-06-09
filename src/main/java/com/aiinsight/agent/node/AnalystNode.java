@@ -71,6 +71,8 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 @Component
@@ -86,6 +88,7 @@ public class AnalystNode implements AgentNode {
     private final ClaimEvidenceBinder claimEvidenceBinder = new ClaimEvidenceBinder();
     private final AnalysisProductRenderer analysisProductRenderer = new AnalysisProductRenderer();
     private static final TermOptions CLAIM_DEDUP_TERM_OPTIONS = TermOptions.basic(2);
+    private static final Pattern BARE_CITATION_KEY_PATTERN = Pattern.compile("\\bS\\d+\\b");
     @Value("${aiinsight.analyst.llm-product-rendering-enabled:true}")
     private boolean llmProductRenderingEnabled = false;
 
@@ -139,6 +142,7 @@ public class AnalystNode implements AgentNode {
                 : draft.claims().subList(0, MAX_CLAIMS);
         boundedClaims = stabilizeClaimIds(previousClaims, boundedClaims);
         boundedClaims = applyAnalystRepairGuard(run, boundedClaims);
+        boundedClaims = ensureUniqueClaimIds(boundedClaims);
         // 矩阵和 SWOT 不再由 Analyst 生成，改为 Writer 在报告正文中统一生成，避免过滤管线不同导致的不一致。
         run.getClaims().addAll(boundedClaims);
         return run;
@@ -705,6 +709,7 @@ public class AnalystNode implements AgentNode {
 
     private AnalysisClaim sanitizeClaim(AnalysisRun run, AnalysisClaim claim) {
         claim.setEvidenceIds(distinctKnownEvidenceIds(run, claim.getEvidenceIds()));
+        claim.setContent(removeUnknownBareCitationKeys(run, claim.getContent()));
         claim.setFactIds(distinctKnownFactIds(run, claim.getFactIds()));
         claim.setChunkKeys(distinctKnownChunkKeys(run, claim.getChunkKeys()));
         claim.setDimension(normalizeClaimDimension(run, claim.getDimension(), claim.getContent()));
@@ -763,6 +768,32 @@ public class AnalystNode implements AgentNode {
         boolean sharesEvidence = !previous.getEvidenceIds().isEmpty()
                 && previous.getEvidenceIds().stream().anyMatch(claim.getEvidenceIds()::contains);
         return sameCompetitor && sharesEvidence && claimContentOverlap(previous.getContent(), claim.getContent()) >= 0.65;
+    }
+
+    private List<AnalysisClaim> ensureUniqueClaimIds(List<AnalysisClaim> claims) {
+        LinkedHashSet<String> usedIds = new LinkedHashSet<>();
+        for (AnalysisClaim claim : claims) {
+            if (!hasText(claim.getId()) || usedIds.contains(claim.getId())) {
+                claim.setId("C-" + java.util.UUID.randomUUID());
+            }
+            usedIds.add(claim.getId());
+        }
+        return claims;
+    }
+
+    private String removeUnknownBareCitationKeys(AnalysisRun run, String text) {
+        if (!hasText(text)) {
+            return text;
+        }
+        Set<String> known = knownCitationKeys(run);
+        Matcher matcher = BARE_CITATION_KEY_PATTERN.matcher(text);
+        StringBuffer sanitized = new StringBuffer();
+        while (matcher.find()) {
+            String key = matcher.group();
+            matcher.appendReplacement(sanitized, known.contains(key) ? key : "evidence unavailable");
+        }
+        matcher.appendTail(sanitized);
+        return sanitized.toString();
     }
 
     private List<AnalysisClaim> applyAnalystRepairGuard(AnalysisRun run, List<AnalysisClaim> claims) {

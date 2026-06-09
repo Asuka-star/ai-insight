@@ -850,6 +850,71 @@ class AnalystNodeTest {
     }
 
     @Test
+    void analystEnsuresUniqueClaimIdsAndRemovesUnknownBareCitationMentions() {
+        LlmClient llmClient = new LlmClient() {
+            @Override
+            public boolean isAvailable() {
+                return true;
+            }
+
+            @Override
+            public String complete(ChatRequest request) {
+                return """
+                        {
+                          "claims": [
+                            {
+                              "type": "FACT",
+                              "content": "Cursor has official workflow evidence in S1.",
+                              "confidence": "HIGH",
+                              "supportStatus": "SUPPORTED",
+                              "recommendedPlacement": "MATRIX",
+                              "competitorNames": ["Cursor"],
+                              "evidenceIds": ["S1"]
+                            },
+                            {
+                              "type": "FACT",
+                              "content": "Claude Code terminal integration is described according to S7.",
+                              "confidence": "MEDIUM",
+                              "supportStatus": "UNVERIFIED",
+                              "recommendedPlacement": "VALIDATION_BACKLOG",
+                              "competitorNames": ["Claude Code"],
+                              "evidenceIds": ["S7"]
+                            }
+                          ]
+                        }
+                        """;
+            }
+        };
+        AnalysisRun run = new AnalysisRun(new AnalysisRequirement(
+                "Analyze Cursor and Claude Code",
+                "AI coding tools",
+                List.of("Cursor", "Claude Code"),
+                List.of("workflow"),
+                List.of("official_site"),
+                List.of()
+        ));
+        run.getEvidenceSources().add(firstPartyEvidence(
+                "S1",
+                "Cursor docs",
+                "https://example.test/cursor",
+                "Cursor has official workflow evidence."
+        ));
+        run.getClaims().add(previousClaim("C-DUP", "Cursor has official workflow evidence in S1.", "S1"));
+        run.getClaims().add(previousClaim("C-DUP", "Claude Code terminal integration is described according to S7.", "S7"));
+
+        new AnalystNode(llmClient, new ObjectMapper(), new FallbackAnalysisDraftFactory()).execute(run);
+
+        assertThat(run.getClaims()).hasSize(2);
+        assertThat(run.getClaims()).extracting(AnalysisClaim::getId).doesNotHaveDuplicates();
+        assertThat(run.getClaims().get(0).getContent()).contains("S1");
+        assertThat(run.getClaims().get(1).getContent())
+                .doesNotContain("S7")
+                .contains("evidence unavailable");
+        assertThat(run.getClaims().get(1).getEvidenceIds()).isEmpty();
+        assertThat(run.getClaims().get(1).getSupportStatus()).isEqualTo("UNVERIFIED");
+    }
+
+    @Test
     void prunesEvidenceFromOtherCompetitorsForSingleCompetitorClaim() {
         LlmClient llmClient = new LlmClient() {
             @Override

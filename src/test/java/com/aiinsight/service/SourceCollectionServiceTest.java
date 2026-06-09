@@ -48,7 +48,8 @@ class SourceCollectionServiceTest {
 
         assertThat(sources).hasSize(1);
         assertThat(sources.get(0).getCitationKey()).isEqualTo("S1");
-        assertThat(sources.get(0).getSourceType()).isEqualTo("user_source_url");
+        assertThat(sources.get(0).getSourceType()).isEqualTo("official_site");
+        assertThat(sources.get(0).getSourceAuthority()).isEqualTo("FIRST_PARTY_OFFICIAL");
         assertThat(sources.get(0).getCollectionStatus()).isEqualTo("FETCHED");
         assertThat(sources.get(0).getFreshness()).isEqualTo("LIVE_FETCHED");
         assertThat(sources.get(0).getRawText()).contains("AI collaboration");
@@ -1885,7 +1886,7 @@ class SourceCollectionServiceTest {
             public List<SearchResult> search(String query, int count) {
                 return List.of(new SearchResult(
                         "Search result for " + query,
-                        "https://search.example.test/" + query.toLowerCase().replaceAll("[^a-z0-9]+", "-"),
+                        "https://search.example.test/docs/" + query.toLowerCase().replaceAll("[^a-z0-9]+", "-"),
                         "Snippet for " + query + " with pricing, reviews, AI collaboration and permission details.",
                         query,
                         1
@@ -1922,7 +1923,7 @@ class SourceCollectionServiceTest {
                 }
                 return List.of(new SearchResult(
                         "Search result for " + query,
-                        "https://search.example.test/" + query.toLowerCase().replaceAll("[^a-z0-9]+", "-"),
+                        "https://search.example.test/docs/" + query.toLowerCase().replaceAll("[^a-z0-9]+", "-"),
                         "Snippet for " + query + " with CRM pricing and user feedback details.",
                         query,
                         1

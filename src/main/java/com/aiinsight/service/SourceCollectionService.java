@@ -246,6 +246,11 @@ public class SourceCollectionService {
         int index = maxCitationNumber(sources) + 1;
         for (UserProvidedEvidence evidence : run.getUserProvidedEvidence()) {
             EvidenceSource source = fromUserProvidedEvidence("S" + index, evidence);
+            if (isUrlExcluded(source.getUrl(), run)) {
+                log.info("User-provided evidence skipped because it was deleted from this run: url={}, sourceType={}",
+                        source.getUrl(), source.getSourceType());
+                continue;
+            }
             if (seenUrls.add(normalizeUrl(source.getUrl()))) {
                 sources.add(source);
                 index++;
@@ -1778,14 +1783,15 @@ public class SourceCollectionService {
         if (blockingIssue != null) {
             return new OfficialSeed(failedUserUrl(citationKey, url, "UNUSABLE_CONTENT", blockingIssue, page.getComplianceNote()), List.of());
         }
+        String sourceType = sourceTypeClassifier.classify(page.getUrl(), page.getTitle());
         EvidenceSource source = new EvidenceSource(
                 citationKey,
                 page.getTitle(),
                 page.getUrl(),
-                "user_source_url",
+                sourceType,
                 page.getStatus(),
                 "LIVE_FETCHED",
-                page.getSourceQuality(),
+                sourceTypeClassifier.qualityForUrl(page.getUrl(), sourceType, page.getStatus(), "LIVE_FETCHED"),
                 page.getFailureReason(),
                 snippet(page.getRawText()),
                 page.getRawText(),
@@ -1939,10 +1945,27 @@ public class SourceCollectionService {
             return;
         }
         String sourceType = StringUtils.hasText(source.getSourceType()) ? source.getSourceType() : "unknown";
+        if (sourceTypeClassifier.shouldRefreshFetchedMetadata(sourceType)
+                && "FETCHED".equalsIgnoreCase(source.getCollectionStatus())
+                && StringUtils.hasText(source.getUrl())
+                && isHttpUrl(source.getUrl())) {
+            sourceType = sourceTypeClassifier.classifyFetchedSource(source.getUrl(), source.getTitle(), sourceType);
+            source.setSourceType(sourceType);
+            source.setSourceQuality(sourceTypeClassifier.qualityForUrl(
+                    source.getUrl(),
+                    sourceType,
+                    source.getCollectionStatus(),
+                    source.getFreshness()));
+        }
         source.setSourceAuthority(sourceTypeClassifier.authorityFor(source.getUrl(), sourceType));
         source.setCanonicalHost(sourceTypeClassifier.canonicalHost(source.getUrl()));
         source.setPublisherName(sourceTypeClassifier.publisherName(source.getUrl()));
         source.setContentLanguage(inferContentLanguage(source.getTitle() + " " + source.getSnippet() + " " + source.getRawText()));
+    }
+
+    private boolean isHttpUrl(String url) {
+        return StringUtils.hasText(url)
+                && (url.startsWith("http://") || url.startsWith("https://"));
     }
 
     private String inferContentLanguage(String text) {

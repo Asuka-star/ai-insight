@@ -371,8 +371,8 @@ public class EvidenceSourceLifecycleService {
             }
             BindingContext context = BindingContext.forClaim(claim);
             BindingRepair repair = repairEvidenceIds(run, claim.getEvidenceIds(), sourcesByKey, context);
-            applyRepairToEvidenceIds(claim.getEvidenceIds(), repair, stats);
-            pruneChunkKeys(claim.getChunkKeys(), repair.removedCitationKeys(), stats);
+            claim.setEvidenceIds(repairedEvidenceIds(claim.getEvidenceIds(), repair, stats));
+            claim.setChunkKeys(prunedChunkKeys(claim.getChunkKeys(), repair.removedCitationKeys(), stats));
         }
     }
 
@@ -389,8 +389,8 @@ public class EvidenceSourceLifecycleService {
                 }
                 BindingContext context = BindingContext.forFact(fact);
                 BindingRepair repair = repairEvidenceIds(run, fact.getEvidenceIds(), sourcesByKey, context);
-                applyRepairToEvidenceIds(fact.getEvidenceIds(), repair, stats);
-                pruneChunkKeys(fact.getChunkKeys(), repair.removedCitationKeys(), stats);
+                fact.setEvidenceIds(repairedEvidenceIds(fact.getEvidenceIds(), repair, stats));
+                fact.setChunkKeys(prunedChunkKeys(fact.getChunkKeys(), repair.removedCitationKeys(), stats));
             }
         }
     }
@@ -402,7 +402,7 @@ public class EvidenceSourceLifecycleService {
             if (profile == null) {
                 continue;
             }
-            repairEvidenceList(run, profile.getEvidenceIds(), sourcesByKey, BindingContext.forProfile(profile), stats);
+            profile.setEvidenceIds(repairEvidenceList(run, profile.getEvidenceIds(), sourcesByKey, BindingContext.forProfile(profile), stats));
             if (profile.getFeatureTree() != null) {
                 for (FeatureNode node : safeList(profile.getFeatureTree().getRoots())) {
                     repairFeatureNodeBindings(run, node, sourcesByKey, stats);
@@ -410,16 +410,16 @@ public class EvidenceSourceLifecycleService {
             }
             PricingModel pricingModel = profile.getPricingModel();
             if (pricingModel != null) {
-                repairEvidenceList(run, pricingModel.getEvidenceIds(), sourcesByKey, BindingContext.forPricing(profile.getProductName()), stats);
+                pricingModel.setEvidenceIds(repairEvidenceList(run, pricingModel.getEvidenceIds(), sourcesByKey, BindingContext.forPricing(profile.getProductName()), stats));
                 for (PricingPlan plan : safeList(pricingModel.getPlans())) {
-                    repairEvidenceList(run, plan.getEvidenceIds(), sourcesByKey, BindingContext.forPricing(profile.getProductName()), stats);
+                    plan.setEvidenceIds(repairEvidenceList(run, plan.getEvidenceIds(), sourcesByKey, BindingContext.forPricing(profile.getProductName()), stats));
                 }
             }
             for (UserPersona persona : safeList(profile.getPersonas())) {
                 if (persona == null) {
                     continue;
                 }
-                repairEvidenceList(run, persona.getEvidenceIds(), sourcesByKey, BindingContext.forPersona(profile, persona), stats);
+                persona.setEvidenceIds(repairEvidenceList(run, persona.getEvidenceIds(), sourcesByKey, BindingContext.forPersona(profile, persona), stats));
             }
         }
     }
@@ -431,22 +431,22 @@ public class EvidenceSourceLifecycleService {
         if (node == null) {
             return;
         }
-        repairEvidenceList(run, node.getEvidenceIds(), sourcesByKey, BindingContext.forFeatureNode(node), stats);
+        node.setEvidenceIds(repairEvidenceList(run, node.getEvidenceIds(), sourcesByKey, BindingContext.forFeatureNode(node), stats));
         for (FeatureNode child : safeList(node.getChildren())) {
             repairFeatureNodeBindings(run, child, sourcesByKey, stats);
         }
     }
 
-    private void repairEvidenceList(AnalysisRun run,
-                                    List<String> evidenceIds,
-                                    Map<String, EvidenceSource> sourcesByKey,
-                                    BindingContext context,
-                                    BindingRepairStats stats) {
+    private List<String> repairEvidenceList(AnalysisRun run,
+                                            List<String> evidenceIds,
+                                            Map<String, EvidenceSource> sourcesByKey,
+                                            BindingContext context,
+                                            BindingRepairStats stats) {
         if (evidenceIds == null || evidenceIds.isEmpty()) {
-            return;
+            return evidenceIds;
         }
         BindingRepair repair = repairEvidenceIds(run, evidenceIds, sourcesByKey, context);
-        applyRepairToEvidenceIds(evidenceIds, repair, stats);
+        return repairedEvidenceIds(evidenceIds, repair, stats);
     }
 
     private BindingRepair repairEvidenceIds(AnalysisRun run,
@@ -473,28 +473,32 @@ public class EvidenceSourceLifecycleService {
         return repair;
     }
 
-    private void applyRepairToEvidenceIds(List<String> evidenceIds, BindingRepair repair, BindingRepairStats stats) {
+    private List<String> repairedEvidenceIds(List<String> evidenceIds, BindingRepair repair, BindingRepairStats stats) {
         if (repair.removedCitationKeys().isEmpty()) {
-            return;
+            return evidenceIds;
         }
-        int before = evidenceIds.size();
-        evidenceIds.removeIf(repair.removedCitationKeys()::contains);
-        stats.prunedBindings += before - evidenceIds.size();
+        List<String> repaired = new ArrayList<>(evidenceIds);
+        int before = repaired.size();
+        repaired.removeIf(repair.removedCitationKeys()::contains);
+        stats.prunedBindings += before - repaired.size();
         for (String replacement : repair.replacementCitationKeys()) {
-            if (!evidenceIds.contains(replacement)) {
-                evidenceIds.add(replacement);
+            if (!repaired.contains(replacement)) {
+                repaired.add(replacement);
                 stats.replacedBindings++;
             }
         }
+        return repaired;
     }
 
-    private void pruneChunkKeys(List<String> chunkKeys, Set<String> removedCitationKeys, BindingRepairStats stats) {
+    private List<String> prunedChunkKeys(List<String> chunkKeys, Set<String> removedCitationKeys, BindingRepairStats stats) {
         if (chunkKeys == null || chunkKeys.isEmpty() || removedCitationKeys.isEmpty()) {
-            return;
+            return chunkKeys;
         }
-        int before = chunkKeys.size();
-        chunkKeys.removeIf(chunkKey -> removedCitationKeys.stream().anyMatch(key -> chunkKey.startsWith(key + "-C")));
-        stats.prunedBindings += before - chunkKeys.size();
+        List<String> pruned = new ArrayList<>(chunkKeys);
+        int before = pruned.size();
+        pruned.removeIf(chunkKey -> removedCitationKeys.stream().anyMatch(key -> chunkKey.startsWith(key + "-C")));
+        stats.prunedBindings += before - pruned.size();
+        return pruned;
     }
 
     private EvidenceSource replacementFor(AnalysisRun run,

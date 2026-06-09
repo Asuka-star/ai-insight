@@ -194,9 +194,11 @@ class WriterNodeTest {
                 .contains("报告必须采用单一骨架")
                 .contains("全文只能有一个对比矩阵章节")
                 .contains("标题统一为“竞品能力矩阵”")
-                .contains("必须保留 SWOT 思考")
+                .contains("以上章节标题都必须出现")
+                .contains("必须保留且必须显式输出“机会与风险摘要（SWOT）”章节")
                 .contains("机会与风险摘要（SWOT）")
                 .contains("不要再输出长篇四象限“SWOT 分析”章节")
+                .contains("不要把 SWOT 合并进风险与证据缺口")
                 .contains("不要重复展开风险清单或行动计划")
                 .doesNotContain("必须追加\"竞品横向矩阵\"")
                 .doesNotContain("必须追加\"SWOT 分析\"");
@@ -261,6 +263,190 @@ class WriterNodeTest {
                 .doesNotContain("## 机会与风险（SWOT 摘要）")
                 .doesNotContain("风险边界：")
                 .doesNotContain("下一步行动：");
+    }
+
+    @Test
+    void writerAddsMissingSwotSectionBeforeRiskGap() {
+        LlmClient llmClient = new LlmClient() {
+            @Override
+            public boolean isAvailable() {
+                return true;
+            }
+
+            @Override
+            public String complete(ChatRequest request) {
+                return """
+                        # 竞品分析报告
+
+                        ## 一句话结论
+                        Tool A 在工作流能力上有官方资料支撑 [S1]。
+
+                        ## 竞品能力矩阵
+                        | 竞品 | 判断 | 证据 |
+                        | --- | --- | --- |
+                        | Tool A | 工作流能力有资料支撑 | [S1] |
+
+                        ## 风险与证据缺口
+                        仍需补充更多用户实测证据。
+
+                        ## 结论与建议
+                        - 最终决策口径：以矩阵为主。
+                        """;
+            }
+        };
+        WriterNode writer = new WriterNode(llmClient, new FallbackReportDraftFactory());
+        AnalysisRun run = new AnalysisRun(new AnalysisRequirement(
+                "Analyze AI tools",
+                "developer tools",
+                List.of("Tool A"),
+                List.of("workflow"),
+                List.of("official_site"),
+                List.of()
+        ));
+        run.getEvidenceSources().add(new EvidenceSource(
+                "S1",
+                "Tool A docs",
+                "https://example.test/tool-a",
+                "official_site",
+                "FETCHED",
+                "LIVE_FETCHED",
+                "HIGH",
+                "NONE",
+                "Tool A documents workflow capabilities.",
+                "Tool A documents workflow capabilities.",
+                "test evidence"
+        ));
+        AnalysisClaim claim = new AnalysisClaim();
+        claim.setType(ClaimType.COMPARISON);
+        claim.setContent("Tool A 在工作流能力上有官方资料支撑。");
+        claim.setConfidence(ConfidenceLevel.MEDIUM);
+        claim.setSupportStatus("SUPPORTED");
+        claim.setRecommendedPlacement("MATRIX");
+        claim.setEligibleForMainReport(true);
+        claim.setEvidenceIds(List.of("S1"));
+        run.getClaims().add(claim);
+
+        writer.execute(run);
+
+        String report = latestReport(run);
+        assertThat(report).contains("## 机会与风险摘要（SWOT）");
+        assertThat(report.indexOf("## 机会与风险摘要（SWOT）"))
+                .isLessThan(report.indexOf("## 风险与证据缺口"));
+        assertThat(report).doesNotContain("## SWOT 分析");
+    }
+
+    @Test
+    void writerNormalizesTabSeparatedPriorityTable() {
+        LlmClient llmClient = new LlmClient() {
+            @Override
+            public boolean isAvailable() {
+                return true;
+            }
+
+            @Override
+            public String complete(ChatRequest request) {
+                return """
+                        # 竞品分析报告
+
+                        ## 建议优先级
+                        建议\t理由\t证据\t置信度\t下一步
+                        1. 优先借鉴团队协作功能\t团队上下文和权限控制是企业刚需。\t[S1]\tHIGH\t梳理权限与审计策略。
+                        待验证：\t3. 借鉴 Agent Skills 工作流思想\t该信息主要来自第三方指南。\t[S1]\tMEDIUM
+
+                        ## 风险与证据缺口
+                        仍需补充更多用户实测证据。
+                        """;
+            }
+        };
+        WriterNode writer = new WriterNode(llmClient, new FallbackReportDraftFactory());
+        AnalysisRun run = new AnalysisRun(new AnalysisRequirement(
+                "Analyze AI tools",
+                "developer tools",
+                List.of("Tool A"),
+                List.of("workflow"),
+                List.of("official_site"),
+                List.of()
+        ));
+        run.getEvidenceSources().add(new EvidenceSource(
+                "S1",
+                "Tool A docs",
+                "https://example.test/tool-a",
+                "official_site",
+                "FETCHED",
+                "LIVE_FETCHED",
+                "HIGH",
+                "NONE",
+                "Tool A documents workflow capabilities.",
+                "Tool A documents workflow capabilities.",
+                "test evidence"
+        ));
+
+        writer.execute(run);
+
+        String report = latestReport(run);
+        assertThat(report)
+                .contains("| 建议 | 理由 | 证据 | 置信度 | 下一步 |")
+                .contains("| --- | --- | --- | --- | --- |")
+                .contains("| 1. 优先借鉴团队协作功能 | 团队上下文和权限控制是企业刚需。 | [S1] | HIGH | 梳理权限与审计策略。 |")
+                .contains("| 3. 待验证：借鉴 Agent Skills 工作流思想 | 该信息主要来自第三方指南。 | [S1] | MEDIUM |  |")
+                .doesNotContain("建议\t理由\t证据")
+                .doesNotContain("待验证：\t");
+    }
+
+    @Test
+    void writerNormalizesSpaceSeparatedPriorityTable() {
+        LlmClient llmClient = new LlmClient() {
+            @Override
+            public boolean isAvailable() {
+                return true;
+            }
+
+            @Override
+            public String complete(ChatRequest request) {
+                return """
+                        # 竞品分析报告
+
+                        ## 建议优先级
+                        建议 理由 证据 置信度 下一步
+                        1. 优先借鉴团队协作功能  团队上下文和权限控制是企业刚需。  [S1]  HIGH  梳理权限与审计策略。
+                        待验证：  3. 借鉴 Agent Skills 工作流思想  该信息主要来自第三方指南。  [S1]  MEDIUM
+
+                        ## 风险与证据缺口
+                        仍需补充更多用户实测证据。
+                        """;
+            }
+        };
+        WriterNode writer = new WriterNode(llmClient, new FallbackReportDraftFactory());
+        AnalysisRun run = new AnalysisRun(new AnalysisRequirement(
+                "Analyze AI tools",
+                "developer tools",
+                List.of("Tool A"),
+                List.of("workflow"),
+                List.of("official_site"),
+                List.of()
+        ));
+        run.getEvidenceSources().add(new EvidenceSource(
+                "S1",
+                "Tool A docs",
+                "https://example.test/tool-a",
+                "official_site",
+                "FETCHED",
+                "LIVE_FETCHED",
+                "HIGH",
+                "NONE",
+                "Tool A documents workflow capabilities.",
+                "Tool A documents workflow capabilities.",
+                "test evidence"
+        ));
+
+        writer.execute(run);
+
+        String report = latestReport(run);
+        assertThat(report)
+                .contains("| 建议 | 理由 | 证据 | 置信度 | 下一步 |")
+                .contains("| 1. 优先借鉴团队协作功能 | 团队上下文和权限控制是企业刚需。 | [S1] | HIGH | 梳理权限与审计策略。 |")
+                .contains("| 3. 待验证：借鉴 Agent Skills 工作流思想 | 该信息主要来自第三方指南。 | [S1] | MEDIUM |  |")
+                .doesNotContain("建议 理由 证据 置信度 下一步");
     }
 
     @Test

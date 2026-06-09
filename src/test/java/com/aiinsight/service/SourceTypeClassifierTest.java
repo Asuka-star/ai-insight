@@ -46,6 +46,16 @@ class SourceTypeClassifierTest {
         )).isEqualTo("third_party_docs");
         assertThat(classifier.qualityFor("third_party_docs", "FETCHED", "LIVE_FETCHED"))
                 .isEqualTo("MEDIUM");
+        assertThat(classifier.qualityForUrl(
+                "https://www.verdent.ai/guides/claude-code-agent-skills",
+                "docs",
+                "FETCHED",
+                "LIVE_FETCHED"
+        )).isEqualTo("MEDIUM");
+        assertThat(classifier.authorityFor(
+                "https://www.verdent.ai/guides/claude-code-agent-skills",
+                "docs"
+        )).isEqualTo("THIRD_PARTY_GENERAL");
     }
 
     @Test
@@ -81,6 +91,15 @@ class SourceTypeClassifierTest {
                 .isEqualTo("HIGH");
         assertThat(classifier.authorityFor("https://www.cursor.com/pricing", "pricing_page"))
                 .isEqualTo("FIRST_PARTY_OFFICIAL");
+
+        assertThat(classifier.classify(
+                "https://code.claude.com/docs/en/third-party-integrations",
+                "Enterprise deployment overview - Claude Code Docs"
+        )).isEqualTo("docs");
+        assertThat(classifier.authorityFor(
+                "https://code.claude.com/docs/en/third-party-integrations",
+                "docs"
+        )).isEqualTo("FIRST_PARTY_DOCS");
     }
 
     @Test

@@ -498,6 +498,69 @@ class AnalysisWorkflowServiceTest {
     }
 
     @Test
+    void deletedInterviewInsightDoesNotReappearAfterResearcherRerun() {
+        AnalysisRunRepository repository = new TestAnalysisRunRepository();
+        AnalysisWorkflowService service = newService(repository, new AnalysisEventBroker(), new TaskExecutorAdapter(Runnable::run), null);
+        AnalysisRun run = new AnalysisRun(new AnalysisRequirement(
+                "Analyze Cursor and Claude Code.",
+                "AI coding tools",
+                List.of("Cursor"),
+                List.of("用户体验", "访谈"),
+                List.of("interview"),
+                List.of()
+        ));
+        run.setStatus(AnalysisStatus.SUCCEEDED);
+        UserProvidedEvidence interviewEvidence = new UserProvidedEvidence(
+                "访谈对象 A",
+                "interview",
+                "访谈对象 A：目前主要使用 Cursor。痛点是团队规则需要维护。",
+                "",
+                false);
+        String interviewUrl = "user-evidence://" + interviewEvidence.getId();
+        run.getUserProvidedEvidence().add(interviewEvidence);
+        run.getEvidenceSources().add(new EvidenceSource(
+                "S105",
+                "访谈对象 A",
+                interviewUrl,
+                "user_interview",
+                "USER_PROVIDED",
+                "USER_PROVIDED",
+                "MEDIUM",
+                "NONE",
+                "访谈对象 A：目前主要使用 Cursor。",
+                interviewEvidence.getContent(),
+                "用户提供访谈"
+        ));
+        run.getEvidenceChunks().add(new EvidenceChunk(
+                "S105-C1",
+                "S105",
+                0,
+                "访谈对象 A",
+                interviewUrl,
+                interviewEvidence.getContent()
+        ));
+        InterviewInsight insight = new InterviewInsight();
+        insight.setId("interview-1");
+        insight.setEvidenceId("S105");
+        insight.setScenario("团队规则维护");
+        run.getResearchPackage().getInterviewInsights().add(insight);
+        run.getResearchPackage().setSources(new ArrayList<>(run.getEvidenceSources()));
+        repository.save(run);
+
+        service.deleteResearchInsight(run.getId(), "interview", "interview-1");
+        AnalysisRun rerun = service.rerunAgent(run.getId(), AgentName.RESEARCHER);
+
+        assertThat(rerun.getEvidenceSources())
+                .noneMatch(source -> "S105".equals(source.getCitationKey()))
+                .noneMatch(source -> source.getUrl() != null && source.getUrl().equals(interviewUrl))
+                .noneMatch(source -> source.getSourceType() != null && source.getSourceType().contains("interview"));
+        assertThat(rerun.getUserProvidedEvidence())
+                .noneMatch(evidence -> evidence.getUrl() != null && evidence.getUrl().equals(interviewUrl));
+        assertThat(rerun.getResearchPackage().getInterviewInsights()).isEmpty();
+        assertThat(rerun.getExcludedSourceUrls()).contains(interviewUrl);
+    }
+
+    @Test
     void startAutoConfirmsScopeDraft() {
         AnalysisWorkflowService service = newService();
         CreateAnalysisRunRequest request = new CreateAnalysisRunRequest();
@@ -649,16 +712,75 @@ class AnalysisWorkflowServiceTest {
 
         AddUserEvidenceRequest evidenceRequest = new AddUserEvidenceRequest();
         evidenceRequest.setSourceType("url");
-        evidenceRequest.setUrl("https://cursor.example.test");
+        evidenceRequest.setUrl("https://cursor.com");
 
         var updated = service.addEvidence(run.getId(), evidenceRequest);
 
         assertThat(updated.getEvidenceSources()).hasSize(1);
-        assertThat(updated.getEvidenceSources().get(0).getSourceType()).isEqualTo("user_source_url");
-        assertThat(updated.getEvidenceSources().get(0).getUrl()).isEqualTo("https://cursor.example.test");
+        assertThat(updated.getEvidenceSources().get(0).getSourceType()).isEqualTo("official_site");
+        assertThat(updated.getEvidenceSources().get(0).getSourceAuthority()).isEqualTo("FIRST_PARTY_OFFICIAL");
+        assertThat(updated.getEvidenceSources().get(0).getUrl()).isEqualTo("https://cursor.com");
         assertThat(updated.getEvidenceChunks()).isNotEmpty();
         assertThat(updated.getResearchPackage().getSources()).hasSize(1);
         assertThat(updated.getRecommendedActions()).anyMatch(action -> action.contains("公开来源 S1 已加入"));
+    }
+
+    @Test
+    void getRefreshesLegacyFetchedSourceMetadata() {
+        TestAnalysisRunRepository repository = new TestAnalysisRunRepository();
+        AnalysisWorkflowService service = newService(repository, new AnalysisEventBroker(), new TaskExecutorAdapter(Runnable::run), null);
+        AnalysisRun run = new AnalysisRun(new AnalysisRequirement(
+                "Analyze Claude Code",
+                "AI coding tools",
+                List.of("Claude Code"),
+                List.of("workflow"),
+                List.of("official_site"),
+                List.of()
+        ));
+        EvidenceSource legacySource = new EvidenceSource(
+                "S19",
+                "Claude Code Agent Skills - Verdent Guides",
+                "https://www.verdent.ai/guides/claude-code-agent-skills",
+                "docs",
+                "FETCHED",
+                "LIVE_FETCHED",
+                "HIGH",
+                "NONE",
+                "Third-party Claude Code guide.",
+                "Third-party Claude Code guide with enough text for testing.",
+                "legacy metadata"
+        );
+        legacySource.setSourceAuthority("FIRST_PARTY_DOCS");
+        run.getEvidenceSources().add(legacySource);
+        EvidenceChunk chunk = new EvidenceChunk(
+                "S19-C1",
+                "S19",
+                1,
+                "Claude Code Agent Skills - Verdent Guides",
+                "https://www.verdent.ai/guides/claude-code-agent-skills",
+                "Third-party Claude Code guide."
+        );
+        chunk.setSourceType("docs");
+        chunk.setSourceAuthority("FIRST_PARTY_DOCS");
+        chunk.setSourceQuality("HIGH");
+        run.getEvidenceChunks().add(chunk);
+        run.getResearchPackage().setSources(new ArrayList<>(run.getEvidenceSources()));
+        repository.save(run);
+
+        AnalysisRun normalized = service.get(run.getId());
+
+        assertThat(normalized.getEvidenceSources()).singleElement().satisfies(source -> {
+            assertThat(source.getSourceType()).isEqualTo("third_party_docs");
+            assertThat(source.getSourceAuthority()).isEqualTo("THIRD_PARTY_GENERAL");
+            assertThat(source.getSourceQuality()).isEqualTo("MEDIUM");
+        });
+        assertThat(normalized.getEvidenceChunks()).singleElement().satisfies(normalizedChunk -> {
+            assertThat(normalizedChunk.getSourceType()).isEqualTo("third_party_docs");
+            assertThat(normalizedChunk.getSourceAuthority()).isEqualTo("THIRD_PARTY_GENERAL");
+            assertThat(normalizedChunk.getSourceQuality()).isEqualTo("MEDIUM");
+        });
+        assertThat(normalized.getResearchPackage().getSources()).singleElement()
+                .satisfies(source -> assertThat(source.getSourceAuthority()).isEqualTo("THIRD_PARTY_GENERAL"));
     }
 
     @Test
@@ -5098,8 +5220,12 @@ class AnalysisWorkflowServiceTest {
                                 collaboration workflows, permission governance, AI features, release notes, support options,
                                 customer feedback, integration details, and product positioning for competitive analysis.
                                 The content is intentionally long enough to be treated as a useful fetched search result.
-                                """,
-                        "robots.txt checked: allowed for public fetch."
+                                 """,
+                        "robots.txt checked: allowed for public fetch.",
+                        "docs",
+                        "HIGH",
+                        200,
+                        "text/html"
                 );
             }
         };
@@ -5116,7 +5242,7 @@ class AnalysisWorkflowServiceTest {
             public List<SearchResult> search(String query, int count) {
                 return List.of(new SearchResult(
                         "Search result for " + query,
-                        "https://search.example.test/" + query.toLowerCase().replaceAll("[^a-z0-9]+", "-"),
+                        "https://search.example.test/docs/" + query.toLowerCase().replaceAll("[^a-z0-9]+", "-"),
                         "Snippet for " + query + " with pricing, reviews, AI collaboration and permission details.",
                         query,
                         1

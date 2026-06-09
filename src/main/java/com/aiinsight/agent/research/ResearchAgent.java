@@ -207,6 +207,7 @@ public class ResearchAgent {
                 .collect(Collectors.toCollection(LinkedHashSet::new));
         Map<String, List<EvidenceChunk>> chunksByUrl = chunks.stream()
                 .filter(this::isGlobalChunk)
+                .filter(chunk -> !isUrlExcluded(chunk.getUrl(), run))
                 // 同一份文档可能已在当前 run 中作为局部资源存在；用 textHash 避免重复挂载。
                 .filter(chunk -> !StringUtils.hasText(chunk.getTextHash()) || !existingTextHashes.contains(chunk.getTextHash()))
                 .collect(Collectors.groupingBy(
@@ -226,6 +227,25 @@ public class ResearchAgent {
         if (!chunksByUrl.isEmpty()) {
             run.getResearchPackage().setSources(new ArrayList<>(run.getEvidenceSources()));
         }
+    }
+
+    private boolean isUrlExcluded(String url, AnalysisRun run) {
+        if (run == null || !StringUtils.hasText(url) || run.getExcludedSourceUrls() == null) {
+            return false;
+        }
+        String normalized = normalizeUrl(url);
+        return run.getExcludedSourceUrls().stream()
+                .filter(StringUtils::hasText)
+                .map(this::normalizeUrl)
+                .anyMatch(normalized::equals);
+    }
+
+    private String normalizeUrl(String url) {
+        if (!StringUtils.hasText(url)) {
+            return "";
+        }
+        String normalized = url.trim().toLowerCase();
+        return normalized.endsWith("/") ? normalized.substring(0, normalized.length() - 1) : normalized;
     }
 
     private EvidenceSource globalSource(String citationKey, String url, List<EvidenceChunk> chunks) {

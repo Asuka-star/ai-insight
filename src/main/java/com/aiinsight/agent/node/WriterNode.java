@@ -80,6 +80,13 @@ public class WriterNode implements AgentNode {
     private static final Pattern DECISION_SUMMARY_HEADING_PATTERN = Pattern.compile(
             "(?m)^#{2,3}\\s*(结论与建议|决策总结|决策摘要|最终建议|综合结论)\\s*$"
     );
+    private static final Pattern SWOT_HEADING_PATTERN = Pattern.compile(
+            "(?m)^#{2,3}\\s*(?:机会与风险摘要(?:（SWOT）|\\(SWOT\\))?|SWOT\\s*(?:分析|摘要)?|机会与风险(?:（SWOT 摘要）|\\(SWOT 摘要\\))?)\\s*$",
+            Pattern.CASE_INSENSITIVE
+    );
+    private static final Pattern RISK_GAP_HEADING_PATTERN = Pattern.compile(
+            "(?m)^#{2,3}\\s*(风险与证据缺口|风险与缺口|证据缺口|风险提示)\\s*$"
+    );
     private static final int MAX_UPSTREAM_ARTIFACT_CHARS_FOR_PROMPT = 2_200;
     private static final TermOptions REPORT_LINE_TERM_OPTIONS = TermOptions.basic(3);
     private final LlmClient llmClient;
@@ -176,10 +183,10 @@ public class WriterNode implements AgentNode {
                     - 风险与证据缺口
                     - 下一步验证计划
                     - 结论与建议
-                    如果用户目标或证据形态不适合某个小节，可以合并内容但不要重复输出同义章节。
+                    以上章节标题都必须出现；如果用户目标或证据形态不适合某个小节，也要保留标题并用 1-2 句说明证据不足，不要省略章节。
                 11. 报告主体只写“已验证/可初步判断”的内容；“待验证/证据不足”集中放到“风险与证据缺口”或“下一步补证清单”，不要铺满对比表。
                 11a. 全文只能有一个对比矩阵章节，标题统一为“竞品能力矩阵”；不要再输出“竞品横向矩阵”“竞品对比矩阵”“竞品判断表”“用户指定维度覆盖表”等重复矩阵章节。
-                11b. 必须保留 SWOT 思考，但只输出一个简短的“机会与风险摘要（SWOT）”章节；用 3-6 条 bullet 概括优势、短板、机会、威胁，不要再输出长篇四象限“SWOT 分析”章节。
+                11b. 必须保留且必须显式输出“机会与风险摘要（SWOT）”章节；用 3-6 条 bullet 概括优势、短板、机会、威胁，不要再输出长篇四象限“SWOT 分析”章节，也不要把 SWOT 合并进风险与证据缺口。
                 11c. “结论与建议”只在文末出现一次；不要在末尾重复已经在“建议优先级”中出现过的建议清单。
                 12. 如果某个维度只有公开说明而没有体验证据，请写成“公开资料显示...”而不是直接判定体验优劣。
                 13. 不要把竞品固定归类为某条路线、某类用户或某种商业模式；只有结构化结论或证据明确支持时才可下这种判断。
@@ -426,11 +433,116 @@ public class WriterNode implements AgentNode {
             return "";
         }
         String cleaned = removeReportMetadata(text);
+        cleaned = normalizePriorityTables(cleaned);
         cleaned = removeInternalClaimReferences(cleaned);
         cleaned = removeLeakedVerificationMarkers(cleaned);
         cleaned = sanitizeCitationText(run, cleaned);
         cleaned = ensureDecisionSummarySection(run, cleaned);
+        cleaned = ensureSwotSection(run, cleaned);
         return enforceCitationDiscipline(run, cleaned);
+    }
+
+    private String normalizePriorityTables(String text) {
+        String[] lines = text.split("\\R", -1);
+        List<String> normalized = new ArrayList<>(lines.length);
+        for (int i = 0; i < lines.length; i++) {
+            String line = lines[i];
+            if (!isPriorityTableHeader(line)) {
+                normalized.add(line);
+                continue;
+            }
+            normalized.add("| 建议 | 理由 | 证据 | 置信度 | 下一步 |");
+            normalized.add("| --- | --- | --- | --- | --- |");
+            i++;
+            while (i < lines.length && isPriorityTableDataLine(lines[i])) {
+                normalized.add(priorityTableRow(lines[i]));
+                i++;
+            }
+            i--;
+        }
+        return String.join("\n", normalized);
+    }
+
+    private boolean isPriorityTableHeader(String line) {
+        List<String> cells = priorityTableCells(line);
+        if (cells.size() < 4) {
+            return false;
+        }
+        return "建议".equals(cells.get(0))
+                && "理由".equals(cells.get(1))
+                && "证据".equals(cells.get(2))
+                && "置信度".equals(cells.get(3));
+    }
+
+    private boolean isPriorityTableDataLine(String line) {
+        if (!hasText(line) || priorityTableCells(line).size() < 3) {
+            return false;
+        }
+        String trimmed = line.trim();
+        return !trimmed.startsWith("#")
+                && !trimmed.matches("^[一二三四五六七八九十]+[、.．]\\s*\\S+")
+                && !isPriorityTableHeader(line);
+    }
+
+    private String priorityTableRow(String line) {
+        List<String> cells = new ArrayList<>(priorityTableCells(line));
+        if (!cells.isEmpty() && cells.get(0).matches("待验证[:：]?")) {
+            cells.remove(0);
+            if (!cells.isEmpty()) {
+                Matcher numbered = Pattern.compile("^(\\d+[.、]\\s*)(.+)$").matcher(cells.get(0));
+                if (numbered.matches()) {
+                    cells.set(0, numbered.group(1) + "待验证：" + numbered.group(2));
+                } else {
+                    cells.set(0, "待验证：" + cells.get(0));
+                }
+            }
+        }
+        while (cells.size() < 5) {
+            cells.add("");
+        }
+        if (cells.size() > 5) {
+            List<String> merged = new ArrayList<>(cells.subList(0, 4));
+            merged.add(cells.subList(4, cells.size()).stream()
+                    .filter(AgentUtils::hasText)
+                    .collect(Collectors.joining("；")));
+            cells = merged;
+        }
+        return "| " + cells.stream()
+                .limit(5)
+                .map(this::escapeMarkdownTableCell)
+                .collect(Collectors.joining(" | ")) + " |";
+    }
+
+    private List<String> priorityTableCells(String line) {
+        if (line == null) {
+            return List.of();
+        }
+        String normalized = line.trim()
+                .replace('\u00A0', ' ')
+                .replace('\u3000', ' ');
+        if (normalized.contains("\t")) {
+            return Arrays.stream(normalized.split("\\t", -1))
+                    .map(String::trim)
+                    .toList();
+        }
+        if (normalized.matches("^建议\\s+理由\\s+证据\\s+置信度(?:\\s+下一步)?\\s*$")) {
+            return Arrays.stream(normalized.split("\\s+"))
+                    .map(String::trim)
+                    .toList();
+        }
+        if (!normalized.matches(".*\\s{2,}.*")) {
+            return List.of();
+        }
+        return Arrays.stream(normalized.split("\\s{2,}", -1))
+                .map(String::trim)
+                .toList();
+    }
+
+    private String escapeMarkdownTableCell(String value) {
+        if (value == null) {
+            return "";
+        }
+        return value.replace("|", "\\|").replaceAll("\\s+", " ").trim();
     }
 
     private String removeLeakedVerificationMarkers(String text) {
@@ -441,6 +553,9 @@ public class WriterNode implements AgentNode {
 
     private String normalizeLeakedVerificationMarker(String line) {
         if (!hasText(line)) {
+            return line;
+        }
+        if (isMarkdownTableRow(line)) {
             return line;
         }
         if (SUPPORT_STATUS_COUNT_LINE_PATTERN.matcher(line).matches()
@@ -492,6 +607,66 @@ public class WriterNode implements AgentNode {
 
     private boolean hasDecisionSummarySection(String text) {
         return DECISION_SUMMARY_HEADING_PATTERN.matcher(text == null ? "" : text).find();
+    }
+
+    private String ensureSwotSection(AnalysisRun run, String text) {
+        if (!hasText(text) || hasSwotSection(text)) {
+            return text;
+        }
+        String section = fallbackSwotSection(run);
+        if (!hasText(section)) {
+            return text;
+        }
+        return insertSectionBefore(text, section, RISK_GAP_HEADING_PATTERN, DECISION_SUMMARY_HEADING_PATTERN);
+    }
+
+    private boolean hasSwotSection(String text) {
+        return SWOT_HEADING_PATTERN.matcher(text == null ? "" : text).find();
+    }
+
+    private String fallbackSwotSection(AnalysisRun run) {
+        String swot = new AnalysisProductRenderer().renderSwot(
+                run == null ? List.of() : run.getClaims(),
+                run == null ? List.of() : run.getCompetitorProfiles()
+        );
+        List<String> bullets = new ArrayList<>();
+        for (String line : swot.split("\\R")) {
+            if (!line.startsWith("| ") || line.startsWith("| 维度") || line.startsWith("| ---")) {
+                continue;
+            }
+            String[] cells = line.split("\\|");
+            if (cells.length < 4) {
+                continue;
+            }
+            String label = cells[1].trim();
+            String judgment = cells[2].trim()
+                    .replace("<br>", "；")
+                    .replace("暂无结构化结论。", "暂无足够证据形成确定判断。");
+            String evidence = cells[3].trim();
+            if (!hasText(label) || !hasText(judgment)) {
+                continue;
+            }
+            String suffix = hasText(evidence) && !"-".equals(evidence) ? " " + evidence : "";
+            bullets.add("- %s：%s%s".formatted(label, judgment, suffix));
+        }
+        if (bullets.isEmpty()) {
+            bullets.add("- 优势：暂无足够的已验证结论，需继续补充官方资料或一手使用证据。");
+            bullets.add("- 机会：可围绕已采集到的高质量证据继续验证产品借鉴方向。");
+            bullets.add("- 威胁：当前证据深度不足，过早形成确定性判断可能误导后续决策。");
+        }
+        return "## 机会与风险摘要（SWOT）\n\n" + String.join("\n", bullets);
+    }
+
+    private String insertSectionBefore(String text, String section, Pattern... headingPatterns) {
+        for (Pattern pattern : headingPatterns) {
+            Matcher matcher = pattern.matcher(text);
+            if (matcher.find()) {
+                return text.substring(0, matcher.start()).stripTrailing()
+                        + "\n\n" + section.strip() + "\n\n"
+                        + text.substring(matcher.start()).stripLeading();
+            }
+        }
+        return text.stripTrailing() + "\n\n" + section.strip();
     }
 
     private String decisionSummarySection(AnalysisRun run) {
@@ -829,10 +1004,12 @@ public class WriterNode implements AgentNode {
         return CLAIM_REFERENCE_PATTERN.matcher(text)
                 .replaceAll("")
                 .lines()
-                .map(line -> line
-                        .replaceAll("\\s+([，。！？；：,.!?;:])", "$1")
-                        .replaceAll("[ \\t]{2,}", " ")
-                        .trim())
+                .map(line -> isMarkdownTableRow(line)
+                        ? line.trim()
+                        : line
+                                .replaceAll("\\s+([，。！？；：,.!?;:])", "$1")
+                                .replaceAll("[ \\t]{2,}", " ")
+                                .trim())
                 .collect(Collectors.joining("\n"))
                 .trim();
     }

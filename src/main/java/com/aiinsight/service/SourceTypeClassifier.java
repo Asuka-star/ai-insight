@@ -17,6 +17,9 @@ public class SourceTypeClassifier {
         if (isVideoHost(url)) {
             return "video";
         }
+        if (isKnownFirstPartyDocsUrl(url)) {
+            return "docs";
+        }
         if (isPublicReviewHost(url)
                 || containsAny(combined, "reddit.", "forum", "community", "discuss", "review", "reviews", "g2.com", "capterra")) {
             return "public_review";
@@ -73,6 +76,14 @@ public class SourceTypeClassifier {
         };
     }
 
+    public String qualityForUrl(String url, String sourceType, String collectionStatus, String freshness) {
+        String authority = authorityFor(url, sourceType);
+        if ("THIRD_PARTY_GENERAL".equals(authority) && isOfficialLikeHighQualityType(sourceType)) {
+            return "MEDIUM";
+        }
+        return qualityFor(sourceType, collectionStatus, freshness);
+    }
+
     public String authorityFor(String url, String sourceType) {
         String normalizedType = normalize(sourceType);
         ParsedUrl parsed = parse(url);
@@ -92,7 +103,8 @@ public class SourceTypeClassifier {
         if (!firstPartyLikeHost(host, url) && (isThirdPartyHost(host) || normalizedType.startsWith("third_party"))) {
             return "THIRD_PARTY_GENERAL";
         }
-        if (containsAny(host, "docs.", "doc.", "help.", "support.", "developer.", "developers.", "api.", "reference.")) {
+        if (containsAny(host, "docs.", "doc.", "help.", "support.", "developer.", "developers.", "api.", "reference.")
+                || isKnownFirstPartyDocsHost(host)) {
             return "FIRST_PARTY_DOCS";
         }
         if ("release_notes".equals(normalizedType) || "technical_blog".equals(normalizedType)) {
@@ -129,6 +141,25 @@ public class SourceTypeClassifier {
         return StringUtils.hasText(root) ? root : host;
     }
 
+    public boolean shouldRefreshFetchedMetadata(String sourceType) {
+        String normalizedType = normalize(sourceType);
+        if (!StringUtils.hasText(normalizedType) || "user_source_url".equals(normalizedType)) {
+            return true;
+        }
+        return !normalizedType.startsWith("user_");
+    }
+
+    public String classifyFetchedSource(String url, String title, String currentSourceType) {
+        if (!shouldRefreshFetchedMetadata(currentSourceType)) {
+            return currentSourceType;
+        }
+        if (isOfficialLikeHighQualityType(currentSourceType)
+                && !"THIRD_PARTY_GENERAL".equals(authorityFor(url, currentSourceType))) {
+            return currentSourceType;
+        }
+        return classify(url, title);
+    }
+
     private boolean isFirstPartyReferenceUrl(String url, String title) {
         ParsedUrl parsed = parse(url);
         if (parsed == null || !StringUtils.hasText(parsed.host())) {
@@ -137,12 +168,15 @@ public class SourceTypeClassifier {
         if (isLocalHost(parsed.host())) {
             return true;
         }
-        if (parsed.host().endsWith(".test")
-                || isThirdPartyHost(parsed.host())
+        if (parsed.host().endsWith(".test")) {
+            return looksLikeReferencePath(parsed.path());
+        }
+        if (isThirdPartyHost(parsed.host())
                 || titleSuggestsDifferentPublisher(parsed.host(), title)) {
             return false;
         }
-        if (containsAny(parsed.host(), "docs.", "doc.", "help.", "support.", "developer.", "developers.", "api.", "reference.", "learn.")) {
+        if (containsAny(parsed.host(), "docs.", "doc.", "help.", "support.", "developer.", "developers.", "api.", "reference.", "learn.")
+                || isKnownFirstPartyDocsHost(parsed.host())) {
             return true;
         }
         String root = rootDomain(parsed.host());
@@ -241,7 +275,8 @@ public class SourceTypeClassifier {
             return false;
         }
         // Strong signal: docs-related subdomain
-        if (containsAny(host, "docs.", "doc.", "help.", "support.", "developer.", "developers.", "api.", "reference.")) {
+        if (containsAny(host, "docs.", "doc.", "help.", "support.", "developer.", "developers.", "api.", "reference.")
+                || isKnownFirstPartyDocsHost(host)) {
             return true;
         }
         // Strong signal: docs path in URL
@@ -275,6 +310,24 @@ public class SourceTypeClassifier {
                 "youtube.", "youtu.be", "vimeo.", "bilibili.", "linkedin.", "twitter.", "x.com",
                 "facebook.", "g2.", "capterra.", "trustpilot."
         );
+    }
+
+    private boolean isKnownFirstPartyDocsHost(String host) {
+        return "code.claude.com".equals(host);
+    }
+
+    private boolean isKnownFirstPartyDocsUrl(String url) {
+        ParsedUrl parsed = parse(url);
+        return parsed != null
+                && isKnownFirstPartyDocsHost(parsed.host())
+                && looksLikeReferencePath(parsed.path());
+    }
+
+    private boolean isOfficialLikeHighQualityType(String sourceType) {
+        return switch (normalize(sourceType)) {
+            case "docs", "product_docs", "pricing_page", "release_notes", "security_docs", "integration_docs" -> true;
+            default -> false;
+        };
     }
 
     private boolean titleSuggestsDifferentPublisher(String host, String title) {

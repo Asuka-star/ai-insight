@@ -81,6 +81,7 @@ public class AnalysisWorkflowService {
     private final EvidenceEmbeddingService evidenceEmbeddingService;
     private final DocumentIngestionService documentIngestionService;
     private final PiiDesensitizer piiDesensitizer;
+    private final SourceTypeClassifier sourceTypeClassifier = new SourceTypeClassifier();
     private final ConcurrentMap<UUID, AgentName> activeReruns = new ConcurrentHashMap<>();
     private SurveyResultImportService surveyResultImportService = new SurveyResultImportService();
 
@@ -227,11 +228,14 @@ public class AnalysisWorkflowService {
     }
 
     public AnalysisRun get(UUID runId) {
-        return repository.findById(runId).orElseThrow(() -> new RunNotFoundException(runId));
+        AnalysisRun run = repository.findById(runId).orElseThrow(() -> new RunNotFoundException(runId));
+        return normalizePersistedRunMetadata(run, true);
     }
 
     public Collection<AnalysisRun> list() {
-        return repository.findAll();
+        return repository.findAll().stream()
+                .map(run -> normalizePersistedRunMetadata(run, true))
+                .collect(java.util.stream.Collectors.toCollection(ArrayList::new));
     }
 
     public Collection<AnalysisRunSummary> listSummaries() {
@@ -598,6 +602,7 @@ public class AnalysisWorkflowService {
             throw new InvalidRunStateException(runId, "research insight not found: " + insightId);
         }
         boolean prunedOriginalEvidence = pruneResearchEvidenceForDeletedInsights(run, removedEvidenceIds);
+        pruneDeletedResearchBindings(run, removedEvidenceIds);
         run.getResearchPackage().setCollectedAt(Instant.now());
         if (prunedOriginalEvidence) {
             markResearchInputPending(run, "结构化洞察及其调研原始证据已删除。后续重跑不会再使用这些资料。");
@@ -636,6 +641,7 @@ public class AnalysisWorkflowService {
             if (StringUtils.hasText(source.getUrl())) {
                 removedUrls.add(source.getUrl());
             }
+            collectResearchExclusions(run, source);
             return true;
         });
         if (removedCitationKeys.isEmpty() && removedUrls.isEmpty()) {
@@ -654,6 +660,55 @@ public class AnalysisWorkflowService {
                         || safeList(insight.getEvidenceIds()).stream().anyMatch(removedCitationKeys::contains));
         run.getResearchPackage().setSources(new ArrayList<>(run.getEvidenceSources()));
         return true;
+    }
+
+    private void collectResearchExclusions(AnalysisRun run, EvidenceSource source) {
+        if (run == null || source == null) {
+            return;
+        }
+        Set<String> excluded = new LinkedHashSet<>(safeList(run.getExcludedSourceUrls()));
+        addResearchExclusion(excluded, source.getUrl());
+        addResearchExclusion(excluded, globalDocumentUrl(source));
+        run.setExcludedSourceUrls(new ArrayList<>(excluded));
+    }
+
+    private void addResearchExclusion(Set<String> excluded, String url) {
+        if (excluded != null && StringUtils.hasText(url)) {
+            excluded.add(url.trim());
+        }
+    }
+
+    private void pruneDeletedResearchBindings(AnalysisRun run, Set<String> removedCitationKeys) {
+        if (run == null || removedCitationKeys == null || removedCitationKeys.isEmpty()) {
+            return;
+        }
+        run.getClaims().removeIf(claim -> safeList(claim.getEvidenceIds()).stream().anyMatch(removedCitationKeys::contains));
+        run.getCompetitorFactSets().forEach(factSet -> factSet.getFacts().removeIf(fact ->
+                safeList(fact.getEvidenceIds()).stream().anyMatch(removedCitationKeys::contains)));
+        run.getCompetitorProfiles().forEach(profile -> {
+            profile.getEvidenceIds().removeIf(removedCitationKeys::contains);
+            if (profile.getPricingModel() != null) {
+                profile.getPricingModel().getEvidenceIds().removeIf(removedCitationKeys::contains);
+                profile.getPricingModel().getPlans().forEach(plan ->
+                        plan.getEvidenceIds().removeIf(removedCitationKeys::contains));
+            }
+            if (profile.getFeatureTree() != null) {
+                profile.getFeatureTree().getRoots().forEach(node ->
+                        pruneFeatureEvidenceIds(node, removedCitationKeys));
+            }
+            profile.getPersonas().forEach(persona ->
+                    persona.getEvidenceIds().removeIf(removedCitationKeys::contains));
+        });
+        run.getArtifacts().forEach(artifact ->
+                artifact.getCitationKeys().removeIf(removedCitationKeys::contains));
+    }
+
+    private void pruneFeatureEvidenceIds(com.aiinsight.model.schema.FeatureNode node, Set<String> removedCitationKeys) {
+        if (node == null) {
+            return;
+        }
+        node.getEvidenceIds().removeIf(removedCitationKeys::contains);
+        node.getChildren().forEach(child -> pruneFeatureEvidenceIds(child, removedCitationKeys));
     }
 
     private String userProvidedEvidenceUrl(UserProvidedEvidence evidence) {
@@ -749,6 +804,7 @@ public class AnalysisWorkflowService {
         }
         // 重跑前先移除已从全局资源库删除的来源，防止旧任务继续引用失效文件。
         AnalysisRun current = pruneUnavailableGlobalEvidence(get(runId));
+        current = normalizePersistedRunMetadata(current, true);
         AnalysisStatus previousStatus = current.getStatus();
         try {
             ensureAgentRerunnable(current);
@@ -765,6 +821,7 @@ public class AnalysisWorkflowService {
             }
             run.setStatus(statusAfterManualRerun(run, previousStatus, agentName));
             clearAppliedResearchInputPending(run, agentName);
+            normalizePersistedRunMetadata(run, false);
             repository.save(run);
             eventBroker.publish(run, "agent_rerun_completed", agentLabel(agentName) + " 重跑已完成");
             return run;
@@ -1438,6 +1495,126 @@ public class AnalysisWorkflowService {
                 source.getRawText() == null ? "" : source.getRawText()
         );
         return "global-document://" + sha256(hashInput);
+    }
+
+    private AnalysisRun normalizePersistedRunMetadata(AnalysisRun run, boolean persist) {
+        if (run == null) {
+            return null;
+        }
+        boolean changed = refreshSourceMetadata(run.getEvidenceSources());
+        if (run.getResearchPackage() != null) {
+            changed = refreshSourceMetadata(run.getResearchPackage().getSources()) || changed;
+        }
+        changed = refreshChunkSourceMetadata(run) || changed;
+        if (changed && persist) {
+            repository.save(run);
+        }
+        return run;
+    }
+
+    private boolean refreshSourceMetadata(List<EvidenceSource> sources) {
+        if (sources == null || sources.isEmpty()) {
+            return false;
+        }
+        boolean changed = false;
+        for (EvidenceSource source : sources) {
+            if (source == null || !isHttpUrl(source.getUrl())
+                    || !"FETCHED".equalsIgnoreCase(source.getCollectionStatus())) {
+                continue;
+            }
+            String sourceType = sourceTypeClassifier.classifyFetchedSource(
+                    source.getUrl(),
+                    source.getTitle(),
+                    source.getSourceType());
+            String authority = sourceTypeClassifier.authorityFor(source.getUrl(), sourceType);
+            String quality = sourceTypeClassifier.qualityForUrl(
+                    source.getUrl(),
+                    sourceType,
+                    source.getCollectionStatus(),
+                    source.getFreshness());
+            String host = sourceTypeClassifier.canonicalHost(source.getUrl());
+            String publisher = sourceTypeClassifier.publisherName(source.getUrl());
+            changed = setIfDifferentSource(source, sourceType, authority, quality, host, publisher) || changed;
+        }
+        return changed;
+    }
+
+    private boolean refreshChunkSourceMetadata(AnalysisRun run) {
+        if (run == null || run.getEvidenceChunks() == null || run.getEvidenceChunks().isEmpty()) {
+            return false;
+        }
+        java.util.Map<String, EvidenceSource> byCitationKey = run.getEvidenceSources().stream()
+                .filter(source -> StringUtils.hasText(source.getCitationKey()))
+                .collect(java.util.stream.Collectors.toMap(
+                        EvidenceSource::getCitationKey,
+                        source -> source,
+                        (left, right) -> left,
+                        java.util.LinkedHashMap::new));
+        boolean changed = false;
+        for (EvidenceChunk chunk : run.getEvidenceChunks()) {
+            EvidenceSource source = byCitationKey.get(chunk.getSourceCitationKey());
+            if (source == null) {
+                continue;
+            }
+            changed = setIfDifferentChunk(chunk, source) || changed;
+        }
+        return changed;
+    }
+
+    private boolean setIfDifferentSource(EvidenceSource source,
+                                         String sourceType,
+                                         String authority,
+                                         String quality,
+                                         String host,
+                                         String publisher) {
+        boolean changed = false;
+        if (!equalsText(source.getSourceType(), sourceType)) {
+            source.setSourceType(sourceType);
+            changed = true;
+        }
+        if (!equalsText(source.getSourceAuthority(), authority)) {
+            source.setSourceAuthority(authority);
+            changed = true;
+        }
+        if (!equalsText(source.getSourceQuality(), quality)) {
+            source.setSourceQuality(quality);
+            changed = true;
+        }
+        if (!equalsText(source.getCanonicalHost(), host)) {
+            source.setCanonicalHost(host);
+            changed = true;
+        }
+        if (!equalsText(source.getPublisherName(), publisher)) {
+            source.setPublisherName(publisher);
+            changed = true;
+        }
+        return changed;
+    }
+
+    private boolean setIfDifferentChunk(EvidenceChunk chunk, EvidenceSource source) {
+        boolean changed = false;
+        if (!equalsText(chunk.getSourceType(), source.getSourceType())) {
+            chunk.setSourceType(source.getSourceType());
+            changed = true;
+        }
+        if (!equalsText(chunk.getSourceAuthority(), source.getSourceAuthority())) {
+            chunk.setSourceAuthority(source.getSourceAuthority());
+            changed = true;
+        }
+        if (!equalsText(chunk.getSourceQuality(), source.getSourceQuality())) {
+            chunk.setSourceQuality(source.getSourceQuality());
+            changed = true;
+        }
+        return changed;
+    }
+
+    private boolean equalsText(String left, String right) {
+        return (left == null ? "" : left).equals(right == null ? "" : right);
+    }
+
+    private boolean isHttpUrl(String url) {
+        return StringUtils.hasText(url)
+                && (url.startsWith("http://") || url.startsWith("https://"));
     }
 
     private String sha256(String value) {
