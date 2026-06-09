@@ -1,12 +1,21 @@
 package com.aiinsight.service;
 
+import com.aiinsight.llm.ChatMessage;
+import com.aiinsight.llm.ChatOptions;
+import com.aiinsight.llm.ChatRequest;
+import com.aiinsight.llm.LlmClient;
 import com.aiinsight.model.run.AnalysisRun;
 import com.aiinsight.model.run.EvidenceSource;
 import com.aiinsight.model.schema.SurveyFinding;
 import com.aiinsight.model.schema.SurveyInsight;
+import com.aiinsight.util.JsonResponseExtractor;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 import org.springframework.util.StringUtils;
 
+import static com.aiinsight.util.AgentUtils.abbreviate;
 import static com.aiinsight.util.AgentUtils.containsIgnoreCase;
 
 import java.util.ArrayList;
@@ -18,10 +27,23 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 @Component
+@Slf4j
 public class SurveyInsightExtractor {
 
     private static final Pattern SAMPLE_SIZE_PATTERN = Pattern.compile("(?i)(sample size|responses|respondents|样本量|样本数)\\D{0,12}(\\d+)");
     private static final Pattern QUESTION_BLOCK_PATTERN = Pattern.compile("(?ims)^Q:\\s*(.+?)(?=^Q:|\\z)");
+    private final LlmClient llmClient;
+    private final ObjectMapper objectMapper;
+
+    public SurveyInsightExtractor() {
+        this(null, new ObjectMapper());
+    }
+
+    @Autowired
+    public SurveyInsightExtractor(LlmClient llmClient, ObjectMapper objectMapper) {
+        this.llmClient = llmClient;
+        this.objectMapper = objectMapper == null ? new ObjectMapper() : objectMapper;
+    }
 
     public List<SurveyInsight> extract(AnalysisRun run) {
         return run.getEvidenceSources().stream()
@@ -42,7 +64,91 @@ public class SurveyInsightExtractor {
         insight.setRelatedDimensions(inferRelatedDimensions(text, run.getRequirement().getDimensions()));
         insight.setEvidenceIds(List.of(source.getCitationKey()));
         insight.setFindings(extractFindings(run, source, text));
-        return insight;
+        return enhanceWithLlm(run, source, text, insight);
+    }
+
+    private SurveyInsight enhanceWithLlm(AnalysisRun run, EvidenceSource source, String text, SurveyInsight fallback) {
+        if (llmClient == null || !llmClient.isAvailable() || !StringUtils.hasText(text)) {
+            return fallback;
+        }
+        try {
+            String raw = llmClient.complete(new ChatRequest(
+                    List.of(
+                            ChatMessage.system("你是 Extractor 的问卷洞察增强器。保留样本量和分布事实，只输出 JSON 对象。"),
+                            ChatMessage.user(surveyPrompt(run, source, text, fallback))
+                    ),
+                    new ChatOptions(0.1, 1600)
+            ).tagged("EXTRACTOR", "research-input:survey"));
+            SurveyInsight llmInsight = objectMapper.readValue(JsonResponseExtractor.extractJsonObject(raw), SurveyInsight.class);
+            return mergeLlmSurveyInsight(llmInsight, fallback, source, run);
+        } catch (RuntimeException ex) {
+            log.warn("LLM survey insight enhancement failed, using rule result: source={}, exception={}, message={}",
+                    source.getCitationKey(), ex.getClass().getSimpleName(), ex.getMessage());
+            return fallback;
+        } catch (Exception ex) {
+            log.warn("LLM survey insight JSON parse failed, using rule result: source={}, message={}",
+                    source.getCitationKey(), ex.getMessage());
+            return fallback;
+        }
+    }
+
+    private String surveyPrompt(AnalysisRun run, EvidenceSource source, String text, SurveyInsight fallback) {
+        return """
+                请基于问卷结果生成结构化洞察。规则解析结果中的 sampleSize、distribution、evidenceIds 是事实锚点，不要改错。
+
+                约束：
+                1. 只输出 JSON 对象。
+                2. evidenceId 必须等于 "%s"，evidenceIds 只能包含 "%s"。
+                3. findings 最多 6 条，必须来自问卷原文或规则解析结果。
+                4. competitorMentions 只能从候选竞品中选择。
+                5. relatedDimensions 优先从候选维度中选择，可补充短维度名。
+                6. 不要编造样本量、百分比或选项分布。
+
+                schema:
+                {
+                  "evidenceId":"%s",
+                  "title":"问卷标题",
+                  "sampleSize":"%s",
+                  "respondentSegments":["分组"],
+                  "competitorMentions":["竞品"],
+                  "relatedDimensions":["维度"],
+                  "evidenceIds":["%s"],
+                  "findings":[{"question":"题目","finding":"发现","distribution":"分布","interpretation":"解释","relatedCompetitors":["竞品"],"relatedDimensions":["维度"],"evidenceIds":["%s"]}]
+                }
+
+                候选竞品：%s
+                候选维度：%s
+                规则解析结果：%s
+                原文：
+                %s
+                """.formatted(
+                source.getCitationKey(),
+                source.getCitationKey(),
+                source.getCitationKey(),
+                fallback.getSampleSize(),
+                source.getCitationKey(),
+                source.getCitationKey(),
+                run.getRequirement().getCompetitors(),
+                run.getRequirement().getDimensions(),
+                abbreviate(ruleSummary(fallback), 1800),
+                abbreviate(text, 5000)
+        );
+    }
+
+    private SurveyInsight mergeLlmSurveyInsight(SurveyInsight llmInsight, SurveyInsight fallback, EvidenceSource source, AnalysisRun run) {
+        llmInsight.setEvidenceId(source.getCitationKey());
+        llmInsight.setTitle(firstText(llmInsight.getTitle(), fallback.getTitle()));
+        llmInsight.setSampleSize(firstText(fallback.getSampleSize(), llmInsight.getSampleSize()));
+        llmInsight.setRespondentSegments(firstList(llmInsight.getRespondentSegments(), fallback.getRespondentSegments(), 8));
+        llmInsight.setCompetitorMentions(allowedValues(llmInsight.getCompetitorMentions(), run.getRequirement().getCompetitors()));
+        if (llmInsight.getCompetitorMentions().isEmpty()) {
+            llmInsight.setCompetitorMentions(fallback.getCompetitorMentions());
+        }
+        llmInsight.setRelatedDimensions(firstList(llmInsight.getRelatedDimensions(), fallback.getRelatedDimensions(), 8));
+        llmInsight.setEvidenceIds(List.of(source.getCitationKey()));
+        List<SurveyFinding> findings = sanitizeFindings(llmInsight.getFindings(), source, run);
+        llmInsight.setFindings(findings.isEmpty() ? fallback.getFindings() : findings);
+        return llmInsight;
     }
 
     private List<SurveyFinding> extractFindings(AnalysisRun run, EvidenceSource source, String text) {
@@ -246,6 +352,87 @@ public class SurveyInsightExtractor {
             }
         }
         return false;
+    }
+
+    private String ruleSummary(SurveyInsight insight) {
+        return """
+                title=%s
+                sampleSize=%s
+                respondentSegments=%s
+                competitorMentions=%s
+                relatedDimensions=%s
+                findings=%s
+                """.formatted(
+                insight.getTitle(),
+                insight.getSampleSize(),
+                insight.getRespondentSegments(),
+                insight.getCompetitorMentions(),
+                insight.getRelatedDimensions(),
+                insight.getFindings().stream()
+                        .map(finding -> "%s | %s | %s | %s".formatted(
+                                finding.getQuestion(),
+                                finding.getDistribution(),
+                                finding.getFinding(),
+                                finding.getInterpretation()))
+                        .toList()
+        );
+    }
+
+    private List<SurveyFinding> sanitizeFindings(List<SurveyFinding> findings, EvidenceSource source, AnalysisRun run) {
+        if (findings == null) {
+            return List.of();
+        }
+        return findings.stream()
+                .filter(finding -> StringUtils.hasText(finding.getFinding()) || StringUtils.hasText(finding.getInterpretation()))
+                .limit(6)
+                .peek(finding -> {
+                    finding.setQuestion(cleanText(finding.getQuestion()));
+                    finding.setFinding(cleanText(finding.getFinding()));
+                    finding.setDistribution(cleanText(finding.getDistribution()));
+                    finding.setInterpretation(cleanText(finding.getInterpretation()));
+                    finding.setRelatedCompetitors(allowedValues(finding.getRelatedCompetitors(), run.getRequirement().getCompetitors()));
+                    finding.setRelatedDimensions(cleanList(finding.getRelatedDimensions(), 6));
+                    finding.setEvidenceIds(List.of(source.getCitationKey()));
+                })
+                .toList();
+    }
+
+    private String firstText(String preferred, String fallback) {
+        return StringUtils.hasText(preferred) ? preferred.trim() : (fallback == null ? "" : fallback);
+    }
+
+    private List<String> firstList(List<String> preferred, List<String> fallback, int limit) {
+        List<String> cleaned = cleanList(preferred, limit);
+        return cleaned.isEmpty() ? cleanList(fallback, limit) : cleaned;
+    }
+
+    private List<String> cleanList(List<String> values, int limit) {
+        if (values == null) {
+            return List.of();
+        }
+        return values.stream()
+                .map(this::cleanText)
+                .filter(StringUtils::hasText)
+                .distinct()
+                .limit(limit)
+                .toList();
+    }
+
+    private List<String> allowedValues(List<String> values, List<String> allowed) {
+        if (values == null || allowed == null || allowed.isEmpty()) {
+            return List.of();
+        }
+        String joinedValues = String.join(" ", cleanList(values, 12));
+        return allowed.stream()
+                .filter(candidate -> containsIgnoreCase(joinedValues, candidate))
+                .map(this::cleanText)
+                .distinct()
+                .limit(6)
+                .toList();
+    }
+
+    private String cleanText(String value) {
+        return value == null ? "" : value.replaceAll("\\s+", " ").trim();
     }
 
 }

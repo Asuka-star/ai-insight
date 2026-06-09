@@ -26,6 +26,8 @@ import com.aiinsight.model.schema.UnknownFact;
 import com.aiinsight.model.schema.UserPersona;
 import com.aiinsight.observability.AgentTraceContext;
 import com.aiinsight.service.EvidenceRetrievalService;
+import com.aiinsight.service.InterviewInsightExtractor;
+import com.aiinsight.service.SurveyInsightExtractor;
 import com.aiinsight.service.fallback.FallbackExtractionFactory;
 import com.aiinsight.util.JsonResponseExtractor;
 import static com.aiinsight.util.AgentUtils.abbreviate;
@@ -55,6 +57,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.time.Instant;
 import java.util.stream.Collectors;
 
 @Component
@@ -73,23 +76,31 @@ public class ExtractorNode implements AgentNode {
     private final FallbackExtractionFactory fallbackExtractionFactory;
     private final EvidenceRetrievalService evidenceRetrievalService;
     private final ObjectMapper objectMapper;
+    private final InterviewInsightExtractor interviewInsightExtractor;
+    private final SurveyInsightExtractor surveyInsightExtractor;
     private final ExtractorEvidenceBinder evidenceBinder = new ExtractorEvidenceBinder();
     private final FactExtractionEngine factExtractionEngine = new FactExtractionEngine();
     private final CompetitorProfileProjector profileProjector = new CompetitorProfileProjector();
 
     public ExtractorNode(LlmClient llmClient, FallbackExtractionFactory fallbackExtractionFactory) {
-        this(llmClient, fallbackExtractionFactory, new EvidenceRetrievalService(), new ObjectMapper());
+        this(llmClient, fallbackExtractionFactory, new EvidenceRetrievalService(), new ObjectMapper(),
+                new InterviewInsightExtractor(llmClient, new ObjectMapper()),
+                new SurveyInsightExtractor(llmClient, new ObjectMapper()));
     }
 
     @Autowired
     public ExtractorNode(LlmClient llmClient,
                          FallbackExtractionFactory fallbackExtractionFactory,
                          EvidenceRetrievalService evidenceRetrievalService,
-                         ObjectMapper objectMapper) {
+                         ObjectMapper objectMapper,
+                         InterviewInsightExtractor interviewInsightExtractor,
+                         SurveyInsightExtractor surveyInsightExtractor) {
         this.llmClient = llmClient;
         this.fallbackExtractionFactory = fallbackExtractionFactory;
         this.evidenceRetrievalService = evidenceRetrievalService;
         this.objectMapper = objectMapper;
+        this.interviewInsightExtractor = interviewInsightExtractor;
+        this.surveyInsightExtractor = surveyInsightExtractor;
     }
 
     @Override
@@ -104,6 +115,7 @@ public class ExtractorNode implements AgentNode {
 
     @Override
     public AnalysisRun execute(AnalysisRun run) {
+        refreshResearchInputInsights(run);
         if (llmClient.isAvailable()) {
             try {
                 List<CompetitorProfile> rawProfiles = extractProfilesWithLlm(run);
@@ -134,6 +146,20 @@ public class ExtractorNode implements AgentNode {
                 run.getRequirement().getCompetitors(),
                 run.getEvidenceSources().size());
         return fallback(run);
+    }
+
+    private void refreshResearchInputInsights(AnalysisRun run) {
+        run.getResearchPackage().setInterviewInsights(interviewInsightExtractor.extract(run));
+        run.getResearchPackage().setSurveyInsights(surveyInsightExtractor.extract(run));
+        run.getResearchPackage().setCollectedAt(Instant.now());
+        AgentTraceContext.recordProcessSummary("""
+                Extractor research input insights refreshed:
+                interviewInsights=%d
+                surveyInsights=%d
+                """.formatted(
+                run.getResearchPackage().getInterviewInsights().size(),
+                run.getResearchPackage().getSurveyInsights().size()
+        ));
     }
 
     private AnalysisRun fallback(AnalysisRun run) {

@@ -1,11 +1,20 @@
 package com.aiinsight.service;
 
+import com.aiinsight.llm.ChatMessage;
+import com.aiinsight.llm.ChatOptions;
+import com.aiinsight.llm.ChatRequest;
+import com.aiinsight.llm.LlmClient;
 import com.aiinsight.model.run.AnalysisRun;
 import com.aiinsight.model.run.EvidenceSource;
 import com.aiinsight.model.schema.InterviewInsight;
+import com.aiinsight.util.JsonResponseExtractor;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 import static com.aiinsight.util.AgentUtils.containsIgnoreCase;
+import static com.aiinsight.util.AgentUtils.abbreviate;
 
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
@@ -13,7 +22,21 @@ import java.util.List;
 import java.util.Set;
 
 @Component
+@Slf4j
 public class InterviewInsightExtractor {
+
+    private final LlmClient llmClient;
+    private final ObjectMapper objectMapper;
+
+    public InterviewInsightExtractor() {
+        this(null, new ObjectMapper());
+    }
+
+    @Autowired
+    public InterviewInsightExtractor(LlmClient llmClient, ObjectMapper objectMapper) {
+        this.llmClient = llmClient;
+        this.objectMapper = objectMapper == null ? new ObjectMapper() : objectMapper;
+    }
 
     public List<InterviewInsight> extract(AnalysisRun run) {
         return run.getEvidenceSources().stream()
@@ -23,6 +46,12 @@ public class InterviewInsightExtractor {
     }
 
     private InterviewInsight toInterviewInsight(AnalysisRun run, EvidenceSource source) {
+        InterviewInsight fallback = ruleInterviewInsight(run, source);
+        InterviewInsight llmInsight = llmInterviewInsight(run, source);
+        return llmInsight == null ? fallback : mergeWithFallback(llmInsight, fallback, source);
+    }
+
+    private InterviewInsight ruleInterviewInsight(AnalysisRun run, EvidenceSource source) {
         String text = sourceText(source);
         String searchableText = source.getTitle() + " " + text;
         List<String> sentences = splitSentences(text);
@@ -30,7 +59,7 @@ public class InterviewInsightExtractor {
         insight.setEvidenceId(source.getCitationKey());
         insight.setSourceTitle(source.getTitle());
         insight.setIntervieweeRole(inferIntervieweeRole(searchableText));
-        insight.setScenario(inferScenario(sentences));
+        insight.setScenario(cleanInsightText(inferScenario(sentences)));
         insight.setPainPoints(matchingSentences(sentences, 4,
                 "痛点", "问题", "困难", "复杂", "慢", "成本高", "成本", "担心", "顾虑", "阻力", "风险", "权限", "审计",
                 "合规", "隐私", "迁移", "学习", "集成", "不愿", "不满意", "不足"));
@@ -44,6 +73,114 @@ public class InterviewInsightExtractor {
         insight.setDirectQuotes(extractDirectQuotes(sentences, insight.getPainPoints(), insight.getPositiveSignals()));
         insight.setConfidence(insight.getPainPoints().isEmpty() && insight.getPositiveSignals().isEmpty() ? "LOW" : "MEDIUM");
         return insight;
+    }
+
+    private InterviewInsight llmInterviewInsight(AnalysisRun run, EvidenceSource source) {
+        if (llmClient == null || !llmClient.isAvailable()) {
+            return null;
+        }
+        String text = sourceText(source);
+        if (text.isBlank()) {
+            return null;
+        }
+        try {
+            String raw = llmClient.complete(new ChatRequest(
+                    List.of(
+                            ChatMessage.system("你是 Extractor 的一手访谈结构化抽取器。只输出 JSON 对象，不要 Markdown。"),
+                            ChatMessage.user(interviewPrompt(run, source, text))
+                    ),
+                    new ChatOptions(0.1, 1200)
+            ).tagged("EXTRACTOR", "research-input:interview"));
+            InterviewInsight insight = objectMapper.readValue(JsonResponseExtractor.extractJsonObject(raw), InterviewInsight.class);
+            sanitizeInsight(insight, source, run, text);
+            return insight;
+        } catch (RuntimeException ex) {
+            log.warn("LLM interview insight extraction failed, falling back to rules: source={}, exception={}, message={}",
+                    source.getCitationKey(), ex.getClass().getSimpleName(), ex.getMessage());
+            return null;
+        } catch (Exception ex) {
+            log.warn("LLM interview insight JSON parse failed, falling back to rules: source={}, message={}",
+                    source.getCitationKey(), ex.getMessage());
+            return null;
+        }
+    }
+
+    private String interviewPrompt(AnalysisRun run, EvidenceSource source, String text) {
+        return """
+                请从用户提供的一手访谈纪要中抽取结构化洞察。
+
+                约束：
+                1. 只输出 JSON 对象，字段必须符合 schema。
+                2. evidenceId 必须等于 "%s"。
+                3. competitorMentions 只能从候选竞品中选择；没有则为空数组。
+                4. relatedDimensions 优先从候选维度中选择；可以补充明显相关的短维度名。
+                5. directQuotes 必须来自原文或是非常贴近原文的摘录，不要编造。
+                6. 不确定就写空数组或 LOW，不要硬凑。
+                7. 字段内容使用中文，数组最多 5 项。
+
+                schema:
+                {
+                  "evidenceId":"%s",
+                  "sourceTitle":"资料标题",
+                  "intervieweeRole":"角色",
+                  "scenario":"使用/评估场景",
+                  "painPoints":["痛点"],
+                  "positiveSignals":["正向信号"],
+                  "negativeSignals":["负向信号"],
+                  "buyingConcerns":["购买/引入顾虑"],
+                  "competitorMentions":["竞品"],
+                  "relatedDimensions":["维度"],
+                  "directQuotes":["原话或摘录"],
+                  "confidence":"LOW|MEDIUM|HIGH"
+                }
+
+                候选竞品：%s
+                候选维度：%s
+                标题：%s
+                原文：
+                %s
+                """.formatted(
+                source.getCitationKey(),
+                source.getCitationKey(),
+                run.getRequirement().getCompetitors(),
+                run.getRequirement().getDimensions(),
+                source.getTitle(),
+                abbreviate(text, 4500)
+        );
+    }
+
+    private InterviewInsight mergeWithFallback(InterviewInsight insight, InterviewInsight fallback, EvidenceSource source) {
+        insight.setEvidenceId(source.getCitationKey());
+        insight.setSourceTitle(firstText(insight.getSourceTitle(), fallback.getSourceTitle()));
+        insight.setIntervieweeRole(firstText(insight.getIntervieweeRole(), fallback.getIntervieweeRole()));
+        insight.setScenario(cleanInsightText(firstText(insight.getScenario(), fallback.getScenario())));
+        insight.setPainPoints(firstList(insight.getPainPoints(), fallback.getPainPoints()));
+        insight.setPositiveSignals(firstList(insight.getPositiveSignals(), fallback.getPositiveSignals()));
+        insight.setNegativeSignals(firstList(insight.getNegativeSignals(), fallback.getNegativeSignals()));
+        insight.setBuyingConcerns(firstList(insight.getBuyingConcerns(), fallback.getBuyingConcerns()));
+        insight.setCompetitorMentions(firstList(insight.getCompetitorMentions(), fallback.getCompetitorMentions()));
+        insight.setRelatedDimensions(firstList(insight.getRelatedDimensions(), fallback.getRelatedDimensions()));
+        insight.setDirectQuotes(firstList(insight.getDirectQuotes(), fallback.getDirectQuotes()));
+        insight.setConfidence(firstText(insight.getConfidence(), fallback.getConfidence()));
+        return insight;
+    }
+
+    private void sanitizeInsight(InterviewInsight insight, EvidenceSource source, AnalysisRun run, String sourceText) {
+        insight.setEvidenceId(source.getCitationKey());
+        insight.setSourceTitle(firstText(insight.getSourceTitle(), source.getTitle()));
+        insight.setScenario(cleanInsightText(insight.getScenario()));
+        insight.setPainPoints(cleanList(insight.getPainPoints(), 5));
+        insight.setPositiveSignals(cleanList(insight.getPositiveSignals(), 5));
+        insight.setNegativeSignals(cleanList(insight.getNegativeSignals(), 5));
+        insight.setBuyingConcerns(cleanList(insight.getBuyingConcerns(), 5));
+        insight.setCompetitorMentions(allowedValues(insight.getCompetitorMentions(), run.getRequirement().getCompetitors()));
+        insight.setRelatedDimensions(cleanList(insight.getRelatedDimensions(), 6));
+        insight.setDirectQuotes(sourceBackedQuotes(insight.getDirectQuotes(), sourceText));
+        if (!List.of("LOW", "MEDIUM", "HIGH").contains(firstText(insight.getConfidence(), "").toUpperCase())) {
+            insight.setConfidence("MEDIUM");
+        } else {
+            insight.setConfidence(insight.getConfidence().toUpperCase());
+        }
     }
 
     private String sourceText(EvidenceSource source) {
@@ -63,7 +200,7 @@ public class InterviewInsightExtractor {
         for (String part : parts) {
             String sentence = part.trim();
             if (!sentence.isBlank()) {
-                sentences.add(truncate(sentence, 140));
+                sentences.add(truncate(cleanInsightText(sentence), 140));
             }
         }
         return sentences;
@@ -187,5 +324,61 @@ public class InterviewInsightExtractor {
             return value;
         }
         return value.substring(0, maxLength) + "...";
+    }
+
+    private String cleanInsightText(String value) {
+        if (value == null) {
+            return "";
+        }
+        return value
+                .replaceAll("[、，,；;]\\s*[-•*]+\\s*", "；")
+                .replaceAll("^\\s*[-•*]+\\s*", "")
+                .replaceAll("\\s*[-•*]+\\s*$", "")
+                .replaceAll("\\s+", " ")
+                .trim();
+    }
+
+    private String firstText(String preferred, String fallback) {
+        return preferred == null || preferred.isBlank() ? (fallback == null ? "" : fallback) : preferred.trim();
+    }
+
+    private List<String> firstList(List<String> preferred, List<String> fallback) {
+        List<String> cleaned = cleanList(preferred, 6);
+        return cleaned.isEmpty() ? cleanList(fallback, 6) : cleaned;
+    }
+
+    private List<String> cleanList(List<String> values, int limit) {
+        if (values == null) {
+            return List.of();
+        }
+        return values.stream()
+                .map(this::cleanInsightText)
+                .filter(value -> !value.isBlank())
+                .distinct()
+                .limit(limit)
+                .toList();
+    }
+
+    private List<String> allowedValues(List<String> values, List<String> allowed) {
+        if (values == null || allowed == null || allowed.isEmpty()) {
+            return List.of();
+        }
+        String joinedValues = String.join(" ", cleanList(values, 12));
+        return allowed.stream()
+                .filter(candidate -> containsIgnoreCase(joinedValues, candidate))
+                .map(this::cleanInsightText)
+                .distinct()
+                .limit(6)
+                .toList();
+    }
+
+    private List<String> sourceBackedQuotes(List<String> values, String sourceText) {
+        if (sourceText == null || sourceText.isBlank()) {
+            return List.of();
+        }
+        return cleanList(values, 8).stream()
+                .filter(quote -> sourceText.contains(quote))
+                .limit(4)
+                .toList();
     }
 }

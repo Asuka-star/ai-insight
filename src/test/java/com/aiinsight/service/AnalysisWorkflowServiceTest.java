@@ -39,9 +39,11 @@ import com.aiinsight.model.review.ReviewRepairTask;
 import com.aiinsight.model.schema.AnalysisClaim;
 import com.aiinsight.model.schema.CompetitorProfile;
 import com.aiinsight.model.schema.InterviewGuide;
+import com.aiinsight.model.schema.InterviewInsight;
 import com.aiinsight.model.schema.Questionnaire;
 import com.aiinsight.model.schema.ResearchPlan;
 import com.aiinsight.model.schema.ResearchTask;
+import com.aiinsight.model.schema.SurveyInsight;
 import com.aiinsight.model.schema.SurveyQuestion;
 import com.aiinsight.repository.AnalysisRunRepository;
 import com.aiinsight.service.fallback.FallbackAnalysisDraftFactory;
@@ -420,6 +422,46 @@ class AnalysisWorkflowServiceTest {
     }
 
     @Test
+    void deletesResearchInsightWithoutRemovingOriginalEvidence() {
+        AnalysisRunRepository repository = new TestAnalysisRunRepository();
+        AnalysisWorkflowService service = newService(repository, new AnalysisEventBroker(), new TaskExecutorAdapter(Runnable::run), null);
+        AnalysisRun run = new AnalysisRun(new AnalysisRequirement(
+                "Analyze Cursor and Claude Code.",
+                "AI coding tools",
+                List.of("Cursor"),
+                List.of("用户体验"),
+                List.of(),
+                List.of()
+        ));
+        run.setStatus(AnalysisStatus.SUCCEEDED);
+        run.getEvidenceSources().add(new EvidenceSource("S105", "访谈对象 A", "", "访谈纪要"));
+        InterviewInsight interviewInsight = new InterviewInsight();
+        interviewInsight.setId("interview-1");
+        interviewInsight.setEvidenceId("S105");
+        interviewInsight.setScenario("跨文件重构");
+        run.getResearchPackage().getInterviewInsights().add(interviewInsight);
+        SurveyInsight surveyInsight = new SurveyInsight();
+        surveyInsight.setEvidenceId("S106");
+        surveyInsight.setTitle("问卷结果");
+        surveyInsight.getEvidenceIds().add("S106");
+        run.getResearchPackage().getSurveyInsights().add(surveyInsight);
+        repository.save(run);
+
+        AnalysisRun afterInterviewDelete = service.deleteResearchInsight(run.getId(), "interview", "interview-1");
+
+        assertThat(afterInterviewDelete.getResearchPackage().getInterviewInsights()).isEmpty();
+        assertThat(afterInterviewDelete.getEvidenceSources())
+                .extracting(EvidenceSource::getCitationKey)
+                .contains("S105");
+
+        AnalysisRun afterSurveyDelete = service.deleteResearchInsight(run.getId(), "survey", "S106");
+
+        assertThat(afterSurveyDelete.getResearchPackage().getSurveyInsights()).isEmpty();
+        assertThat(afterSurveyDelete.getRecommendedActions())
+                .anyMatch(action -> action.contains("结构化洞察已删除"));
+    }
+
+    @Test
     void startAutoConfirmsScopeDraft() {
         AnalysisWorkflowService service = newService();
         CreateAnalysisRunRequest request = new CreateAnalysisRunRequest();
@@ -556,6 +598,9 @@ class AnalysisWorkflowServiceTest {
         assertThat(updated.getEvidenceSources().get(0).getComplianceNote()).contains("internal-only");
         assertThat(updated.getEvidenceChunks()).hasSize(1);
         assertThat(updated.getResearchPackage().getSources()).hasSize(1);
+        assertThat(updated.getResearchPackage().getInterviewInsights()).isEmpty();
+        assertThat(updated.isPendingResearchInputRevision()).isTrue();
+        assertThat(updated.getPendingResearchInputReason()).contains("新增调研资料 S1 待应用");
         assertThat(updated.getRecommendedActions()).anyMatch(action -> action.contains("用户证据 S1 已加入"));
     }
 
@@ -578,6 +623,72 @@ class AnalysisWorkflowServiceTest {
         assertThat(updated.getEvidenceChunks()).isNotEmpty();
         assertThat(updated.getResearchPackage().getSources()).hasSize(1);
         assertThat(updated.getRecommendedActions()).anyMatch(action -> action.contains("公开来源 S1 已加入"));
+    }
+
+    @Test
+    void reusesExistingEvidenceWhenAddingDuplicateUserUrl() {
+        AnalysisWorkflowService service = newService();
+        CreateAnalysisRunRequest request = new CreateAnalysisRunRequest();
+        request.setPrompt("Analyze Cursor and Claude Code.");
+        var run = service.createDraft(request);
+        run.getEvidenceSources().add(new EvidenceSource(
+                "S1",
+                "Cursor Agent docs",
+                "https://docs.cursor.com/agent",
+                "product_docs",
+                "FETCHED",
+                "LIVE_FETCHED",
+                "HIGH",
+                "NONE",
+                "Cursor Agent documentation.",
+                "Cursor Agent documentation with enough raw text for testing.",
+                "official docs"
+        ));
+        run.getEvidenceChunks().add(new EvidenceChunk(
+                "S1-C1",
+                "S1",
+                1,
+                "Cursor Agent docs",
+                "https://docs.cursor.com/agent",
+                "Cursor Agent documentation."
+        ));
+        run.getResearchPackage().setSources(new ArrayList<>(run.getEvidenceSources()));
+
+        AddUserEvidenceRequest evidenceRequest = new AddUserEvidenceRequest();
+        evidenceRequest.setSourceType("url");
+        evidenceRequest.setUrl("https://docs.cursor.com/agent/");
+
+        var updated = service.addEvidence(run.getId(), evidenceRequest);
+
+        assertThat(updated.getEvidenceSources()).hasSize(1);
+        assertThat(updated.getEvidenceChunks()).hasSize(1);
+        assertThat(updated.getResearchPackage().getSources()).hasSize(1);
+        assertThat(updated.getRecommendedActions())
+                .anyMatch(action -> action.contains("公开来源 S1 已存在：该 URL 与现有来源重复，未重复加入"));
+    }
+
+    @Test
+    void reusesExistingEvidenceWhenDifferentUserUrlFetchesSameContent() {
+        AnalysisWorkflowService service = newService();
+        CreateAnalysisRunRequest request = new CreateAnalysisRunRequest();
+        request.setPrompt("Analyze Cursor and Claude Code.");
+        var run = service.createDraft(request);
+
+        AddUserEvidenceRequest firstUrl = new AddUserEvidenceRequest();
+        firstUrl.setSourceType("url");
+        firstUrl.setUrl("https://docs.cursor.com/agent");
+        var withFirstUrl = service.addEvidence(run.getId(), firstUrl);
+
+        AddUserEvidenceRequest secondUrl = new AddUserEvidenceRequest();
+        secondUrl.setSourceType("url");
+        secondUrl.setUrl("https://docs.cursor.com/account/agent-security");
+        var updated = service.addEvidence(run.getId(), secondUrl);
+
+        assertThat(withFirstUrl.getEvidenceSources()).hasSize(1);
+        assertThat(updated.getEvidenceSources()).hasSize(1);
+        assertThat(updated.getEvidenceChunks()).hasSize(1);
+        assertThat(updated.getRecommendedActions())
+                .anyMatch(action -> action.contains("公开来源 S1 已存在：该 URL 重定向到 https://cursor.com/cn/docs 后与现有来源重复，未重复加入"));
     }
 
     @Test
@@ -885,13 +996,14 @@ class AnalysisWorkflowServiceTest {
                     assertThat(source.getSourceType()).isEqualTo("user_survey");
                     assertThat(source.getRawText()).contains("Sample size: 3");
                 });
-        assertThat(imported.getResearchPackage().getSurveyInsights()).isNotEmpty();
+        assertThat(imported.getResearchPackage().getSurveyInsights()).isEmpty();
         assertThat(imported.getSteps()).isEmpty();
         assertThat(imported.isPendingResearchInputRevision()).isTrue();
         assertThat(imported.getPendingResearchInputReason()).contains("click apply");
 
         AnalysisRun applied = service.rerunAgent(run.getId(), AgentName.EXTRACTOR);
 
+        assertThat(applied.getResearchPackage().getSurveyInsights()).isNotEmpty();
         assertThat(applied.isPendingResearchInputRevision()).isFalse();
         assertThat(applied.getPendingResearchInputReason()).isNull();
         assertThat(applied.getSteps())
@@ -4941,9 +5053,12 @@ class AnalysisWorkflowServiceTest {
         return new WebPageFetchService() {
             @Override
             public FetchedPage fetch(String url) {
+                String finalUrl = "https://docs.cursor.com/account/agent-security".equals(url)
+                        ? "https://cursor.com/cn/docs"
+                        : url;
                 return FetchedPage.success(
-                        url,
-                        "Useful page for " + url,
+                        finalUrl,
+                        "Useful page for " + finalUrl,
                         """
                                 This official product documentation page describes pricing, reviews, enterprise controls,
                                 collaboration workflows, permission governance, AI features, release notes, support options,
@@ -5032,9 +5147,7 @@ class AnalysisWorkflowServiceTest {
                 researchAgent,
                 llmClient,
                 new ObjectMapper(),
-                new FallbackResearchPlanFactory(),
-                new InterviewInsightExtractor(),
-                new SurveyInsightExtractor()
+                new FallbackResearchPlanFactory()
         );
     }
 

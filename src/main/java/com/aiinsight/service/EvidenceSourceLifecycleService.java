@@ -34,9 +34,10 @@ public class EvidenceSourceLifecycleService {
             return new EvidenceReplacementResult(0, 0);
         }
         List<EvidenceSource> sources = collectedSources == null ? new ArrayList<>() : collectedSources;
-        retainReferencedSourcesForAudit(run, beforeSources == null ? List.of() : beforeSources, sources);
-        Map<String, EvidenceSource> sourcesByKey = sourcesByCitationKey(sources);
         BindingRepairStats stats = new BindingRepairStats();
+        stats.prunedSources += mergeDuplicateFetchedSources(run, sources, stats);
+        retainReferencedSourcesForAudit(run, beforeSources == null ? List.of() : beforeSources, sources, stats);
+        Map<String, EvidenceSource> sourcesByKey = sourcesByCitationKey(sources);
         repairClaimBindings(run, sourcesByKey, stats);
         repairFactBindings(run, sourcesByKey, stats);
         repairProfileBindings(run, sourcesByKey, stats);
@@ -44,7 +45,10 @@ public class EvidenceSourceLifecycleService {
         return new EvidenceReplacementResult(stats.replacedBindings, stats.prunedBindings, stats.prunedSources);
     }
 
-    private void retainReferencedSourcesForAudit(AnalysisRun run, List<EvidenceSource> beforeSources, List<EvidenceSource> currentSources) {
+    private void retainReferencedSourcesForAudit(AnalysisRun run,
+                                                List<EvidenceSource> beforeSources,
+                                                List<EvidenceSource> currentSources,
+                                                BindingRepairStats stats) {
         Set<String> referenced = referencedCitationKeys(run);
         Set<String> currentKeys = currentSources.stream()
                 .filter(source -> source != null)
@@ -55,7 +59,258 @@ public class EvidenceSourceLifecycleService {
                 .filter(source -> source != null)
                 .filter(source -> referenced.contains(source.getCitationKey()))
                 .filter(source -> currentKeys.add(source.getCitationKey()))
-                .forEach(currentSources::add);
+                .forEach(source -> {
+                    EvidenceSource duplicate = duplicateFetchedSource(currentSources, source);
+                    if (duplicate != null) {
+                        remapEvidenceReferences(run, Map.of(source.getCitationKey(), duplicate.getCitationKey()), stats);
+                        appendDuplicateNote(source, duplicate);
+                        stats.prunedSources++;
+                        return;
+                    }
+                    currentSources.add(source);
+                });
+    }
+
+    private int mergeDuplicateFetchedSources(AnalysisRun run, List<EvidenceSource> sources, BindingRepairStats stats) {
+        if (sources == null || sources.isEmpty()) {
+            return 0;
+        }
+        Map<String, String> duplicateToCanonical = new LinkedHashMap<>();
+        List<EvidenceSource> deduplicated = new ArrayList<>();
+        for (EvidenceSource source : sources) {
+            if (source == null) {
+                continue;
+            }
+            EvidenceSource duplicate = duplicateFetchedSource(deduplicated, source);
+            if (duplicate != null && StringUtils.hasText(source.getCitationKey()) && StringUtils.hasText(duplicate.getCitationKey())) {
+                duplicateToCanonical.put(source.getCitationKey(), duplicate.getCitationKey());
+                appendDuplicateNote(source, duplicate);
+                continue;
+            }
+            deduplicated.add(source);
+        }
+        if (duplicateToCanonical.isEmpty()) {
+            return 0;
+        }
+        sources.clear();
+        sources.addAll(deduplicated);
+        remapEvidenceReferences(run, duplicateToCanonical, stats);
+        return duplicateToCanonical.size();
+    }
+
+    private EvidenceSource duplicateFetchedSource(List<EvidenceSource> sources, EvidenceSource candidate) {
+        if (sources == null || sources.isEmpty() || candidate == null) {
+            return null;
+        }
+        return sources.stream()
+                .filter(existing -> sameFetchedSource(existing, candidate))
+                .findFirst()
+                .orElse(null);
+    }
+
+    private boolean sameFetchedSource(EvidenceSource existing, EvidenceSource candidate) {
+        if (existing == null || candidate == null) {
+            return false;
+        }
+        String candidateUrl = normalizeUrl(candidate.getUrl());
+        if (StringUtils.hasText(candidateUrl) && candidateUrl.equals(normalizeUrl(existing.getUrl()))) {
+            return true;
+        }
+        if (!contentHashComparable(existing) || !contentHashComparable(candidate)) {
+            return false;
+        }
+        return normalizeLower(existing.getContentHash()).equals(normalizeLower(candidate.getContentHash()))
+                && StringUtils.hasText(normalizeLower(existing.getTitle()))
+                && normalizeLower(existing.getTitle()).equals(normalizeLower(candidate.getTitle()))
+                && StringUtils.hasText(sourceHost(existing))
+                && sourceHost(existing).equals(sourceHost(candidate));
+    }
+
+    private boolean contentHashComparable(EvidenceSource source) {
+        return source != null
+                && "FETCHED".equalsIgnoreCase(source.getCollectionStatus())
+                && StringUtils.hasText(source.getContentHash())
+                && StringUtils.hasText(source.getRawText())
+                && !"METADATA_ONLY".equalsIgnoreCase(source.getFailureReason());
+    }
+
+    private String sourceHost(EvidenceSource source) {
+        if (source == null) {
+            return "";
+        }
+        if (StringUtils.hasText(source.getCanonicalHost())) {
+            return normalizeLower(source.getCanonicalHost());
+        }
+        try {
+            java.net.URI uri = java.net.URI.create(text(source.getUrl()));
+            return normalizeLower(uri.getHost());
+        } catch (RuntimeException ex) {
+            return "";
+        }
+    }
+
+    private String normalizeUrl(String url) {
+        if (!StringUtils.hasText(url)) {
+            return "";
+        }
+        try {
+            java.net.URI uri = java.net.URI.create(url.trim()).normalize();
+            String scheme = StringUtils.hasText(uri.getScheme()) ? uri.getScheme().toLowerCase(Locale.ROOT) : "https";
+            String host = uri.getHost();
+            if (!StringUtils.hasText(host)) {
+                return normalizeLower(url).replaceFirst("#.*$", "").replaceFirst("/+$", "");
+            }
+            String path = StringUtils.hasText(uri.getPath()) ? uri.getPath().replaceFirst("/+$", "") : "";
+            return new java.net.URI(
+                    scheme,
+                    uri.getUserInfo(),
+                    host.toLowerCase(Locale.ROOT),
+                    uri.getPort(),
+                    path,
+                    uri.getQuery(),
+                    null
+            ).toString().toLowerCase(Locale.ROOT);
+        } catch (IllegalArgumentException | java.net.URISyntaxException ex) {
+            return normalizeLower(url).replaceFirst("#.*$", "").replaceFirst("/+$", "");
+        }
+    }
+
+    private void remapEvidenceReferences(AnalysisRun run, Map<String, String> replacements, BindingRepairStats stats) {
+        if (run == null || replacements == null || replacements.isEmpty()) {
+            return;
+        }
+        safeList(run.getClaims()).stream()
+                .filter(claim -> claim != null)
+                .forEach(claim -> {
+                    remapEvidenceList(claim.getEvidenceIds(), replacements, stats);
+                    remapChunkKeys(claim.getChunkKeys(), replacements, stats);
+                });
+        safeList(run.getCompetitorFactSets()).stream()
+                .filter(factSet -> factSet != null)
+                .forEach(factSet -> safeList(factSet.getFacts()).stream()
+                        .filter(fact -> fact != null)
+                        .forEach(fact -> {
+                            remapEvidenceList(fact.getEvidenceIds(), replacements, stats);
+                            remapChunkKeys(fact.getChunkKeys(), replacements, stats);
+                        }));
+        safeList(run.getCompetitorProfiles()).stream()
+                .filter(profile -> profile != null)
+                .forEach(profile -> remapProfileEvidence(profile, replacements, stats));
+        if (run.getResearchPackage() != null) {
+            safeList(run.getResearchPackage().getSurveyResultImports())
+                    .forEach(resultImport -> remapEvidenceList(resultImport.getEvidenceIds(), replacements, stats));
+            safeList(run.getResearchPackage().getSurveyInsights()).stream()
+                    .filter(insight -> insight != null)
+                    .forEach(insight -> {
+                        if (replacements.containsKey(insight.getEvidenceId())) {
+                            insight.setEvidenceId(replacements.get(insight.getEvidenceId()));
+                            stats.replacedBindings++;
+                        }
+                        remapEvidenceList(insight.getEvidenceIds(), replacements, stats);
+                        safeList(insight.getFindings()).stream()
+                                .filter(finding -> finding != null)
+                                .forEach(finding -> remapEvidenceList(finding.getEvidenceIds(), replacements, stats));
+                    });
+        }
+        safeList(run.getArtifacts()).stream()
+                .filter(artifact -> artifact != null)
+                .forEach(artifact -> remapEvidenceList(artifact.getCitationKeys(), replacements, stats));
+    }
+
+    private void remapProfileEvidence(CompetitorProfile profile, Map<String, String> replacements, BindingRepairStats stats) {
+        remapEvidenceList(profile.getEvidenceIds(), replacements, stats);
+        if (profile.getFeatureTree() != null) {
+            safeList(profile.getFeatureTree().getRoots()).forEach(node -> remapFeatureNodeEvidence(node, replacements, stats));
+        }
+        PricingModel pricingModel = profile.getPricingModel();
+        if (pricingModel != null) {
+            remapEvidenceList(pricingModel.getEvidenceIds(), replacements, stats);
+            safeList(pricingModel.getPlans()).stream()
+                    .filter(plan -> plan != null)
+                    .forEach(plan -> remapEvidenceList(plan.getEvidenceIds(), replacements, stats));
+        }
+        safeList(profile.getPersonas()).stream()
+                .filter(persona -> persona != null)
+                .forEach(persona -> remapEvidenceList(persona.getEvidenceIds(), replacements, stats));
+    }
+
+    private void remapFeatureNodeEvidence(FeatureNode node, Map<String, String> replacements, BindingRepairStats stats) {
+        if (node == null) {
+            return;
+        }
+        remapEvidenceList(node.getEvidenceIds(), replacements, stats);
+        safeList(node.getChildren()).forEach(child -> remapFeatureNodeEvidence(child, replacements, stats));
+    }
+
+    private void remapEvidenceList(List<String> evidenceIds, Map<String, String> replacements, BindingRepairStats stats) {
+        if (evidenceIds == null || evidenceIds.isEmpty() || replacements == null || replacements.isEmpty()) {
+            return;
+        }
+        List<String> remapped = new ArrayList<>();
+        int replaced = 0;
+        int pruned = 0;
+        for (String evidenceId : evidenceIds) {
+            String next = replacements.getOrDefault(evidenceId, evidenceId);
+            if (!next.equals(evidenceId)) {
+                replaced++;
+            }
+            if (StringUtils.hasText(next) && !remapped.contains(next)) {
+                remapped.add(next);
+            } else if (StringUtils.hasText(next)) {
+                pruned++;
+            }
+        }
+        if (replaced == 0 && pruned == 0) {
+            return;
+        }
+        evidenceIds.clear();
+        evidenceIds.addAll(remapped);
+        stats.replacedBindings += replaced;
+        stats.prunedBindings += pruned;
+    }
+
+    private void remapChunkKeys(List<String> chunkKeys, Map<String, String> replacements, BindingRepairStats stats) {
+        if (chunkKeys == null || chunkKeys.isEmpty() || replacements == null || replacements.isEmpty()) {
+            return;
+        }
+        List<String> remapped = new ArrayList<>();
+        int replaced = 0;
+        int pruned = 0;
+        for (String chunkKey : chunkKeys) {
+            String next = remapChunkKey(chunkKey, replacements);
+            if (!next.equals(chunkKey)) {
+                replaced++;
+            }
+            if (!remapped.contains(next)) {
+                remapped.add(next);
+            } else {
+                pruned++;
+            }
+        }
+        if (replaced == 0 && pruned == 0) {
+            return;
+        }
+        chunkKeys.clear();
+        chunkKeys.addAll(remapped);
+        stats.replacedBindings += replaced;
+        stats.prunedBindings += pruned;
+    }
+
+    private String remapChunkKey(String chunkKey, Map<String, String> replacements) {
+        if (!StringUtils.hasText(chunkKey)) {
+            return chunkKey;
+        }
+        for (Map.Entry<String, String> entry : replacements.entrySet()) {
+            String oldKey = entry.getKey();
+            if (chunkKey.equals(oldKey) || chunkKey.startsWith(oldKey + "-C")) {
+                return entry.getValue() + chunkKey.substring(oldKey.length());
+            }
+        }
+        return chunkKey;
+    }
+
+    private void appendDuplicateNote(EvidenceSource duplicate, EvidenceSource canonical) {
+        appendNote(duplicate, "该来源与 " + canonical.getCitationKey() + " 抓取到相同最终页面或正文内容，已合并引用以避免重复展示。");
     }
 
     private int pruneInactiveHistoricalSources(AnalysisRun run,

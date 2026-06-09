@@ -50,25 +50,36 @@ public class FallbackReportDraftFactory {
 
                 %s
 
-                ## 竞品对比（竞品矩阵摘要）
+                ## 竞品能力矩阵
 
                 %s
 
-                ## 机会与风险（SWOT 摘要）
+                ## 机会与风险摘要（SWOT）
 
                 %s
 
-                ## 下一步补证清单
+                ## 风险与证据缺口
 
                 %s
+
+                ## 下一步验证计划
+
+                %s
+
+                ## 结论与建议
+
+                - 首选借鉴方向：优先采用已有证据支撑且能直接服务输出目标的能力，低置信度结论先进入验证计划。
+                - 暂不建议投入：证据不足、待验证或缺少官方来源的判断不进入当前确定借鉴范围。
+                - 最终决策口径：以“建议优先级”和“竞品能力矩阵”为主，风险和验证动作分别参考前文对应章节。
                 """.formatted(
                 run.getRequirement().getOriginalPrompt(),
                 String.join("、", run.getRequirement().getCompetitors()),
                 firstCitation,
                 priorityTable,
                 claimSummary,
-                matrixFallback(run),
-                swotFallback(run),
+                capabilityMatrixFallback(run),
+                swotSummaryFallback(run),
+                riskGapFallback(run),
                 evidenceGap
         );
     }
@@ -124,8 +135,7 @@ public class FallbackReportDraftFactory {
         return value.substring(0, maxChars) + "...";
     }
 
-    // 矩阵和 SWOT 不再由 Analyst 预生成，fallback 时从 claims 中简单提取摘要。
-    private String matrixFallback(AnalysisRun run) {
+    private String capabilityMatrixFallback(AnalysisRun run) {
         if (run.getClaims().isEmpty()) {
             return "暂无竞品矩阵数据，需 LLM 生成完整报告。";
         }
@@ -139,14 +149,25 @@ public class FallbackReportDraftFactory {
                 .collect(Collectors.joining("\n"));
     }
 
-    private String swotFallback(AnalysisRun run) {
+    private String swotSummaryFallback(AnalysisRun run) {
         if (run.getClaims().isEmpty()) {
-            return "暂无 SWOT 数据，需 LLM 生成完整报告。";
+            return "- 优势：暂无足够证据归纳。\n- 短板：暂无足够证据归纳。\n- 机会：围绕用户目标继续补证。\n- 威胁：证据不足时避免形成确定选型。";
         }
         return run.getClaims().stream()
                 .filter(c -> c.getType() != null)
                 .limit(4)
-                .map(c -> "- [%s] %s".formatted(c.getType(), abbreviate(c.getContent(), 60)))
+                .map(c -> "- [%s/%s] %s".formatted(c.getType(), c.getConfidence(), abbreviate(c.getContent(), 60)))
                 .collect(Collectors.joining("\n"));
+    }
+
+    private String riskGapFallback(AnalysisRun run) {
+        long weakClaims = run.getClaims().stream()
+                .filter(claim -> claim.getEvidenceIds() == null || claim.getEvidenceIds().isEmpty()
+                        || claim.getConfidence() == ConfidenceLevel.LOW)
+                .count();
+        if (weakClaims == 0) {
+            return "当前未发现低置信度结论，但仍需人工复核引用覆盖和证据新鲜度。";
+        }
+        return "存在 %d 条低置信度或缺少证据的结论，建议先补齐官方资料、试用记录或一手访谈后再进入确定选型。".formatted(weakClaims);
     }
 }

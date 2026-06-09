@@ -48,6 +48,7 @@ import org.springframework.web.multipart.MultipartFile;
 import static com.aiinsight.util.AgentUtils.CITATION_PATTERN;
 import static com.aiinsight.util.AgentUtils.containsIgnoreCase;
 
+import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
@@ -81,8 +82,6 @@ public class AnalysisWorkflowService {
     private final DocumentIngestionService documentIngestionService;
     private final PiiDesensitizer piiDesensitizer;
     private final ConcurrentMap<UUID, AgentName> activeReruns = new ConcurrentHashMap<>();
-    private InterviewInsightExtractor interviewInsightExtractor = new InterviewInsightExtractor();
-    private SurveyInsightExtractor surveyInsightExtractor = new SurveyInsightExtractor();
     private SurveyResultImportService surveyResultImportService = new SurveyResultImportService();
 
     @Autowired
@@ -478,6 +477,7 @@ public class AnalysisWorkflowService {
         ensureEvidenceAcceptable(run);
         String sourceType = normalizeUserEvidenceSourceType(request.getSourceType());
         String citationKey;
+        int recommendedActionStart = run.getRecommendedActions().size();
         if (containsIgnoreCase(sourceType, "url")) {
             citationKey = attachUserUrlEvidence(run, request.getUrl());
         } else {
@@ -489,20 +489,17 @@ public class AnalysisWorkflowService {
                     request.isSensitive());
             citationKey = attachUserEvidence(run, evidence);
         }
+        String evidenceMessage = latestRecommendedActionSince(
+                run,
+                recommendedActionStart,
+                "用户补充资料已加入证据链：" + citationKey
+        );
         if (isResearchInputType(sourceType)) {
-            refreshResearchInputInsights(run);
             markResearchInputPending(run, "新增调研资料 " + citationKey + " 待应用到分析链路");
         }
         repository.save(run);
-        eventBroker.publish(run, "evidence_added", "用户补充资料已加入证据链：" + citationKey);
+        eventBroker.publish(run, "evidence_added", evidenceMessage);
         return run;
-    }
-
-    @Autowired(required = false)
-    public void setSurveyInsightExtractor(SurveyInsightExtractor surveyInsightExtractor) {
-        if (surveyInsightExtractor != null) {
-            this.surveyInsightExtractor = surveyInsightExtractor;
-        }
     }
 
     @Autowired(required = false)
@@ -559,10 +556,39 @@ public class AnalysisWorkflowService {
         String citationKey = attachUserEvidence(run, evidence);
         resultImport.getEvidenceIds().add(citationKey);
         run.getResearchPackage().getSurveyResultImports().add(resultImport);
-        refreshResearchInputInsights(run);
         markResearchInputPending(run, "Imported survey results as " + citationKey + "; click apply to rerun Extractor and downstream agents.");
         repository.save(run);
-            eventBroker.publish(run, "survey_results_imported", "问卷结果已导入：" + citationKey);
+        eventBroker.publish(run, "survey_results_imported", "问卷结果已导入：" + citationKey);
+        return run;
+    }
+
+    public AnalysisRun deleteResearchInsight(UUID runId, String insightType, String insightId) {
+        AnalysisRun run = get(runId);
+        ensureAgentRerunnable(run);
+        String normalizedType = insightType == null ? "" : insightType.trim().toLowerCase(Locale.ROOT);
+        String normalizedId = insightId == null ? "" : insightId.trim();
+        if (normalizedId.isBlank()) {
+            throw new InvalidRunStateException(runId, "research insight id is required");
+        }
+        boolean removed;
+        if ("interview".equals(normalizedType)) {
+            removed = run.getResearchPackage().getInterviewInsights().removeIf(insight ->
+                    normalizedId.equals(insight.getId()) || normalizedId.equals(insight.getEvidenceId()));
+        } else if ("survey".equals(normalizedType)) {
+            removed = run.getResearchPackage().getSurveyInsights().removeIf(insight ->
+                    normalizedId.equals(String.valueOf(insight.getId()))
+                            || normalizedId.equals(insight.getEvidenceId())
+                            || insight.getEvidenceIds().contains(normalizedId));
+        } else {
+            throw new InvalidRunStateException(runId, "unsupported research insight type: " + insightType);
+        }
+        if (!removed) {
+            throw new InvalidRunStateException(runId, "research insight not found: " + insightId);
+        }
+        run.getResearchPackage().setCollectedAt(Instant.now());
+        run.getRecommendedActions().add("结构化洞察已删除。若需要恢复，可重新应用调研资料或重跑 EXTRACTOR。");
+        repository.save(run);
+        eventBroker.publish(run, "research_insight_deleted", "结构化洞察已删除");
         return run;
     }
 
@@ -1061,10 +1087,27 @@ public class AnalysisWorkflowService {
         if (!StringUtils.hasText(url)) {
             throw new InvalidRunStateException(run.getId(), "url evidence requires a public URL");
         }
+        String trimmedUrl = url.trim();
+        EvidenceSource existing = existingSourceByUrl(run, trimmedUrl);
+        if (existing != null) {
+            String citationKey = existing.getCitationKey();
+            run.getResearchPackage().setSources(new ArrayList<>(run.getEvidenceSources()));
+            run.getResearchPackage().setCollectedAt(Instant.now());
+            run.getRecommendedActions().add("公开来源 " + citationKey + " 已存在：该 URL 与现有来源重复，未重复加入：" + trimmedUrl);
+            return citationKey;
+        }
         String citationKey = nextCitationKey(run);
-        EvidenceSource source = sourceCollectionService.fromUserProvidedUrl(citationKey, url.trim());
+        EvidenceSource source = sourceCollectionService.fromUserProvidedUrl(citationKey, trimmedUrl);
         if (source == null) {
             throw new InvalidRunStateException(run.getId(), "failed to fetch usable content from url evidence");
+        }
+        EvidenceSource duplicate = existingSourceByFetchedSource(run, source);
+        if (duplicate != null) {
+            String existingCitationKey = duplicate.getCitationKey();
+            run.getResearchPackage().setSources(new ArrayList<>(run.getEvidenceSources()));
+            run.getResearchPackage().setCollectedAt(Instant.now());
+            run.getRecommendedActions().add(duplicateUserUrlMessage(existingCitationKey, trimmedUrl, source));
+            return existingCitationKey;
         }
         run.getEvidenceSources().add(source);
         if ("FETCHED".equalsIgnoreCase(source.getCollectionStatus()) && StringUtils.hasText(source.getRawText())) {
@@ -1077,6 +1120,88 @@ public class AnalysisWorkflowService {
             run.getRecommendedActions().add("公开来源 " + citationKey + " 需要关注：" + source.getSnippet());
         }
         return citationKey;
+    }
+
+    private String latestRecommendedActionSince(AnalysisRun run, int startIndex, String fallback) {
+        List<String> actions = run.getRecommendedActions();
+        if (actions == null || actions.size() <= startIndex) {
+            return fallback;
+        }
+        for (int index = actions.size() - 1; index >= startIndex; index--) {
+            String action = actions.get(index);
+            if (StringUtils.hasText(action)) {
+                return action;
+            }
+        }
+        return fallback;
+    }
+
+    private String duplicateUserUrlMessage(String citationKey, String requestedUrl, EvidenceSource fetchedSource) {
+        String finalUrl = fetchedSource == null ? "" : fetchedSource.getUrl();
+        if (StringUtils.hasText(finalUrl)
+                && !normalizeEvidenceUrl(requestedUrl).equals(normalizeEvidenceUrl(finalUrl))) {
+            return "公开来源 " + citationKey + " 已存在：该 URL 重定向到 " + finalUrl + " 后与现有来源重复，未重复加入。";
+        }
+        return "公开来源 " + citationKey + " 已存在：该 URL 抓取后的内容与现有来源重复，未重复加入：" + requestedUrl;
+    }
+
+    private EvidenceSource existingSourceByUrl(AnalysisRun run, String url) {
+        String normalizedUrl = normalizeEvidenceUrl(url);
+        if (!StringUtils.hasText(normalizedUrl)) {
+            return null;
+        }
+        return run.getEvidenceSources().stream()
+                .filter(source -> normalizedUrl.equals(normalizeEvidenceUrl(source.getUrl())))
+                .findFirst()
+                .orElse(null);
+    }
+
+    private EvidenceSource existingSourceByFetchedSource(AnalysisRun run, EvidenceSource fetchedSource) {
+        String finalUrl = normalizeEvidenceUrl(fetchedSource.getUrl());
+        String contentHash = StringUtils.hasText(fetchedSource.getContentHash())
+                ? fetchedSource.getContentHash().trim()
+                : "";
+        boolean fetchedContentUsable = "FETCHED".equalsIgnoreCase(fetchedSource.getCollectionStatus())
+                && StringUtils.hasText(contentHash);
+        return run.getEvidenceSources().stream()
+                .filter(existing -> {
+                    if (StringUtils.hasText(finalUrl)
+                            && finalUrl.equals(normalizeEvidenceUrl(existing.getUrl()))) {
+                        return true;
+                    }
+                    return fetchedContentUsable
+                            && contentHash.equals(StringUtils.hasText(existing.getContentHash())
+                            ? existing.getContentHash().trim()
+                            : "");
+                })
+                .findFirst()
+                .orElse(null);
+    }
+
+    private String normalizeEvidenceUrl(String url) {
+        if (!StringUtils.hasText(url)) {
+            return "";
+        }
+        try {
+            URI uri = URI.create(url.trim()).normalize();
+            String scheme = StringUtils.hasText(uri.getScheme()) ? uri.getScheme().toLowerCase(Locale.ROOT) : "https";
+            String host = uri.getHost();
+            if (!StringUtils.hasText(host)) {
+                return url.trim().replaceFirst("/+$", "").toLowerCase(Locale.ROOT);
+            }
+            String path = StringUtils.hasText(uri.getPath()) ? uri.getPath().replaceFirst("/+$", "") : "";
+            return new URI(
+                    scheme,
+                    uri.getUserInfo(),
+                    host.toLowerCase(Locale.ROOT),
+                    uri.getPort(),
+                    path,
+                    null,
+                    null
+            ).toString().toLowerCase(Locale.ROOT);
+        } catch (IllegalArgumentException | java.net.URISyntaxException ex) {
+            return url.trim().replaceFirst("[#?].*$", "").replaceFirst("/+$", "").toLowerCase(Locale.ROOT);
+        }
     }
 
     private String normalizeUserEvidenceSourceType(String sourceType) {
@@ -1147,12 +1272,6 @@ public class AnalysisWorkflowService {
         run.setPendingResearchInputReason(reason);
         run.getRecommendedActions().add(reason);
         run.touch();
-    }
-
-    private void refreshResearchInputInsights(AnalysisRun run) {
-        run.getResearchPackage().setInterviewInsights(interviewInsightExtractor.extract(run));
-        run.getResearchPackage().setSurveyInsights(surveyInsightExtractor.extract(run));
-        run.getResearchPackage().setCollectedAt(Instant.now());
     }
 
     private void clearAppliedResearchInputPending(AnalysisRun run, AgentName agentName) {

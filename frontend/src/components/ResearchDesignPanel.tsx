@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState, type Dispatch, type SetStateAction } from "react";
-import { ClipboardList, DownloadCloud, FileSpreadsheet, MessageSquareText, Pencil, Plus, RefreshCw, Save, Trash2, X } from "lucide-react";
+import { ChevronDown, ClipboardList, DownloadCloud, FileSpreadsheet, MessageSquareText, Pencil, Plus, RefreshCw, Save, Trash2, X } from "lucide-react";
 import type { InterviewGuide, InterviewInsight, Questionnaire, SurveyInsight, SurveyQuestion, SurveyResultImport } from "../types";
 
 interface ResearchDesignPanelProps {
@@ -15,6 +15,8 @@ interface ResearchDesignPanelProps {
   onDownloadTemplate?: () => void;
   onSaveQuestionnaire?: (questionnaire: Questionnaire) => void;
   onApplyResearchInputs?: () => void;
+  onDeleteInsight?: (insightType: "survey" | "interview", insightId: string) => void;
+  deletingInsightKey?: string;
 }
 
 export function ResearchDesignPanel({
@@ -29,9 +31,12 @@ export function ResearchDesignPanel({
   pendingRevisionReason,
   onDownloadTemplate,
   onSaveQuestionnaire,
-  onApplyResearchInputs
+  onApplyResearchInputs,
+  onDeleteInsight,
+  deletingInsightKey
 }: ResearchDesignPanelProps) {
   const [editingQuestionnaire, setEditingQuestionnaire] = useState(false);
+  const [expandedInsightKeys, setExpandedInsightKeys] = useState<Record<string, boolean>>({});
   const [draftQuestionnaire, setDraftQuestionnaire] = useState<Questionnaire>(() => editableQuestionnaire(questionnaire));
   const questions = questionnaire?.questions ?? [];
   const draftQuestions = draftQuestionnaire.questions ?? [];
@@ -46,6 +51,13 @@ export function ResearchDesignPanel({
       setDraftQuestionnaire(editableQuestionnaire(questionnaire));
     }
   }, [editingQuestionnaire, questionnaire]);
+
+  const toggleInsight = (key: string) => {
+    setExpandedInsightKeys((current) => ({
+      ...current,
+      [key]: !current[key]
+    }));
+  };
 
   return (
     <div className="research-design-panel">
@@ -262,20 +274,105 @@ export function ResearchDesignPanel({
           <small>{surveyInsights.length} 问卷 / {interviewInsights.length} 访谈</small>
         </div>
         <div className="research-insight-grid">
-          {surveyInsights.slice(0, 4).map((insight) => (
-            <article className="research-insight" key={insight.id ?? insight.evidenceId}>
-              <small>{insight.evidenceId || "survey"}</small>
-              <strong>{insight.title || "问卷洞察"} / {insight.sampleSize || "unknown sample"}</strong>
-              <p>{insight.findings?.[0]?.finding || insight.findings?.[0]?.interpretation || "暂无摘要"}</p>
-            </article>
-          ))}
-          {interviewInsights.slice(0, 4).map((insight) => (
-            <article className="research-insight" key={insight.id ?? insight.evidenceId}>
-              <small>{insight.evidenceId || "interview"}</small>
-              <strong>{insight.intervieweeRole || "访谈对象"} / {insight.confidence || "LOW"}</strong>
-              <p>{insight.scenario || insight.painPoints?.[0] || "暂无摘要"}</p>
-            </article>
-          ))}
+          {surveyInsights.map((insight) => {
+            const id = insightIdentity("survey", insight.id, insight.evidenceId, insight.evidenceIds?.[0]);
+            const expanded = Boolean(expandedInsightKeys[id.key]);
+            const deleting = deletingInsightKey === id.key;
+            return (
+              <article className="research-insight" key={id.key}>
+                <div className="research-insight-toolbar">
+                  <small>{insight.evidenceId || insight.evidenceIds?.[0] || "survey"}</small>
+                  <div className="research-card-actions">
+                    <button
+                      type="button"
+                      className={`icon-button ${expanded ? "active" : ""}`}
+                      title={expanded ? "收起详情" : "查看详细"}
+                      aria-expanded={expanded}
+                      onClick={() => toggleInsight(id.key)}
+                    >
+                      <ChevronDown size={15} />
+                    </button>
+                    <button
+                      type="button"
+                      className="icon-button danger"
+                      title="删除洞察"
+                      onClick={() => onDeleteInsight?.("survey", id.value)}
+                      disabled={disabled || busy || deleting || !id.value}
+                    >
+                      <Trash2 size={14} />
+                    </button>
+                  </div>
+                </div>
+                <strong>{insight.title || "问卷洞察"} / {insight.sampleSize || "unknown sample"}</strong>
+                <p>{insight.findings?.[0]?.finding || insight.findings?.[0]?.interpretation || "暂无摘要"}</p>
+                {expanded ? (
+                  <div className="research-insight-detail">
+                    <DetailRow label="受访分组" values={insight.respondentSegments} compact />
+                    <DetailRow label="竞品" values={insight.competitorMentions} compact />
+                    <DetailRow label="维度" values={insight.relatedDimensions} compact />
+                    <DetailRow label="证据" values={insight.evidenceIds} compact />
+                    {insight.findings?.length ? (
+                      <div className="research-finding-list">
+                        {insight.findings.map((finding, index) => (
+                          <div className="research-finding" key={`${finding.question}-${index}`}>
+                            <strong>{finding.question || `发现 ${index + 1}`}</strong>
+                            <p>{finding.finding || finding.interpretation || "暂无发现"}</p>
+                            {finding.distribution ? <small>{finding.distribution}</small> : null}
+                          </div>
+                        ))}
+                      </div>
+                    ) : null}
+                  </div>
+                ) : null}
+              </article>
+            );
+          })}
+          {interviewInsights.map((insight) => {
+            const id = insightIdentity("interview", insight.id, insight.evidenceId);
+            const expanded = Boolean(expandedInsightKeys[id.key]);
+            const deleting = deletingInsightKey === id.key;
+            return (
+              <article className="research-insight" key={id.key}>
+                <div className="research-insight-toolbar">
+                  <small>{insight.evidenceId || "interview"}</small>
+                  <div className="research-card-actions">
+                    <button
+                      type="button"
+                      className={`icon-button ${expanded ? "active" : ""}`}
+                      title={expanded ? "收起详情" : "查看详细"}
+                      aria-expanded={expanded}
+                      onClick={() => toggleInsight(id.key)}
+                    >
+                      <ChevronDown size={15} />
+                    </button>
+                    <button
+                      type="button"
+                      className="icon-button danger"
+                      title="删除洞察"
+                      onClick={() => onDeleteInsight?.("interview", id.value)}
+                      disabled={disabled || busy || deleting || !id.value}
+                    >
+                      <Trash2 size={14} />
+                    </button>
+                  </div>
+                </div>
+                <strong>{insight.intervieweeRole || "访谈对象"} / {insight.confidence || "LOW"}</strong>
+                <p>{insight.scenario || insight.painPoints?.[0] || "暂无摘要"}</p>
+                {expanded ? (
+                  <div className="research-insight-detail">
+                    {insight.sourceTitle ? <DetailRow label="来源" values={[insight.sourceTitle]} /> : null}
+                    <DetailRow label="痛点" values={insight.painPoints} />
+                    <DetailRow label="正向信号" values={insight.positiveSignals} />
+                    <DetailRow label="负向信号" values={insight.negativeSignals} />
+                    <DetailRow label="顾虑" values={insight.buyingConcerns} compact />
+                    <DetailRow label="竞品" values={insight.competitorMentions} compact />
+                    <DetailRow label="维度" values={insight.relatedDimensions} compact />
+                    <DetailRow label="引用摘录" values={insight.directQuotes} />
+                  </div>
+                ) : null}
+              </article>
+            );
+          })}
           {!surveyInsights.length && !interviewInsights.length ? <p className="muted-text">导入问卷结果或添加访谈证据后，这里会展示结构化洞察。</p> : null}
         </div>
       </section>
@@ -332,6 +429,41 @@ function updateDraftQuestion(
     ...current,
     questions: current.questions.map((question, questionIndex) => questionIndex === index ? { ...question, ...patch } : question)
   }));
+}
+
+function insightIdentity(type: "survey" | "interview", ...candidates: Array<string | undefined>) {
+  const value = candidates.find((candidate) => candidate?.trim())?.trim() ?? "";
+  return {
+    value,
+    key: `${type}:${value || "unknown"}`
+  };
+}
+
+function DetailRow({ label, values, compact }: { label: string; values?: string[]; compact?: boolean }) {
+  const normalized = normalizeValues(values);
+  if (!normalized.length) {
+    return null;
+  }
+  return (
+    <div className="research-detail-row">
+      <small>{label}</small>
+      {compact ? <ChipList values={normalized} compact /> : <DetailList values={normalized} />}
+    </div>
+  );
+}
+
+function DetailList({ values }: { values: string[] }) {
+  return (
+    <div className="research-detail-list">
+      {values.map((value, index) => (
+        <span key={`${value}-${index}`}>{value}</span>
+      ))}
+    </div>
+  );
+}
+
+function normalizeValues(values?: string[]) {
+  return (values ?? []).map((value) => value.trim()).filter((value, index, all) => value && all.indexOf(value) === index);
 }
 
 function ChipList({ values, compact }: { values?: string[]; compact?: boolean }) {

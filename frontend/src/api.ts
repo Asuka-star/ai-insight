@@ -96,6 +96,12 @@ export async function importSurveyResults(runId: string, file: File): Promise<An
   });
 }
 
+export async function deleteResearchInsight(runId: string, insightType: "survey" | "interview", insightId: string): Promise<AnalysisRun> {
+  return requestJson(`/api/analysis-runs/${runId}/research-insights/${insightType}/${encodeURIComponent(insightId)}`, {
+    method: "DELETE"
+  });
+}
+
 export async function uploadDocument(runId: string, payload: UploadDocumentRequest): Promise<AnalysisRun> {
   const body = new FormData();
   body.append("file", payload.file);

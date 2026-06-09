@@ -91,6 +91,32 @@ class SourceCollectionServiceTest {
     }
 
     @Test
+    void deduplicatesUserProvidedUrlsAfterRedirectFetch() {
+        SourceCollectionService service = new SourceCollectionService(cursorDocsRedirectFetchService(), new NoopSearchProvider());
+        AnalysisRun run = new AnalysisRun(new AnalysisRequirement(
+                "Analyze Cursor docs",
+                "AI coding tools",
+                List.of("Cursor"),
+                List.of("market landscape"),
+                List.of(),
+                List.of(
+                        "https://docs.cursor.com/agent",
+                        "https://docs.cursor.com/account/agent-security"
+                )
+        ));
+
+        var sources = service.collect(run, false);
+
+        assertThat(sources).hasSize(1);
+        assertThat(sources)
+                .extracting(EvidenceSource::getUrl)
+                .containsExactly("https://cursor.com/cn/docs");
+        assertThat(sources)
+                .extracting(EvidenceSource::getCitationKey)
+                .containsExactly("S1");
+    }
+
+    @Test
     void fetchesOfficialReferenceCandidatesInParallel() {
         AtomicInteger inFlight = new AtomicInteger();
         AtomicInteger maxInFlight = new AtomicInteger();
@@ -545,6 +571,41 @@ class SourceCollectionServiceTest {
         assertThat(source.getSourceType()).isEqualTo("user_survey");
         assertThat(source.getComplianceNote()).contains("First-party survey evidence");
         assertThat(source.getFreshness()).isEqualTo("USER_PROVIDED");
+    }
+
+    @Test
+    void cleansInterviewInsightListMarkersFromUserProvidedNotes() {
+        SourceCollectionService service = new SourceCollectionService(fetchAlwaysFails(), new NoopSearchProvider());
+        AnalysisRun run = new AnalysisRun(new AnalysisRequirement(
+                "Analyze Cursor and Claude Code",
+                "AI coding tools",
+                List.of("Cursor", "Claude Code"),
+                List.of("权限/安全/合规", "价格策略", "用户体验"),
+                List.of(),
+                List.of()
+        ));
+        run.getEvidenceSources().add(service.fromUserProvidedEvidence("S105", new UserProvidedEvidence(
+                "访谈对象 A：前端负责人",
+                "interview",
+                """
+                        访谈对象 A：前端负责人，团队 18 人 - 目前主要使用 Cursor。
+                        痛点
+                        - 高频场景是跨文件重构、组件迁移、补测试。、- 痛点是团队规则需要维护，否则不同成员提示词风格不一致。
+                        原话：Cursor 更像在 IDE 里多了一个能动手的同事，但复杂任务还是要人工拆边界。
+                        主要顾虑是权限审批、命令执行安全、团队审计。
+                        """,
+                "",
+                false
+        )));
+
+        var insights = new InterviewInsightExtractor().extract(run);
+
+        assertThat(insights).hasSize(1);
+        assertThat(insights.get(0).getPainPoints())
+                .isNotEmpty()
+                .allSatisfy(point -> assertThat(point).doesNotStartWith("-"));
+        assertThat(insights.get(0).getDirectQuotes())
+                .allSatisfy(quote -> assertThat(quote).doesNotStartWith("-"));
     }
 
     @Test
@@ -1332,6 +1393,125 @@ class SourceCollectionServiceTest {
     }
 
     @Test
+    void deduplicatesOfficialReferenceCandidatesAfterRedirectFetch() {
+        WebPageFetchService fetchService = new WebPageFetchService() {
+            @Override
+            public FetchedPage fetch(String url) {
+                if (url.equals("https://cursor.com")) {
+                    return FetchedPage.success(
+                            url,
+                            "Cursor homepage",
+                            "Cursor homepage with agent workflows, context management, IDE integration, and enterprise security.",
+                            "robots.txt checked: allowed for public fetch.",
+                            "official_site",
+                            "HIGH",
+                            "NONE",
+                            200,
+                            "text/html",
+                            List.of("https://docs.cursor.com/docs", "https://docs.cursor.com/security")
+                    );
+                }
+                if (url.equals("https://docs.cursor.com/docs") || url.equals("https://docs.cursor.com/security")) {
+                    return FetchedPage.success(
+                            "https://cursor.com/cn/docs",
+                            "Cursor docs",
+                            """
+                                    Cursor official documentation explains agent workflows, codebase context, repository indexing,
+                                    IDE integration, terminal tooling, security controls, team rules, and MCP configuration details
+                                    for software engineering teams evaluating AI coding assistants.
+                                    """,
+                            "robots.txt checked: allowed for public fetch. Redirect followed to https://cursor.com/cn/docs.",
+                            "docs",
+                            "HIGH",
+                            200,
+                            "text/html"
+                    );
+                }
+                return FetchedPage.failed(url, "simulated missing official section", "HTTP_4XX");
+            }
+        };
+        SourceCollectionService service = new SourceCollectionService(fetchService, new NoopSearchProvider());
+        AnalysisRun run = new AnalysisRun(new AnalysisRequirement(
+                "Analyze Cursor docs and security",
+                "AI coding tools",
+                List.of("Cursor"),
+                List.of("context management", "enterprise security and permissions"),
+                List.of("official_site", "product_docs", "security"),
+                List.of("https://cursor.com")
+        ));
+
+        var sources = service.collect(run, false);
+
+        assertThat(sources)
+                .extracting(EvidenceSource::getUrl)
+                .containsExactly("https://cursor.com", "https://cursor.com/cn/docs");
+        assertThat(sources)
+                .extracting(EvidenceSource::getCitationKey)
+                .containsExactly("S1", "S2");
+    }
+
+    @Test
+    void deduplicatesSearchCandidatesAfterRedirectFetch() {
+        SourceCollectionService service = new SourceCollectionService(cursorDocsRedirectFetchService(), new NoopSearchProvider());
+        AnalysisRun run = new AnalysisRun(new AnalysisRequirement(
+                "Analyze Cursor docs",
+                "AI coding tools",
+                List.of("Cursor"),
+                List.of("agent workflow"),
+                List.of("product_docs"),
+                List.of()
+        ));
+        List<SourceCollectionService.SearchCandidate> candidateList = List.of(
+                new SourceCollectionService.SearchCandidate(
+                        "C1",
+                        "Cursor",
+                        "Cursor agent workflow",
+                        1,
+                        "Cursor Agent docs",
+                        "https://docs.cursor.com/agent",
+                        "Cursor Agent docs",
+                        "docs",
+                        1,
+                        4
+                ),
+                new SourceCollectionService.SearchCandidate(
+                        "C2",
+                        "Cursor",
+                        "Cursor agent workflow",
+                        2,
+                        "Cursor Agent security docs",
+                        "https://docs.cursor.com/account/agent-security",
+                        "Cursor Agent security docs",
+                        "docs",
+                        2,
+                        4
+                )
+        );
+        SourceCollectionService.SearchCandidateCollection candidates = new SourceCollectionService.SearchCandidateCollection(
+                List.of(new SearchQueryPlanner.SearchQueryBatch("Cursor", List.of("Cursor agent workflow"))),
+                candidateList,
+                List.of(),
+                true,
+                4
+        );
+        service.searchCandidates(run, false, candidates.batches());
+
+        var sources = service.collectSelectedSearchCandidates(
+                run,
+                false,
+                candidates,
+                candidateList.stream().map(SourceCollectionService.SearchCandidate::id).toList()
+        );
+
+        assertThat(sources).hasSize(1);
+        assertThat(sources)
+                .extracting(EvidenceSource::getUrl)
+                .containsExactly("https://cursor.com/cn/docs");
+        assertThat(run.getResearchPackage().getResearchCollectionPlan().getSubtasks().get(0).getAcceptedEvidenceCount())
+                .isEqualTo(1);
+    }
+
+    @Test
     void prioritizesOfficialSearchResultsOverThirdPartyPricingReferences() {
         SourceCollectionService service = new SourceCollectionService(fetchUsefulPages(), new SearchProvider() {
             @Override
@@ -1635,6 +1815,45 @@ class SourceCollectionServiceTest {
                     Thread.currentThread().interrupt();
                 } finally {
                     inFlight.decrementAndGet();
+                }
+                return FetchedPage.success(
+                        url,
+                        "Useful page for " + url,
+                        """
+                                This official product documentation page describes pricing, reviews, enterprise controls,
+                                collaboration workflows, permission governance, AI features, release notes, support options,
+                                customer feedback, integration details, and product positioning for competitive analysis.
+                                The content is intentionally long enough to be treated as a useful fetched search result.
+                                """,
+                        "robots.txt checked: allowed for public fetch.",
+                        "docs",
+                        "HIGH",
+                        200,
+                        "text/html"
+                );
+            }
+        };
+    }
+
+    private WebPageFetchService cursorDocsRedirectFetchService() {
+        return new WebPageFetchService() {
+            @Override
+            public FetchedPage fetch(String url) {
+                if (url.equals("https://docs.cursor.com/agent") || url.equals("https://docs.cursor.com/account/agent-security")) {
+                    return FetchedPage.success(
+                            "https://cursor.com/cn/docs",
+                            "Cursor docs",
+                            """
+                                    Cursor official documentation explains agent workflows, codebase context, repository indexing,
+                                    IDE integration, terminal tooling, security controls, team rules, and MCP configuration details
+                                    for software engineering teams evaluating AI coding assistants.
+                                    """,
+                            "robots.txt checked: allowed for public fetch. Redirect followed to https://cursor.com/cn/docs.",
+                            "docs",
+                            "HIGH",
+                            200,
+                            "text/html"
+                    );
                 }
                 return FetchedPage.success(
                         url,

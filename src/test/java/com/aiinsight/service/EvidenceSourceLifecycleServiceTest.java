@@ -216,6 +216,61 @@ class EvidenceSourceLifecycleServiceTest {
         assertThat(claim.getEvidenceIds()).containsExactly("S2");
     }
 
+    @Test
+    void mergesReferencedDuplicateFetchedSourcesInsteadOfRetainingThemForAudit() {
+        AnalysisRun run = new AnalysisRun(new AnalysisRequirement(
+                "Analyze Cursor",
+                "AI coding tools",
+                List.of("Cursor"),
+                List.of("agent workflow"),
+                List.of(),
+                List.of()
+        ));
+        EvidenceSource canonical = source(
+                "S7",
+                "Cursor docs",
+                "https://cursor.com/cn/docs",
+                "docs",
+                "HIGH",
+                "FETCHED",
+                "Cursor official docs explain agent workflows, context, IDE integration, and enterprise security controls.",
+                "Cursor official docs"
+        );
+        canonical.setContentHash("same-cursor-docs-hash");
+        canonical.setCanonicalHost("cursor.com");
+        EvidenceSource duplicate = source(
+                "S12",
+                "Cursor docs",
+                "https://cursor.com/cn/docs/",
+                "docs",
+                "HIGH",
+                "FETCHED",
+                "Cursor official docs explain agent workflows, context, IDE integration, and enterprise security controls.",
+                "Cursor official docs"
+        );
+        duplicate.setContentHash("same-cursor-docs-hash");
+        duplicate.setCanonicalHost("cursor.com");
+        AnalysisClaim claim = new AnalysisClaim();
+        claim.setType(ClaimType.COMPARISON);
+        claim.setContent("Cursor supports agent workflows.");
+        claim.getEvidenceIds().add("S12");
+        claim.getChunkKeys().add("S12-C1");
+        run.getClaims().add(claim);
+
+        List<EvidenceSource> collected = new java.util.ArrayList<>(List.of(canonical));
+        EvidenceSourceLifecycleService.EvidenceReplacementResult result = service.reconcileAfterCollection(
+                run,
+                List.of(duplicate),
+                collected
+        );
+
+        assertThat(collected).extracting(EvidenceSource::getCitationKey).containsExactly("S7");
+        assertThat(claim.getEvidenceIds()).containsExactly("S7");
+        assertThat(claim.getChunkKeys()).containsExactly("S7-C1");
+        assertThat(result.prunedSources()).isEqualTo(1);
+        assertThat(result.replacedBindings()).isGreaterThanOrEqualTo(2);
+    }
+
     private EvidenceSource source(String citationKey,
                                   String title,
                                   String url,

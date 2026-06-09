@@ -18,7 +18,7 @@ import {
   UploadCloud
 } from "lucide-react";
 import type { AgentStep, AgentName, AnalysisArtifact, ArtifactLocateRequest, AnalysisRun, AnalysisRunMetrics, AnalysisRunSummary, Questionnaire, ReviewFinding, RunEvent } from "./types";
-import { addEvidence, clarifyRequirement, createRun, deleteDocument, deleteRun, downloadSurveyTemplate, getRun, getRunMetrics, importSurveyResults, listRunSummaries, rerunAgent, startAnalysis, updateRequirement, updateSurveyQuestionnaire, uploadDocument } from "./api";
+import { addEvidence, clarifyRequirement, createRun, deleteDocument, deleteResearchInsight, deleteRun, downloadSurveyTemplate, getRun, getRunMetrics, importSurveyResults, listRunSummaries, rerunAgent, startAnalysis, updateRequirement, updateSurveyQuestionnaire, uploadDocument } from "./api";
 import { AGENT_LABELS, ARTIFACT_LABELS } from "./constants";
 import {
   calculateRunMetrics,
@@ -99,6 +99,7 @@ export function App() {
   const [contextTargetAgent, setContextTargetAgent] = useState<AgentName>();
   const [rerunningAgent, setRerunningAgent] = useState<AgentName | null>(null);
   const [surveyBusy, setSurveyBusy] = useState(false);
+  const [deletingInsightKey, setDeletingInsightKey] = useState<string>();
   const [evidenceSourceType, setEvidenceSourceType] = useState("url");
   const [evidenceUrl, setEvidenceUrl] = useState("");
   const [evidenceContent, setEvidenceContent] = useState("");
@@ -893,6 +894,7 @@ export function App() {
     if (normalizedType === "interview" && !normalizedContent) return;
     if (normalizedType === "survey") return;
     const runId = run.id;
+    const recommendedActionStart = run.recommendedActions?.length ?? 0;
     setIsAddingEvidence(true);
     setEventMessage(normalizedType === "url" ? "正在加入公开来源" : "正在加入访谈资料");
     try {
@@ -906,7 +908,11 @@ export function App() {
       setEvidenceSourceType("url");
       setEvidenceUrl("");
       setEvidenceContent("");
-      setEventMessage(normalizedType === "url" ? "公开来源已加入证据链" : "访谈资料已加入证据链");
+      setEventMessage(latestRecommendedActionSince(
+        nextRun,
+        recommendedActionStart,
+        normalizedType === "url" ? "公开来源已加入证据链" : "访谈资料已加入证据链"
+      ));
     } catch (error) {
       if (!isCurrentWorkspaceRun(runId)) return;
       setEventMessage(error instanceof Error ? `资料加入失败：${error.message}` : "资料加入失败");
@@ -991,6 +997,33 @@ export function App() {
     if (!run || runMutationDisabled || surveyBusy || rerunningAgent) return;
     handleMainViewChange("dag");
     await handleRerun("EXTRACTOR");
+  }
+
+  async function handleDeleteResearchInsight(insightType: "survey" | "interview", insightId: string) {
+    if (!run || runMutationDisabled || surveyBusy || !insightId) return;
+    const label = insightType === "survey" ? "问卷洞察" : "访谈洞察";
+    const confirmed = window.confirm(`确定删除这条${label}吗？原始证据会保留。`);
+    if (!confirmed) return;
+    const runId = run.id;
+    const deletingKey = `${insightType}:${insightId}`;
+    setDeletingInsightKey(deletingKey);
+    setSurveyBusy(true);
+    setEventMessage(`正在删除${label}`);
+    try {
+      const nextRun = await deleteResearchInsight(runId, insightType, insightId);
+      if (!isCurrentWorkspaceRun(runId)) return;
+      setRun(nextRun);
+      setHistoryRuns((runs) => upsertHistorySummary(runs, summaryFromRun(nextRun)));
+      setEventMessage(`${label}已删除，原始证据仍保留`);
+    } catch (error) {
+      if (!isCurrentWorkspaceRun(runId)) return;
+      setEventMessage(error instanceof Error ? `${label}删除失败：${error.message}` : `${label}删除失败`);
+    } finally {
+      if (isCurrentWorkspaceRun(runId)) {
+        setDeletingInsightKey(undefined);
+        setSurveyBusy(false);
+      }
+    }
   }
 
   async function handleUploadDocument() {
@@ -1427,6 +1460,8 @@ export function App() {
                   onDownloadTemplate={handleDownloadSurveyTemplate}
                   onSaveQuestionnaire={handleSaveQuestionnaire}
                   onApplyResearchInputs={handleApplyResearchInputs}
+                  onDeleteInsight={handleDeleteResearchInsight}
+                  deletingInsightKey={deletingInsightKey}
                 />
               </div>
             ) : null}
@@ -1779,6 +1814,15 @@ function withOptimisticRerunStep(run: AnalysisRun | null, agentName: AgentName):
     steps: [...run.steps, step],
     updatedAt: startedAt
   };
+}
+
+function latestRecommendedActionSince(run: AnalysisRun, startIndex: number, fallback: string) {
+  const actions = run.recommendedActions ?? [];
+  for (let index = actions.length - 1; index >= Math.max(0, startIndex); index -= 1) {
+    const action = actions[index]?.trim();
+    if (action) return action;
+  }
+  return fallback;
 }
 
 function withOptimisticClarifierStep(run: AnalysisRun, inputSummary: string): AnalysisRun {

@@ -18,9 +18,7 @@ import com.aiinsight.model.schema.Questionnaire;
 import com.aiinsight.model.schema.ResearchPlan;
 import com.aiinsight.model.schema.SurveyQuestion;
 import com.aiinsight.model.schema.SurveyInsight;
-import com.aiinsight.service.InterviewInsightExtractor;
 import com.aiinsight.service.ResearchCoverageService;
-import com.aiinsight.service.SurveyInsightExtractor;
 import com.aiinsight.service.fallback.FallbackResearchPlanFactory;
 import com.aiinsight.observability.AgentTraceContext;
 import com.aiinsight.util.JsonResponseExtractor;
@@ -55,8 +53,6 @@ public class ResearcherNode implements AgentNode {
     private final LlmClient llmClient;
     private final ObjectMapper objectMapper;
     private final FallbackResearchPlanFactory fallbackResearchPlanFactory;
-    private final InterviewInsightExtractor interviewInsightExtractor;
-    private final SurveyInsightExtractor surveyInsightExtractor;
     private ResearchCoverageService researchCoverageService = new ResearchCoverageService();
     private Executor researcherLlmExecutor = ForkJoinPool.commonPool();
 
@@ -97,8 +93,8 @@ public class ResearcherNode implements AgentNode {
         run.getResearchPackage().setSources(new ArrayList<>(run.getEvidenceSources()));
         run.getResearchPackage().setMissingEvidenceTypes(new ArrayList<>(researchResult.missingEvidenceTypes()));
         run.getResearchPackage().setResearchPlan(buildResearchPlan(run, recollecting));
-        run.getResearchPackage().setInterviewInsights(interviewInsightExtractor.extract(run));
-        run.getResearchPackage().setSurveyInsights(surveyInsightExtractor.extract(run));
+        run.getResearchPackage().getInterviewInsights().clear();
+        run.getResearchPackage().getSurveyInsights().clear();
         run.getResearchPackage().setCollectedAt(Instant.now());
         researchCoverageService.refreshCoverage(run);
         AgentTraceContext.recordProcessSummary(researchResult.traceMarkdown());

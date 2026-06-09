@@ -200,6 +200,127 @@ class ExtractorNodeTest {
     }
 
     @Test
+    void extractorUsesLlmForInterviewInsightsUnderExtractorAgentTag() {
+        List<String> agentNames = new ArrayList<>();
+        List<String> subtasks = new ArrayList<>();
+        LlmClient llmClient = new LlmClient() {
+            @Override
+            public boolean isAvailable() {
+                return true;
+            }
+
+            @Override
+            public String complete(ChatRequest request) {
+                agentNames.add(request.getAgentName());
+                subtasks.add(request.getSubtaskName());
+                if ("research-input:interview".equals(request.getSubtaskName())) {
+                    return """
+                            {
+                              "evidenceId": "S10",
+                              "sourceTitle": "访谈对象 A",
+                              "intervieweeRole": "前端负责人",
+                              "scenario": "跨文件重构和组件迁移",
+                              "painPoints": ["团队规则需要维护，否则提示词风格不一致"],
+                              "positiveSignals": ["Cursor 像 IDE 里的能动手同事"],
+                              "negativeSignals": ["复杂任务仍要人工拆边界"],
+                              "buyingConcerns": ["权限审批", "命令执行安全", "团队审计"],
+                              "competitorMentions": ["Cursor"],
+                              "relatedDimensions": ["用户体验", "权限/安全/合规"],
+                              "directQuotes": ["Cursor 更像在 IDE 里多了一个能动手的同事"],
+                              "confidence": "HIGH"
+                            }
+                            """;
+                }
+                String productName = request.getSubtaskName().contains("Cursor") ? "Cursor" : "Claude Code";
+                String evidenceId = "Cursor".equals(productName) ? "S1" : "S2";
+                return """
+                        {
+                          "profiles": [
+                            {
+                              "productName": "%s",
+                              "companyName": "%s",
+                              "positioning": "AI coding assistant",
+                              "targetUsers": ["Developers"],
+                              "features": [{"name":"Coding workflow","description":"Evidence-backed coding workflow","evidenceIds":["%s"]}],
+                              "pricing": {"strategySummary":"待验证","hasFreePlan":false,"plans":[],"evidenceIds":[]},
+                              "personas": [],
+                              "strengths": ["Evidence-backed coding workflow"],
+                              "weaknesses": ["待验证"],
+                              "evidenceIds": ["%s"]
+                            }
+                          ]
+                        }
+                        """.formatted(productName, productName, evidenceId, evidenceId);
+            }
+        };
+        AnalysisRun run = new AnalysisRun(new AnalysisRequirement(
+                "Analyze Cursor and Claude Code",
+                "AI coding tools",
+                List.of("Cursor", "Claude Code"),
+                List.of("用户体验", "权限/安全/合规"),
+                List.of("interview"),
+                List.of()
+        ));
+        run.getEvidenceSources().add(new EvidenceSource(
+                "S1",
+                "Cursor product page",
+                "https://example.test/cursor",
+                "official_site",
+                "FETCHED",
+                "LIVE_FETCHED",
+                "HIGH",
+                "NONE",
+                "Cursor supports coding workflow.",
+                "Cursor supports coding workflow.",
+                "test evidence"
+        ));
+        run.getEvidenceSources().add(new EvidenceSource(
+                "S2",
+                "Claude Code product page",
+                "https://example.test/claude-code",
+                "official_site",
+                "FETCHED",
+                "LIVE_FETCHED",
+                "HIGH",
+                "NONE",
+                "Claude Code supports coding workflow.",
+                "Claude Code supports coding workflow.",
+                "test evidence"
+        ));
+        run.getEvidenceSources().add(new EvidenceSource(
+                "S10",
+                "访谈对象 A",
+                "user-evidence://s10",
+                "user_interview",
+                "USER_PROVIDED",
+                "USER_PROVIDED",
+                "INTERNAL_ONLY",
+                "NONE",
+                "访谈纪要",
+                """
+                        访谈对象 A：前端负责人，团队 18 人，目前主要使用 Cursor。
+                        痛点：团队规则需要维护，否则不同成员提示词风格不一致。
+                        原话：Cursor 更像在 IDE 里多了一个能动手的同事，但复杂任务还是要人工拆边界。
+                        主要顾虑是权限审批、命令执行安全、团队审计。
+                        """,
+                "test interview"
+        ));
+
+        new ExtractorNode(llmClient, new FallbackExtractionFactory()).execute(run);
+
+        assertThat(agentNames).containsOnly("EXTRACTOR");
+        assertThat(subtasks).contains("research-input:interview", "profile-extraction:Cursor", "profile-extraction:Claude Code");
+        assertThat(run.getResearchPackage().getInterviewInsights())
+                .singleElement()
+                .satisfies(insight -> {
+                    assertThat(insight.getIntervieweeRole()).isEqualTo("前端负责人");
+                    assertThat(insight.getPainPoints()).contains("团队规则需要维护，否则提示词风格不一致");
+                    assertThat(insight.getCompetitorMentions()).containsExactly("Cursor");
+                    assertThat(insight.getConfidence()).isEqualTo("HIGH");
+                });
+    }
+
+    @Test
     void toleratesTextualUnknownFreePlanFlagWithoutFallback() {
         LlmClient llmClient = new LlmClient() {
             @Override

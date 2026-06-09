@@ -129,6 +129,141 @@ class WriterNodeTest {
     }
 
     @Test
+    void writerPromptUsesSingleReusableReportStructure() {
+        AtomicReference<String> promptCapture = new AtomicReference<>();
+        LlmClient llmClient = new LlmClient() {
+            @Override
+            public boolean isAvailable() {
+                return true;
+            }
+
+            @Override
+            public String complete(ChatRequest request) {
+                promptCapture.set(request.getMessages().get(1).getContent());
+                return """
+                        # Report
+
+                        ## 一句话结论
+                        基于当前证据，先聚焦可验证能力 [S1]。
+
+                        ## 建议优先级
+                        | 建议 | 理由 | 证据 | 置信度 | 下一步 |
+                        | --- | --- | --- | --- | --- |
+                        | 验证核心能力 | 有官方资料支撑 | [S1] | MEDIUM | PoC |
+
+                        ## 结论与建议
+                        - 首选借鉴：验证核心能力 [S1]。
+                        """;
+            }
+        };
+        WriterNode writer = new WriterNode(llmClient, new FallbackReportDraftFactory());
+        AnalysisRun run = new AnalysisRun(new AnalysisRequirement(
+                "Analyze AI tools",
+                "developer tools",
+                List.of("Tool A", "Tool B"),
+                List.of("workflow", "security"),
+                List.of("official_site"),
+                List.of()
+        ));
+        run.getEvidenceSources().add(new EvidenceSource(
+                "S1",
+                "Tool A docs",
+                "https://example.test/tool-a",
+                "official_site",
+                "FETCHED",
+                "LIVE_FETCHED",
+                "HIGH",
+                "NONE",
+                "Tool A documents workflow capabilities.",
+                "Tool A documents workflow capabilities.",
+                "test evidence"
+        ));
+        AnalysisClaim claim = new AnalysisClaim();
+        claim.setType(ClaimType.COMPARISON);
+        claim.setContent("Tool A documents workflow capabilities.");
+        claim.setConfidence(ConfidenceLevel.MEDIUM);
+        claim.setSupportStatus("SUPPORTED");
+        claim.setRecommendedPlacement("MATRIX");
+        claim.setEligibleForMainReport(true);
+        claim.setEvidenceIds(List.of("S1"));
+        run.getClaims().add(claim);
+
+        writer.execute(run);
+
+        assertThat(promptCapture.get())
+                .contains("报告必须采用单一骨架")
+                .contains("全文只能有一个对比矩阵章节")
+                .contains("标题统一为“竞品能力矩阵”")
+                .contains("必须保留 SWOT 思考")
+                .contains("机会与风险摘要（SWOT）")
+                .contains("不要再输出长篇四象限“SWOT 分析”章节")
+                .contains("不要重复展开风险清单或行动计划")
+                .doesNotContain("必须追加\"竞品横向矩阵\"")
+                .doesNotContain("必须追加\"SWOT 分析\"");
+    }
+
+    @Test
+    void fallbackReportUsesSingleNonDuplicatedStructure() {
+        WriterNode writer = new WriterNode(new LlmClient() {
+            @Override
+            public boolean isAvailable() {
+                return false;
+            }
+
+            @Override
+            public String complete(ChatRequest request) {
+                throw new IllegalStateException("LLM unavailable");
+            }
+        }, new FallbackReportDraftFactory());
+        AnalysisRun run = new AnalysisRun(new AnalysisRequirement(
+                "Analyze AI tools",
+                "developer tools",
+                List.of("Tool A", "Tool B"),
+                List.of("workflow"),
+                List.of("official_site"),
+                List.of()
+        ));
+        run.getEvidenceSources().add(new EvidenceSource(
+                "S1",
+                "Tool A docs",
+                "https://example.test/tool-a",
+                "official_site",
+                "FETCHED",
+                "LIVE_FETCHED",
+                "HIGH",
+                "NONE",
+                "Tool A documents workflow capabilities.",
+                "Tool A documents workflow capabilities.",
+                "test evidence"
+        ));
+        AnalysisClaim claim = new AnalysisClaim();
+        claim.setType(ClaimType.COMPARISON);
+        claim.setContent("Tool A 在工作流能力上有官方资料支撑。");
+        claim.setConfidence(ConfidenceLevel.MEDIUM);
+        claim.setSupportStatus("SUPPORTED");
+        claim.setRecommendedPlacement("MATRIX");
+        claim.setEligibleForMainReport(true);
+        claim.setDimension("workflow");
+        claim.setEvidenceIds(List.of("S1"));
+        run.getClaims().add(claim);
+
+        writer.execute(run);
+
+        String report = latestReport(run);
+        assertThat(report)
+                .contains("## 竞品能力矩阵")
+                .contains("## 机会与风险摘要（SWOT）")
+                .contains("## 风险与证据缺口")
+                .contains("## 下一步验证计划")
+                .contains("## 结论与建议")
+                .doesNotContain("## 竞品横向矩阵")
+                .doesNotContain("## SWOT 分析")
+                .doesNotContain("## 机会与风险（SWOT 摘要）")
+                .doesNotContain("风险边界：")
+                .doesNotContain("下一步行动：");
+    }
+
+    @Test
     void writerRemovesLeakedSupportStatusCountsFromReport() {
         LlmClient llmClient = new LlmClient() {
             @Override
@@ -260,7 +395,9 @@ class WriterNodeTest {
         assertThat(report)
                 .contains("## 结论与建议")
                 .contains("首选借鉴：优先评估 Cursor 的 Agent 工作流")
-                .contains("[S1]");
+                .contains("[S1]")
+                .doesNotContain("风险边界：")
+                .doesNotContain("下一步行动：");
     }
 
     @Test

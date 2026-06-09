@@ -122,19 +122,19 @@ export function SchemaPanel({
                       <dl className="schema-kv compact">
                         <div>
                           <dt>痛点</dt>
-                          <dd>{joinOrEmpty(insight.painPoints)}</dd>
+                          <dd><InsightValueList values={insight.painPoints} /></dd>
                         </div>
                         <div>
                           <dt>顾虑</dt>
-                          <dd>{joinOrEmpty(insight.buyingConcerns)}</dd>
+                          <dd><InsightValueList values={insight.buyingConcerns} compact /></dd>
                         </div>
                         <div>
                           <dt>竞品</dt>
-                          <dd>{joinOrEmpty(insight.competitorMentions)}</dd>
+                          <dd><InsightValueList values={insight.competitorMentions} compact /></dd>
                         </div>
                         <div>
                           <dt>维度</dt>
-                          <dd>{joinOrEmpty(insight.relatedDimensions)}</dd>
+                          <dd><InsightValueList values={insight.relatedDimensions} compact /></dd>
                         </div>
                         <div>
                           <dt>引用</dt>
@@ -146,7 +146,13 @@ export function SchemaPanel({
                           </dd>
                         </div>
                       </dl>
-                      {insight.directQuotes?.length ? <small>{insight.directQuotes.join(" / ")}</small> : null}
+                      {insight.directQuotes?.length ? (
+                        <div className="schema-quote-list">
+                          {normalizeInsightValues(insight.directQuotes).map((quote, quoteIndex) => (
+                            <small key={`${quote}-${quoteIndex}`}>{quote}</small>
+                          ))}
+                        </div>
+                      ) : null}
                     </div>
                   ))}
                 </div>
@@ -466,6 +472,44 @@ function SchemaStat({ label, value }: { label: string; value: number }) {
 
 function joinOrEmpty(values?: string[]) {
   return values?.length ? values.join("、") : "待验证";
+}
+
+function InsightValueList({ values, compact }: { values?: string[]; compact?: boolean }) {
+  const normalized = normalizeInsightValues(values);
+  if (!normalized.length) {
+    return <span className="schema-empty-value">待验证</span>;
+  }
+  return (
+    <span className={compact ? "schema-insight-values compact" : "schema-insight-values"}>
+      {normalized.map((value, index) => (
+        <span className="schema-insight-value" key={`${value}-${index}`}>
+          {value}
+        </span>
+      ))}
+    </span>
+  );
+}
+
+function normalizeInsightValues(values?: string[]) {
+  return (values ?? [])
+    .flatMap((value) => splitInsightValue(value))
+    .map(cleanInsightValue)
+    .filter((value, index, all) => value.length > 0 && all.indexOf(value) === index);
+}
+
+function splitInsightValue(value?: string) {
+  if (!value) return [];
+  return value
+    .replace(/[\u3001\uff0c,\uff1b;]\s*[-\u2022*]\s*/g, "\n")
+    .split(/\n+|(?<=\u3002)\s+(?=[-\u2022*])|(?<=\.)\s+(?=[-\u2022*])/);
+}
+
+function cleanInsightValue(value: string) {
+  return value
+    .replace(/^\s*[-\u2022*]+\s*/g, "")
+    .replace(/\s*[-\u2022*]+\s*$/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 function formatDateTime(value?: string) {

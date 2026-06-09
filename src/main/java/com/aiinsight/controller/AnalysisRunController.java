@@ -127,6 +127,13 @@ public class AnalysisRunController {
         return workflowService.importSurveyResults(runId, file);
     }
 
+    @DeleteMapping("/{runId}/research-insights/{insightType}/{insightId}")
+    public AnalysisRun deleteResearchInsight(@PathVariable UUID runId,
+                                             @PathVariable String insightType,
+                                             @PathVariable String insightId) {
+        return workflowService.deleteResearchInsight(runId, insightType, insightId);
+    }
+
     @PostMapping(path = "/{runId}/documents", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
     public AnalysisRun addDocument(@PathVariable UUID runId,
                                    @RequestPart("file") MultipartFile file,

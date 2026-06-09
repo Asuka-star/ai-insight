@@ -234,7 +234,7 @@ public class SourceCollectionService {
                                          List<SearchQueryPlanner.SearchQueryBatch> plannedSearchBatches,
                                          boolean includeSearchEvidence) {
         run.getResearchPackage().setActualSearchQueries(List.of());
-        List<EvidenceSource> sources = new ArrayList<>(run.getEvidenceSources());
+        List<EvidenceSource> sources = deduplicateFetchedSources(new ArrayList<>(run.getEvidenceSources()), "existing run source");
         Set<String> seenUrls = new LinkedHashSet<>();
         List<OfficialSeed> officialSeeds = new ArrayList<>();
         sources.stream()
@@ -262,11 +262,24 @@ public class SourceCollectionService {
         List<OfficialSeed> userUrlSeeds = fetchUserUrlSeeds(index, userSourceUrls);
         for (OfficialSeed seed : userUrlSeeds) {
             EvidenceSource source = seed.source();
+            EvidenceSource duplicate = duplicateFetchedSource(sources, source);
+            if (duplicate != null) {
+                rememberSourceUrl(seenUrls, source);
+                log.info("User source URL skipped after fetch because it duplicates existing evidence: url={}, finalUrl={}, duplicateOf={}, contentHash={}",
+                        source.getUrl(),
+                        source.getUrl(),
+                        duplicate.getCitationKey(),
+                        source.getContentHash());
+                continue;
+            }
+            source.setCitationKey("S" + index);
             sources.add(source);
+            rememberSourceUrl(seenUrls, source);
             officialSeeds.add(seed);
             if (userUrlNeedsAttention(source)) {
                 run.getRecommendedActions().add(userUrlAction(source.getUrl(), source));
             }
+            index++;
         }
         index = maxCitationNumber(sources) + 1;
 
@@ -421,6 +434,17 @@ public class SourceCollectionService {
             if (promotedForSeed >= MAX_OFFICIAL_REFERENCE_SOURCES_PER_URL) {
                 continue;
             }
+            EvidenceSource duplicate = duplicateFetchedSource(sources, source);
+            if (duplicate != null) {
+                rememberSourceUrl(seenUrls, source);
+                log.info("Official reference candidate skipped after fetch because it duplicates existing evidence: url={}, finalUrl={}, duplicateOf={}, section={}, contentHash={}",
+                        candidate.url(),
+                        source.getUrl(),
+                        duplicate.getCitationKey(),
+                        candidate.section(),
+                        source.getContentHash());
+                continue;
+            }
             source.setCitationKey("S" + index);
             // Tag official reference candidates with dimension inferred from their section name.
             // Competitor is not available here (derived from user URLs, not competitor-specific searches),
@@ -430,6 +454,7 @@ public class SourceCollectionService {
                 source.setCoveredDimensions(new ArrayList<>(List.of(officialDim)));
             }
             sources.add(source);
+            rememberSourceUrl(seenUrls, source);
             log.info("Official reference candidate promoted to evidence: citationKey={}, url={}, section={}, sourceType={}, sourceQuality={}",
                     source.getCitationKey(),
                     source.getUrl(),
@@ -1540,6 +1565,18 @@ public class SourceCollectionService {
                 if (competitorAdded >= Math.max(1, acceptedSourceBudget(run, candidate))) {
                     continue;
                 }
+                EvidenceSource duplicate = duplicateFetchedSource(sources, source);
+                if (duplicate != null) {
+                    rememberSourceUrl(seenUrls, source);
+                    log.info("Search candidate skipped after fetch because it duplicates existing evidence: candidateId={}, url={}, finalUrl={}, duplicateOf={}, contentHash={}, selectionMode={}",
+                            candidate.id(),
+                            candidate.url(),
+                            source.getUrl(),
+                            duplicate.getCitationKey(),
+                            source.getContentHash(),
+                            selectionMode);
+                    continue;
+                }
                 String citationKey = "S" + nextIndex;
                 source.setCitationKey(citationKey);
                 // Tag evidence source with competitor and dimension from search candidate context.
@@ -1555,6 +1592,7 @@ public class SourceCollectionService {
                     source.setCoveredDimensions(new ArrayList<>(List.of(inferredDim)));
                 }
                 sources.add(source);
+                rememberSourceUrl(seenUrls, source);
                 nextIndex++;
                 added++;
                 addedByCompetitor.put(competitorKey, competitorAdded + 1);
@@ -2048,8 +2086,108 @@ public class SourceCollectionService {
         return false;
     }
 
+    private List<EvidenceSource> deduplicateFetchedSources(List<EvidenceSource> sources, String context) {
+        if (sources == null || sources.isEmpty()) {
+            return new ArrayList<>();
+        }
+        List<EvidenceSource> deduplicated = new ArrayList<>();
+        for (EvidenceSource source : sources) {
+            if (source == null) {
+                continue;
+            }
+            EvidenceSource duplicate = duplicateFetchedSource(deduplicated, source);
+            if (duplicate != null) {
+                log.info("Evidence source skipped because it duplicates existing evidence: context={}, citationKey={}, url={}, duplicateOf={}, contentHash={}",
+                        context,
+                        source.getCitationKey(),
+                        source.getUrl(),
+                        duplicate.getCitationKey(),
+                        source.getContentHash());
+                continue;
+            }
+            deduplicated.add(source);
+        }
+        return deduplicated;
+    }
+
+    private EvidenceSource duplicateFetchedSource(List<EvidenceSource> sources, EvidenceSource candidate) {
+        if (sources == null || sources.isEmpty() || candidate == null) {
+            return null;
+        }
+        return sources.stream()
+                .filter(existing -> sameFetchedSource(existing, candidate))
+                .findFirst()
+                .orElse(null);
+    }
+
+    private boolean sameFetchedSource(EvidenceSource existing, EvidenceSource candidate) {
+        if (existing == null || candidate == null) {
+            return false;
+        }
+        String candidateUrl = normalizeUrl(candidate.getUrl());
+        if (StringUtils.hasText(candidateUrl) && candidateUrl.equals(normalizeUrl(existing.getUrl()))) {
+            return true;
+        }
+        if (!contentHashComparable(existing) || !contentHashComparable(candidate)) {
+            return false;
+        }
+        return normalizeText(existing.getContentHash()).equals(normalizeText(candidate.getContentHash()))
+                && StringUtils.hasText(normalizeText(existing.getTitle()))
+                && normalizeText(existing.getTitle()).equals(normalizeText(candidate.getTitle()))
+                && StringUtils.hasText(sourceHost(existing))
+                && sourceHost(existing).equals(sourceHost(candidate));
+    }
+
+    private boolean contentHashComparable(EvidenceSource source) {
+        return source != null
+                && "FETCHED".equalsIgnoreCase(source.getCollectionStatus())
+                && StringUtils.hasText(source.getContentHash())
+                && StringUtils.hasText(source.getRawText())
+                && !"METADATA_ONLY".equalsIgnoreCase(source.getFailureReason());
+    }
+
+    private void rememberSourceUrl(Set<String> seenUrls, EvidenceSource source) {
+        if (seenUrls == null || source == null || !StringUtils.hasText(source.getUrl())) {
+            return;
+        }
+        seenUrls.add(normalizeUrl(source.getUrl()));
+    }
+
+    private String sourceHost(EvidenceSource source) {
+        if (source == null) {
+            return "";
+        }
+        if (StringUtils.hasText(source.getCanonicalHost())) {
+            return normalizeText(source.getCanonicalHost());
+        }
+        UrlParts parts = parseUrl(source.getUrl());
+        return parts == null ? "" : normalizeText(parts.host());
+    }
+
     private String normalizeUrl(String url) {
-        return url == null ? "" : url.trim().replaceFirst("/+$", "").toLowerCase(Locale.ROOT);
+        if (!StringUtils.hasText(url)) {
+            return "";
+        }
+        try {
+            java.net.URI uri = java.net.URI.create(url.trim()).normalize();
+            String scheme = StringUtils.hasText(uri.getScheme()) ? uri.getScheme().toLowerCase(Locale.ROOT) : "https";
+            String host = uri.getHost();
+            if (!StringUtils.hasText(host)) {
+                return url.trim().replaceFirst("[#?].*$", "").replaceFirst("/+$", "").toLowerCase(Locale.ROOT);
+            }
+            String path = StringUtils.hasText(uri.getPath()) ? uri.getPath().replaceFirst("/+$", "") : "";
+            return new java.net.URI(
+                    scheme,
+                    uri.getUserInfo(),
+                    host.toLowerCase(Locale.ROOT),
+                    uri.getPort(),
+                    path,
+                    uri.getQuery(),
+                    null
+            ).toString().toLowerCase(Locale.ROOT);
+        } catch (IllegalArgumentException | java.net.URISyntaxException ex) {
+            return url.trim().replaceFirst("#.*$", "").replaceFirst("/+$", "").toLowerCase(Locale.ROOT);
+        }
     }
 
     private String normalizeText(String text) {
