@@ -157,15 +157,16 @@ function findLocateTarget(reader: HTMLElement, markdown: string, request: Artifa
   ));
   const markdownBlocks = splitMarkdownParagraphs(markdown);
 
-  // 后端 paragraphIndex 来自原始 Markdown 段落数组；这里先按同一口径匹配，再逐级退到摘录、claim、citation。
-  if (request.paragraphIndex !== undefined) {
-    const paragraphBlock = markdownBlocks[request.paragraphIndex];
-    const match = paragraphBlock ? findElementByText(blockElements, paragraphBlock, true) : null;
+  // Reviewer 的 excerpt 比 paragraphIndex 更精确，尤其是 Markdown 表格会被渲染成多个单元格。
+  if (request.excerpt) {
+    const match = findElementByText(blockElements, request.excerpt, true);
     if (match) return match;
   }
 
-  if (request.excerpt) {
-    const match = findElementByText(blockElements, request.excerpt, true);
+  // 后端 paragraphIndex 来自原始 Markdown 段落数组；摘录无法命中时再按同一口径匹配段落。
+  if (request.paragraphIndex !== undefined) {
+    const paragraphBlock = markdownBlocks[request.paragraphIndex];
+    const match = paragraphBlock ? findElementByText(blockElements, paragraphBlock, true) : null;
     if (match) return match;
   }
 
@@ -197,6 +198,9 @@ function splitMarkdownParagraphs(markdown: string) {
 function findElementByText(elements: HTMLElement[], text: string, strict: boolean) {
   const normalizedNeedle = normalizeSearchText(text);
   if (!normalizedNeedle) return null;
+
+  const tableCellMatch = findTableCellByExcerpt(elements, text);
+  if (tableCellMatch) return tableCellMatch;
 
   const exact = elements.find((element) => {
     const haystack = normalizeSearchText(element.textContent);
@@ -234,10 +238,55 @@ function textSnippets(text: string) {
     .slice(0, 4);
 }
 
+function findTableCellByExcerpt(elements: HTMLElement[], text: string) {
+  if (!text.includes("|")) return null;
+  const cellElements = elements.filter((element) => ["TD", "TH"].includes(element.tagName));
+  if (!cellElements.length) return null;
+
+  const cellNeedles = text
+    .split("|")
+    .map((cell) => cell.replace(/\[[SＣ]?\d+\]/gi, ""))
+    .map(normalizeSearchText)
+    .filter(isDistinctiveCellText);
+  const contentNeedles = cellNeedles.filter(isLikelyContentCellText);
+  const candidateNeedles = (contentNeedles.length ? contentNeedles : cellNeedles)
+    .sort((left, right) => right.length - left.length);
+
+  for (const needle of candidateNeedles) {
+    const exact = cellElements.find((element) => normalizeSearchText(element.textContent) === needle);
+    if (exact) return exact;
+    const contained = cellElements.find((element) => {
+      const haystack = normalizeSearchText(element.textContent);
+      return haystack.includes(needle) || (haystack.length >= 18 && needle.includes(haystack));
+    });
+    if (contained) return contained;
+  }
+  return null;
+}
+
+function isDistinctiveCellText(value: string) {
+  if (value.length < 8 && cjkLength(value) < 4) return false;
+  if (/^(high|medium|low|阻断问题|人工复核|低|中|高|待验证|supported|partial|unverified)$/i.test(value)) return false;
+  if (/^s\d+$/i.test(value)) return false;
+  return true;
+}
+
+function isLikelyContentCellText(value: string) {
+  if (cjkLength(value) >= 4) return true;
+  if (value.length >= 18) return true;
+  // 短英文产品名通常只是行上下文，避免把 Claude Code/Cursor 这种单元格当成问题定位目标。
+  return !/^[a-z0-9][a-z0-9 ._+#/-]{1,28}$/i.test(value);
+}
+
+function cjkLength(value: string) {
+  return (value.match(/[\u4e00-\u9fa5]/g) ?? []).length;
+}
+
 function normalizeSearchText(value?: string | null) {
   return (value ?? "")
     .toLowerCase()
     .replace(/[`*_#[\](){}<>|>~-]/g, " ")
+    .replace(/[.,，。:：;；!！?？…]+/g, " ")
     .replace(/\s+/g, " ")
     .trim();
 }

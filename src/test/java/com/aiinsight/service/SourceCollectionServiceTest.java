@@ -238,6 +238,45 @@ class SourceCollectionServiceTest {
     }
 
     @Test
+    void initializesCoverageBudgetsForAllRequestedDimensions() {
+        SourceCollectionService service = new SourceCollectionService(fetchUsefulPages(), fakeSearchProvider());
+        AnalysisRun run = new AnalysisRun(new AnalysisRequirement(
+                "Analyze AI coding tools",
+                "AI coding tools",
+                List.of("Cursor", "Claude Code"),
+                List.of("代码理解与生成能力", "IDE/终端集成", "上下文管理", "团队协作", "企业安全与权限", "定价模式", "目标用户"),
+                List.of("official_site", "pricing_page"),
+                List.of()
+        ));
+        List<SearchQueryPlanner.SearchQueryBatch> batches = List.of(
+                new SearchQueryPlanner.SearchQueryBatch("Cursor", List.of("Cursor official pricing plans AI coding tools")),
+                new SearchQueryPlanner.SearchQueryBatch("Claude Code", List.of("Claude Code official pricing plans AI coding tools"))
+        );
+
+        service.searchCandidates(run, false, batches);
+
+        var budgets = run.getResearchPackage().getResearchCollectionPlan().getEvidenceBudgets();
+        assertThat(budgets)
+                .extracting(budget -> budget.getCompetitorName() + "|" + budget.getDimension())
+                .contains(
+                        "Cursor|code_generation",
+                        "Cursor|ide_integration",
+                        "Cursor|context_management",
+                        "Cursor|team_collaboration",
+                        "Cursor|security",
+                        "Cursor|pricing",
+                        "Cursor|customers",
+                        "Claude Code|code_generation",
+                        "Claude Code|ide_integration",
+                        "Claude Code|context_management",
+                        "Claude Code|team_collaboration",
+                        "Claude Code|security",
+                        "Claude Code|pricing",
+                        "Claude Code|customers"
+                );
+    }
+
+    @Test
     void fetchesSelectedSearchCandidatesInParallel() {
         AtomicInteger inFlight = new AtomicInteger();
         AtomicInteger maxInFlight = new AtomicInteger();

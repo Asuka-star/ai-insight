@@ -94,6 +94,73 @@ class CitationCoverageEvaluatorTest {
     }
 
     @Test
+    void flagsMalformedMarkdownTableRows() {
+        AnalysisRun run = new AnalysisRun();
+        String report = """
+                | 建议 | 理由 | 证据 | 置信度 | 下一步 |
+                | --- | --- | --- | --- | --- |
+                待验证：| 考虑引入类似 Claude Code 的灵活定价 | 证据不足 | [S8] | HIGH | 复核 |
+                """;
+
+        var findings = evaluator.evaluate(report, run);
+
+        assertThat(findings)
+                .anySatisfy(finding -> {
+                    assertThat(finding.getSeverity()).isEqualTo(ReviewSeverity.HIGH);
+                    assertThat(finding.getCategory()).isEqualTo("report_table_malformed");
+                    assertThat(finding.getExcerpt()).contains("待验证：|");
+                });
+    }
+
+    @Test
+    void flagsCitationsLeakedIntoMarkdownTableHeaders() {
+        AnalysisRun run = new AnalysisRun();
+        String report = """
+                | 维度 | Cursor | Claude Code | 判断置信度[S5][S9] |
+                | --- | --- | --- | --- |
+                | 目标用户 | 企业工程团队 | 个人与团队 | HIGH |
+                """;
+
+        var findings = evaluator.evaluate(report, run);
+
+        assertThat(findings)
+                .anySatisfy(finding -> {
+                    assertThat(finding.getSeverity()).isEqualTo(ReviewSeverity.MEDIUM);
+                    assertThat(finding.getCategory()).isEqualTo("report_table_header_citation");
+                });
+    }
+
+    @Test
+    void flagsLeakedInternalVerificationStatusCounts() {
+        AnalysisRun run = runWithEvidence();
+        for (int i = 0; i < 4; i++) {
+            AnalysisClaim claim = claim("Supported claim " + i, ConfidenceLevel.HIGH, List.of("S1"));
+            claim.setSupportStatus("SUPPORTED");
+            run.getClaims().add(claim);
+        }
+        AnalysisClaim partialClaim = claim("Partial claim", ConfidenceLevel.MEDIUM, List.of("S1"));
+        partialClaim.setSupportStatus("PARTIAL");
+        run.getClaims().add(partialClaim);
+        for (int i = 0; i < 3; i++) {
+            AnalysisClaim claim = claim("Unverified claim " + i, ConfidenceLevel.LOW, List.of());
+            claim.setSupportStatus("UNVERIFIED");
+            claim.setRecommendedPlacement("VALIDATION_BACKLOG");
+            run.getClaims().add(claim);
+        }
+        String report = "基于当前有限的公开资料和文档证据（SUPPORTED=4, UNVERIFIED=3），建议继续补证。";
+
+        var findings = evaluator.evaluate(report, run);
+
+        assertThat(findings)
+                .anySatisfy(finding -> {
+                    assertThat(finding.getSeverity()).isEqualTo(ReviewSeverity.MEDIUM);
+                    assertThat(finding.getCategory()).isEqualTo("report_verification_summary_mismatch");
+                    assertThat(finding.getRecommendation()).contains("移除 SUPPORTED/PARTIAL/UNVERIFIED");
+                    assertThat(finding.getExcerpt()).contains("SUPPORTED=4");
+                });
+    }
+
+    @Test
     void acceptsCitationWhenEvidenceChunkSupportsClaim() {
         AnalysisRun run = runWithEvidence();
         String report = "机会点是优化价格策略和套餐比较 [S1]。";

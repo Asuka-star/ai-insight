@@ -23,10 +23,18 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 @Component
 public class CitationCoverageEvaluator {
+
+    private static final Pattern VERIFICATION_SUMMARY_PATTERN = Pattern.compile(
+            "共\\s*(\\d+)\\s*条结论[^\\n]*?SUPPORTED\\s*=\\s*(\\d+)(?:[^\\n]*?PARTIAL\\s*=\\s*(\\d+))?[^\\n]*?UNVERIFIED\\s*=\\s*(\\d+)"
+    );
+    private static final Pattern COMPACT_VERIFICATION_SUMMARY_PATTERN = Pattern.compile(
+            "SUPPORTED\\s*=\\s*(\\d+)(?:[^\\n)]*?PARTIAL\\s*=\\s*(\\d+))?[^\\n)]*?UNVERIFIED\\s*=\\s*(\\d+)"
+    );
 
     // 维度名 → 同义词/关键词别名：用于确定性维度覆盖校验。
     // 每个条目包含英文规范名、中文别名和功能关键词，保证报告文本至少命中其中一个。
@@ -71,9 +79,162 @@ public class CitationCoverageEvaluator {
             paragraphIndex++;
         }
         if (run != null) {
+            findings.addAll(validateReportStructure(reportContent, run));
             findings.addAll(validateStructuredClaims(run));
         }
         return findings;
+    }
+
+    private List<ReviewFinding> validateReportStructure(String reportContent, AnalysisRun run) {
+        List<ReviewFinding> findings = new ArrayList<>();
+        findings.addAll(validateMarkdownTables(reportContent));
+        findings.addAll(validateVerificationSummary(reportContent, run));
+        return findings;
+    }
+
+    private List<ReviewFinding> validateMarkdownTables(String reportContent) {
+        List<ReviewFinding> findings = new ArrayList<>();
+        if (!StringUtils.hasText(reportContent)) {
+            return findings;
+        }
+        String[] lines = reportContent.split("\\R", -1);
+        int expectedColumns = -1;
+        String headerLine = "";
+        for (int i = 0; i < lines.length; i++) {
+            String line = lines[i];
+            String trimmed = line.trim();
+            if (!isMarkdownTableRow(trimmed)) {
+                expectedColumns = -1;
+                headerLine = "";
+                if (looksLikeBrokenTableContinuation(trimmed)) {
+                    ReviewFinding finding = new ReviewFinding(
+                            ReviewSeverity.HIGH,
+                            "report_table_malformed",
+                            "Markdown 表格行疑似被前缀或换行破坏，无法稳定渲染。",
+                            "请保持整行以 | 开头并维持与表头相同的列数；待验证标记应写入单元格内部。"
+                    );
+                    finding.setParagraphIndex(i);
+                    finding.setExcerpt(line);
+                    finding.setLocationType(ReviewLocationType.REPORT_PARAGRAPH);
+                    findings.add(finding);
+                }
+                continue;
+            }
+            if (i + 1 < lines.length && isMarkdownTableSeparator(lines[i + 1].trim())) {
+                expectedColumns = tableColumnCount(trimmed);
+                headerLine = trimmed;
+                if (containsCitation(trimmed)) {
+                    ReviewFinding finding = new ReviewFinding(
+                            ReviewSeverity.MEDIUM,
+                            "report_table_header_citation",
+                            "Markdown 表头包含证据引用，容易形成类似“判断置信度[S5]”的异常列名。",
+                            "删除表头中的 citation；引用应放在具体数据行的证据或判断单元格中。"
+                    );
+                    finding.setParagraphIndex(i);
+                    finding.setExcerpt(line);
+                    finding.setLocationType(ReviewLocationType.REPORT_PARAGRAPH);
+                    findings.add(finding);
+                }
+                continue;
+            }
+            if (isMarkdownTableSeparator(trimmed)) {
+                continue;
+            }
+            if (expectedColumns > 0 && tableColumnCount(trimmed) != expectedColumns) {
+                ReviewFinding finding = new ReviewFinding(
+                        ReviewSeverity.HIGH,
+                        "report_table_column_mismatch",
+                        "Markdown 表格数据行列数与表头不一致，可能导致前端表格渲染错位。",
+                        "修复该行的 | 分隔符数量，确保与表头列数一致；不要把“待验证：”放到表格行外。"
+                );
+                finding.setParagraphIndex(i);
+                finding.setExcerpt("%s\n%s".formatted(headerLine, line).trim());
+                finding.setLocationType(ReviewLocationType.REPORT_PARAGRAPH);
+                findings.add(finding);
+            }
+        }
+        return findings;
+    }
+
+    private List<ReviewFinding> validateVerificationSummary(String reportContent, AnalysisRun run) {
+        if (!StringUtils.hasText(reportContent) || run == null || run.getClaims().isEmpty()) {
+            return List.of();
+        }
+        Matcher matcher = VERIFICATION_SUMMARY_PATTERN.matcher(reportContent);
+        if (!matcher.find()) {
+            return validateCompactVerificationSummary(reportContent, run);
+        }
+        ReviewFinding finding = new ReviewFinding(
+                ReviewSeverity.MEDIUM,
+                "report_verification_summary_mismatch",
+                "报告正文展示了内部证据状态计数，容易让用户关注实现细节而不是结论。",
+                "移除 SUPPORTED/PARTIAL/UNVERIFIED 等内部状态计数，只用自然语言说明证据置信度受限。"
+        );
+        finding.setExcerpt(matcher.group(0));
+        finding.setLocationType(ReviewLocationType.REPORT_PARAGRAPH);
+        return List.of(finding);
+    }
+
+    private List<ReviewFinding> validateCompactVerificationSummary(String reportContent, AnalysisRun run) {
+        Matcher matcher = COMPACT_VERIFICATION_SUMMARY_PATTERN.matcher(reportContent);
+        if (!matcher.find()) {
+            return List.of();
+        }
+        ReviewFinding finding = new ReviewFinding(
+                ReviewSeverity.MEDIUM,
+                "report_verification_summary_mismatch",
+                "报告正文展示了内部证据状态计数，容易让用户关注实现细节而不是结论。",
+                "移除 SUPPORTED/PARTIAL/UNVERIFIED 等内部状态计数，只用自然语言说明证据置信度受限。"
+        );
+        finding.setExcerpt(matcher.group(0));
+        finding.setLocationType(ReviewLocationType.REPORT_PARAGRAPH);
+        return List.of(finding);
+    }
+
+    private int countClaimsWithStatus(AnalysisRun run, String status) {
+        return (int) run.getClaims().stream()
+                .filter(claim -> status.equalsIgnoreCase(nullToEmpty(claim.getSupportStatus())))
+                .count();
+    }
+
+    private int parseCount(String value) {
+        if (!StringUtils.hasText(value)) {
+            return 0;
+        }
+        return Integer.parseInt(value.trim());
+    }
+
+    private boolean looksLikeBrokenTableContinuation(String trimmed) {
+        return StringUtils.hasText(trimmed)
+                && trimmed.contains("|")
+                && (trimmed.startsWith("待验证：|") || trimmed.startsWith("待验证:|"));
+    }
+
+    private boolean containsCitation(String line) {
+        return CITATION_PATTERN.matcher(line).find();
+    }
+
+    private boolean isMarkdownTableRow(String line) {
+        return StringUtils.hasText(line) && line.startsWith("|") && line.contains("|");
+    }
+
+    private boolean isMarkdownTableSeparator(String line) {
+        return StringUtils.hasText(line)
+                && line.matches("^\\|?\\s*:?-{2,}:?\\s*(\\|\\s*:?-{2,}:?\\s*)+\\|?\\s*$");
+    }
+
+    private int tableColumnCount(String line) {
+        if (!isMarkdownTableRow(line)) {
+            return 0;
+        }
+        String normalized = line.trim();
+        if (normalized.startsWith("|")) {
+            normalized = normalized.substring(1);
+        }
+        if (normalized.endsWith("|")) {
+            normalized = normalized.substring(0, normalized.length() - 1);
+        }
+        return normalized.split("\\|", -1).length;
     }
 
     // 确定性维度覆盖校验：对用户指定的每个分析维度，检查报告文本是否包含该维度的关键词。

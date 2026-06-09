@@ -956,20 +956,76 @@ public class AnalystNode implements AgentNode {
     }
 
     private String normalizeClaimDimension(AnalysisRun run, String value, String claimContent) {
-        if (hasText(value)) {
-            return value.trim();
-        }
         List<String> dimensions = run.getRequirement() == null
                 ? List.of()
                 : safeList(run.getRequirement().getDimensions()).stream()
                 .filter(AgentUtils::hasText)
                 .toList();
+        if (dimensions.isEmpty()) {
+            return hasText(value) ? value.trim() : "综合判断";
+        }
         String text = normalizeLower(claimContent);
+        String strongContentMatch = dimensions.stream()
+                .filter(dimension -> strongDimensionMatch(text, dimension))
+                .findFirst()
+                .orElse("");
+        if (hasText(strongContentMatch)) {
+            return strongContentMatch;
+        }
+        if (hasText(value)) {
+            String normalizedValue = normalizeLower(value);
+            return dimensions.stream()
+                    .filter(dimension -> normalizeLower(dimension).equals(normalizedValue)
+                            || containsIgnoreCase(value, dimension)
+                            || dimensionKeywords(dimension).stream().anyMatch(keyword -> containsIgnoreCase(value, keyword)))
+                    .findFirst()
+                    .orElse(value.trim());
+        }
         return dimensions.stream()
                 .filter(dimension -> containsIgnoreCase(text, dimension)
                         || dimensionKeywords(dimension).stream().anyMatch(keyword -> containsIgnoreCase(text, keyword)))
                 .findFirst()
                 .orElse("综合判断");
+    }
+
+    private boolean strongDimensionMatch(String normalizedText, String dimension) {
+        if (!hasText(normalizedText) || !hasText(dimension)) {
+            return false;
+        }
+        String normalizedDimension = normalizeLower(dimension);
+        if (normalizedText.contains(normalizedDimension)) {
+            return true;
+        }
+        return strongDimensionKeywords(normalizedDimension).stream()
+                .anyMatch(keyword -> containsIgnoreCase(normalizedText, keyword));
+    }
+
+    private List<String> strongDimensionKeywords(String normalizedDimension) {
+        if (containsAny(normalizedDimension, "ide", "终端", "集成")) {
+            return List.of("ide", "终端", "terminal", "slack", "web", "编辑器", "jetbrains", "vscode");
+        }
+        if (containsAny(normalizedDimension, "上下文", "context")) {
+            return List.of("上下文", "context", "代码库索引", "长上下文", "记忆", "memory");
+        }
+        if (containsAny(normalizedDimension, "团队", "协作")) {
+            return List.of("团队", "协作", "collaboration", "项目共享", "共享", "team", "规则", "prompt");
+        }
+        if (containsAny(normalizedDimension, "安全", "权限", "合规")) {
+            return List.of("安全", "权限", "合规", "sso", "scim", "saml", "rbac", "security", "permission", "compliance");
+        }
+        if (containsAny(normalizedDimension, "定价", "价格")) {
+            return List.of("定价", "价格", "套餐", "付费", "免费", "pricing", "price", "plan", "$");
+        }
+        if (containsAny(normalizedDimension, "目标用户")) {
+            return List.of("目标用户", "个人开发者", "企业团队", "初创", "target user", "persona");
+        }
+        if (containsAny(normalizedDimension, "agent", "工作流", "智能体")) {
+            return List.of("agent", "智能体", "工作流", "workflow", "任务分解");
+        }
+        if (containsAny(normalizedDimension, "代码", "生成")) {
+            return List.of("代码生成", "代码理解", "补全", "code generation", "coding", "completion");
+        }
+        return List.of();
     }
 
     private String sanitizeShortText(String text, int maxLength) {
@@ -1025,6 +1081,9 @@ public class AnalystNode implements AgentNode {
             if (claim.getConfidence() == ConfidenceLevel.HIGH) {
                 claim.setConfidence(ConfidenceLevel.MEDIUM);
             }
+            if (!PLACEMENT_NONE.equals(claim.getRecommendedPlacement())) {
+                claim.setRecommendedPlacement(PLACEMENT_VALIDATION_BACKLOG);
+            }
             if (!hasText(claim.getSupportReason())) {
                 claim.setSupportReason("证据相关但缺少足够强的一手来源，不能作为高置信优势判断。");
             }
@@ -1036,6 +1095,9 @@ public class AnalystNode implements AgentNode {
             if (claim.getConfidence() == ConfidenceLevel.HIGH) {
                 claim.setConfidence(ConfidenceLevel.MEDIUM);
             }
+            if (!PLACEMENT_NONE.equals(claim.getRecommendedPlacement())) {
+                claim.setRecommendedPlacement(PLACEMENT_VALIDATION_BACKLOG);
+            }
             if (!hasText(claim.getSupportReason())) {
                 claim.setSupportReason("Analyst 未提供直接支撑摘录，只能按部分支撑处理。");
             }
@@ -1045,8 +1107,13 @@ public class AnalystNode implements AgentNode {
                     ? SUPPORT_STATUS_SUPPORTED
                     : SUPPORT_STATUS_PARTIAL);
         }
+        if (SUPPORT_STATUS_PARTIAL.equals(claim.getSupportStatus())
+                && !PLACEMENT_NONE.equals(claim.getRecommendedPlacement())) {
+            claim.setRecommendedPlacement(PLACEMENT_VALIDATION_BACKLOG);
+        }
         if (!PLACEMENT_MATRIX.equals(claim.getRecommendedPlacement())
                 && !PLACEMENT_SWOT.equals(claim.getRecommendedPlacement())
+                && !PLACEMENT_VALIDATION_BACKLOG.equals(claim.getRecommendedPlacement())
                 && !PLACEMENT_NONE.equals(claim.getRecommendedPlacement())) {
             claim.setRecommendedPlacement(defaultPlacementFor(claim.getType()));
         }

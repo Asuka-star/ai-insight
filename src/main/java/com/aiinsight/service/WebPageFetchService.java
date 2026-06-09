@@ -291,7 +291,7 @@ public class WebPageFetchService {
         }
         Optional<FetchedPage> cachedPage = fetchedPageCache.get(uri);
         if (cachedPage.isPresent()) {
-            FetchedPage page = cachedPage.get();
+            FetchedPage page = repairCachedPageClassification(uri, cachedPage.get());
             log.info("Web page fetch cache hit: url={}, finalUrl={}, title={}, sourceType={}, sourceQuality={}, contentHash={}, robotsNote={}",
                     url,
                     page.getUrl(),
@@ -485,6 +485,34 @@ public class WebPageFetchService {
             cursor = cursor.getCause();
         }
         return "UNKNOWN";
+    }
+
+    private FetchedPage repairCachedPageClassification(URI requestedUri, FetchedPage page) {
+        if (page == null || !page.isCacheable()) {
+            return page;
+        }
+        String repairedSourceType = sourceTypeClassifier.classify(page.getUrl(), page.getTitle());
+        String repairedSourceQuality = page.isUsable()
+                ? sourceTypeClassifier.qualityFor(repairedSourceType, "FETCHED", "LIVE_FETCHED")
+                : page.getSourceQuality();
+        if (sameText(page.getSourceType(), repairedSourceType)
+                && sameText(page.getSourceQuality(), repairedSourceQuality)) {
+            return page;
+        }
+        FetchedPage repaired = page.withSourceClassification(repairedSourceType, repairedSourceQuality);
+        fetchedPageCache.put(requestedUri, repaired);
+        log.info("Web page fetch cache classification repaired: url={}, finalUrl={}, oldSourceType={}, newSourceType={}, oldSourceQuality={}, newSourceQuality={}",
+                requestedUri,
+                repaired.getUrl(),
+                page.getSourceType(),
+                repairedSourceType,
+                page.getSourceQuality(),
+                repairedSourceQuality);
+        return repaired;
+    }
+
+    private boolean sameText(String left, String right) {
+        return storageSafeText(left).equals(storageSafeText(right));
     }
 
     private FetchAttemptResult sendWithRetry(URI uri) throws IOException, InterruptedException {
@@ -934,6 +962,10 @@ public class WebPageFetchService {
         FetchedPage cachedCopy(Instant cachedAt) {
             String note = stripCacheHit(complianceNote) + " cacheHit=true; cachedAt=" + cachedAt + "; contentHash=" + contentHash + ".";
             return new FetchedPage(url, title, rawText, note.trim(), sourceType, sourceQuality, failureReason, statusCode, contentType, contentHash, internalLinks, fetchedAt, true, usable, status);
+        }
+
+        FetchedPage withSourceClassification(String sourceType, String sourceQuality) {
+            return new FetchedPage(url, title, rawText, complianceNote, sourceType, sourceQuality, failureReason, statusCode, contentType, contentHash, internalLinks, fetchedAt, cacheHit, usable, status);
         }
 
         private static String stripCacheHit(String note) {

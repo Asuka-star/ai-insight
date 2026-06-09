@@ -157,6 +157,73 @@ class ResearchCoverageServiceTest {
                 .containsExactlyInAnyOrder("REVIEW_REPAIR", "BACKFILL");
     }
 
+    @Test
+    void reviewsCoverageRequiresUsableReviewLikeEvidence() {
+        AnalysisRun run = new AnalysisRun(new AnalysisRequirement(
+                "Analyze Cursor user reviews",
+                "AI coding tools",
+                List.of("Cursor"),
+                List.of("reviews"),
+                List.of("public_reviews"),
+                List.of()
+        ));
+        run.getResearchPackage().getResearchCollectionPlan().getEvidenceBudgets().add(budget("Cursor", "reviews"));
+        run.getEvidenceSources().add(new EvidenceSource(
+                "S1",
+                "Cursor docs mention reviews",
+                "https://cursor.com/docs",
+                "official_site",
+                "FETCHED",
+                "LIVE_FETCHED",
+                "HIGH",
+                "NONE",
+                "Cursor product docs mention code review workflows.",
+                "Cursor product docs mention code review workflows.",
+                "test"
+        ));
+        run.getEvidenceSources().add(new EvidenceSource(
+                "S2",
+                "Cursor reviews metadata",
+                "https://example.com/cursor-reviews",
+                "public_review",
+                "FETCHED",
+                "LIVE_FETCHED",
+                "LOW",
+                "METADATA_ONLY",
+                "Cursor reviews",
+                "",
+                "metadata only"
+        ));
+
+        service.refreshCoverage(run);
+
+        assertThat(run.getResearchPackage().getResearchCollectionPlan().getCoverageGaps())
+                .hasSize(1)
+                .first()
+                .satisfies(gap -> {
+                    assertThat(gap.getCompetitorName()).isEqualTo("Cursor");
+                    assertThat(gap.getDimension()).isEqualTo("reviews");
+                });
+
+        run.getEvidenceSources().add(new EvidenceSource(
+                "S3",
+                "Cursor user reviews",
+                "https://example.com/cursor-user-reviews",
+                "public_review",
+                "FETCHED",
+                "LIVE_FETCHED",
+                "LOW",
+                "NONE",
+                "Users report onboarding friction and strong code completion in reviews.",
+                "Users report onboarding friction and strong code completion in reviews.",
+                "test"
+        ));
+
+        service.refreshCoverage(run);
+
+        assertThat(run.getResearchPackage().getResearchCollectionPlan().getCoverageGaps()).isEmpty();
+    }
+
     private EvidenceBudget budget(String competitor, String dimension) {
         EvidenceBudget budget = new EvidenceBudget();
         budget.setCompetitorName(competitor);

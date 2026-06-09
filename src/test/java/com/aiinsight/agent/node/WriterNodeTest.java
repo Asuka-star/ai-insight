@@ -75,6 +75,141 @@ class WriterNodeTest {
     }
 
     @Test
+    void writerRemovesLeakedSupportStatusCountsFromReport() {
+        LlmClient llmClient = new LlmClient() {
+            @Override
+            public boolean isAvailable() {
+                return true;
+            }
+
+            @Override
+            public String complete(ChatRequest request) {
+                return """
+                        # Report
+
+                        基于当前有限的公开资料和文档证据（SUPPORTED=4, PARTIAL=1, UNVERIFIED=3），建议继续补证。
+
+                        证据状态：SUPPORTED=4，PARTIAL=1，UNVERIFIED=3
+                        """;
+            }
+        };
+        WriterNode writer = new WriterNode(llmClient, new FallbackReportDraftFactory());
+        AnalysisRun run = new AnalysisRun(new AnalysisRequirement(
+                "Analyze AI coding tools",
+                "developer tools",
+                List.of("Cursor"),
+                List.of("evidence status"),
+                List.of("official_site"),
+                List.of()
+        ));
+
+        writer.execute(run);
+
+        String report = latestReport(run);
+        assertThat(report)
+                .doesNotContain("SUPPORTED=")
+                .doesNotContain("PARTIAL=")
+                .doesNotContain("UNVERIFIED=")
+                .contains("基于当前有限的公开资料和文档证据，建议继续补证。");
+    }
+
+    @Test
+    void writerRemovesLeakedSupportStatusLabelsFromReport() {
+        LlmClient llmClient = new LlmClient() {
+            @Override
+            public boolean isAvailable() {
+                return true;
+            }
+
+            @Override
+            public String complete(ChatRequest request) {
+                return """
+                        # Report
+
+                        基于当前公开资料和文档证据（证据状态：SUPPORTED、PARTIAL、UNVERIFIED均有涉及），建议继续补证。
+                        """;
+            }
+        };
+        WriterNode writer = new WriterNode(llmClient, new FallbackReportDraftFactory());
+        AnalysisRun run = new AnalysisRun(new AnalysisRequirement(
+                "Analyze AI coding tools",
+                "developer tools",
+                List.of("Cursor"),
+                List.of("evidence status"),
+                List.of("official_site"),
+                List.of()
+        ));
+
+        writer.execute(run);
+
+        String report = latestReport(run);
+        assertThat(report)
+                .doesNotContain("SUPPORTED")
+                .doesNotContain("PARTIAL")
+                .doesNotContain("UNVERIFIED")
+                .contains("基于当前公开资料和文档证据，建议继续补证。");
+    }
+
+    @Test
+    void writerAddsDecisionSummaryWhenReportOmitsIt() {
+        LlmClient llmClient = new LlmClient() {
+            @Override
+            public boolean isAvailable() {
+                return true;
+            }
+
+            @Override
+            public String complete(ChatRequest request) {
+                return """
+                        # Report
+
+                        ## 建议优先级
+                        Cursor 的 Agent 工作流值得优先评估 [S1]。
+                        """;
+            }
+        };
+        WriterNode writer = new WriterNode(llmClient, new FallbackReportDraftFactory());
+        AnalysisRun run = new AnalysisRun(new AnalysisRequirement(
+                "Analyze AI coding tools",
+                "developer tools",
+                List.of("Cursor", "Claude Code"),
+                List.of("agent workflow"),
+                List.of("official_site"),
+                List.of()
+        ));
+        run.getEvidenceSources().add(new EvidenceSource(
+                "S1",
+                "Cursor product",
+                "https://example.test/cursor",
+                "official_site",
+                "FETCHED",
+                "LIVE_FETCHED",
+                "HIGH",
+                "NONE",
+                "Cursor agent workflow supports planning, building, fixing and reviewing changes.",
+                "Cursor agent workflow supports planning, building, fixing and reviewing changes.",
+                "test evidence"
+        ));
+        AnalysisClaim claim = new AnalysisClaim();
+        claim.setType(ClaimType.RECOMMENDATION);
+        claim.setContent("优先评估 Cursor 的 Agent 工作流，作为 AI Insight 后续版本的自动化研发流程参考。");
+        claim.setConfidence(ConfidenceLevel.HIGH);
+        claim.setSupportStatus("SUPPORTED");
+        claim.setRecommendedPlacement("MATRIX");
+        claim.setEligibleForMainReport(true);
+        claim.setEvidenceIds(List.of("S1"));
+        run.getClaims().add(claim);
+
+        writer.execute(run);
+
+        String report = latestReport(run);
+        assertThat(report)
+                .contains("## 结论与建议")
+                .contains("首选借鉴：优先评估 Cursor 的 Agent 工作流")
+                .contains("[S1]");
+    }
+
+    @Test
     void writerAddsCitationToUncitedCompetitiveJudgmentFromEligibleClaim() {
         LlmClient llmClient = new LlmClient() {
             @Override
@@ -217,6 +352,115 @@ class WriterNodeTest {
 
         assertThat(latestReport(run))
                 .contains("| 核心能力 | Cursor 与 Claude Code 在 AI 编程助手的核心能力上路径分明[S1]。 |");
+    }
+
+    @Test
+    void writerDoesNotAttachCitationsToMarkdownTableHeaders() {
+        LlmClient llmClient = new LlmClient() {
+            @Override
+            public boolean isAvailable() {
+                return true;
+            }
+
+            @Override
+            public String complete(ChatRequest request) {
+                return """
+                        | 维度 | Cursor | Claude Code | 判断置信度 |
+                        | --- | --- | --- | --- |
+                        | 目标用户 | Cursor 更偏向企业工程团队，Claude Code 覆盖个人和团队。 | Claude Code 覆盖个人开发者和团队。 | HIGH |
+                        """;
+            }
+        };
+        WriterNode writer = new WriterNode(llmClient, new FallbackReportDraftFactory());
+        AnalysisRun run = new AnalysisRun(new AnalysisRequirement(
+                "Analyze AI coding tools",
+                "developer tools",
+                List.of("Cursor", "Claude Code"),
+                List.of("target users"),
+                List.of("official_site"),
+                List.of()
+        ));
+        run.getEvidenceSources().add(new EvidenceSource(
+                "S1",
+                "AI coding tools target users",
+                "https://example.test/ai-coding-target-users",
+                "official_site",
+                "FETCHED",
+                "LIVE_FETCHED",
+                "HIGH",
+                "NONE",
+                "Cursor and Claude Code target different developer teams.",
+                "Cursor and Claude Code target different developer teams.",
+                "test evidence"
+        ));
+        AnalysisClaim claim = new AnalysisClaim();
+        claim.setType(ClaimType.COMPARISON);
+        claim.setContent("Cursor 与 Claude Code 在目标用户覆盖上存在差异。");
+        claim.setConfidence(ConfidenceLevel.HIGH);
+        claim.setSupportStatus("SUPPORTED");
+        claim.setRecommendedPlacement("MATRIX");
+        claim.setEligibleForMainReport(true);
+        claim.setEvidenceIds(List.of("S1"));
+        run.getClaims().add(claim);
+
+        writer.execute(run);
+
+        String report = latestReport(run);
+        assertThat(report).contains("| 维度 | Cursor | Claude Code | 判断置信度 |");
+        assertThat(report).doesNotContain("判断置信度[S1]");
+    }
+
+    @Test
+    void writerDowngradesMarkdownTableCellWithoutBreakingColumns() {
+        LlmClient llmClient = new LlmClient() {
+            @Override
+            public boolean isAvailable() {
+                return true;
+            }
+
+            @Override
+            public String complete(ChatRequest request) {
+                return """
+                        | 建议 | 理由 | 证据 | 置信度 | 下一步 |
+                        | --- | --- | --- | --- | --- |
+                        | 考虑引入类似 Claude Code 的灵活定价与广泛用户覆盖模式 | 其提供免费计划及清晰的团队订阅价格，适合优先采用。 | [S8] 官方定价页明确列出免费计划及团队计划。 | HIGH | 复核定价页 |
+                        """;
+            }
+        };
+        WriterNode writer = new WriterNode(llmClient, new FallbackReportDraftFactory());
+        AnalysisRun run = new AnalysisRun(new AnalysisRequirement(
+                "Analyze AI coding tools",
+                "developer tools",
+                List.of("Claude Code"),
+                List.of("pricing"),
+                List.of("pricing_page"),
+                List.of()
+        ));
+        run.getEvidenceSources().add(new EvidenceSource(
+                "S8",
+                "Claude pricing",
+                "https://claude.com/pricing",
+                "pricing_page",
+                "FETCHED",
+                "LIVE_FETCHED",
+                "HIGH",
+                "NONE",
+                "Claude pricing lists plans.",
+                "Claude pricing lists Pro, Max and Team plans.",
+                "test evidence"
+        ));
+
+        writer.execute(run);
+
+        String report = latestReport(run);
+        String row = report.lines()
+                .filter(line -> line.contains("Claude Code 的灵活定价"))
+                .findFirst()
+                .orElseThrow();
+        assertThat(row).startsWith("| 待验证：考虑引入");
+        assertThat(row).contains("| 复核定价页 |");
+        assertThat(row.chars().filter(ch -> ch == '|').count()).isEqualTo(6);
+        assertThat(report).doesNotContain("待验证：|");
     }
 
     @Test

@@ -56,6 +56,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 @Component
@@ -71,6 +72,10 @@ public class ReviewerNode implements AgentNode {
     private static final int MAX_LLM_FINDING_RECOMMENDATION_LENGTH = 180;
     private static final int MAX_LLM_FINDING_EXCERPT_LENGTH = 240;
     private static final int MAX_REPAIR_TASKS = 12;
+    private static final Pattern DECISION_SUMMARY_HEADING_PATTERN = Pattern.compile(
+            "(?m)^#{2,3}\\s*(结论与建议|决策总结|决策摘要|最终建议|综合结论)\\s*$"
+    );
+    private static final Pattern MARKDOWN_HEADING_PATTERN = Pattern.compile("(?m)^#{1,6}\\s+.+$");
     private static final Set<String> MANUAL_ONLY_EVIDENCE_TYPES = Set.of(
             "survey_result",
             "interview_note",
@@ -148,6 +153,9 @@ public class ReviewerNode implements AgentNode {
                     run.getClaims().size(),
                     run.getReviewFindings().size());
             deterministicFallback = true;
+        }
+        if (draft != null) {
+            filterResolvedReportFindings(run, draft);
         }
         applyRepairVerificationScope(run, previousDecision);
         assignFindingTargetAgents(run);
@@ -333,13 +341,13 @@ public class ReviewerNode implements AgentNode {
             return false;
         }
         String category = normalizeLower(finding.getCategory());
-        return !isQualityReminderOnly(category);
+        return !isQualityReminderOnly(finding, category);
     }
 
-    private boolean isQualityReminderOnly(String category) {
+    private boolean isQualityReminderOnly(ReviewFinding finding, String category) {
         return category.contains("marketing_only")
                 || category.contains("thin_source")
-                || category.contains("low_quality_source")
+                || (category.contains("low_quality_source") && finding.getSeverity() != ReviewSeverity.HIGH)
                 || category.contains("snippet_only");
     }
 
@@ -1015,6 +1023,56 @@ public class ReviewerNode implements AgentNode {
                 .anyMatch(category -> category.contains("source") || category.contains("citation") || category.contains("evidence"));
     }
 
+    private void filterResolvedReportFindings(AnalysisRun run, AnalysisArtifact draft) {
+        if (run.getReviewFindings().isEmpty() || !hasValidDecisionSummarySection(draft.getContent())) {
+            return;
+        }
+        int before = run.getReviewFindings().size();
+        run.getReviewFindings().removeIf(this::isResolvedMissingDecisionSummaryFinding);
+        int removed = before - run.getReviewFindings().size();
+        if (removed > 0) {
+            log.info("Reviewer dropped resolved missing-decision-summary finding(s): runId={}, removed={}",
+                    run.getId(), removed);
+        }
+    }
+
+    private boolean isResolvedMissingDecisionSummaryFinding(ReviewFinding finding) {
+        return finding != null
+                && "report_missing_decision_summary".equals(normalizeLower(finding.getCategory()));
+    }
+
+    private boolean hasValidDecisionSummarySection(String content) {
+        if (!StringUtils.hasText(content)) {
+            return false;
+        }
+        Matcher heading = DECISION_SUMMARY_HEADING_PATTERN.matcher(content);
+        if (!heading.find()) {
+            return false;
+        }
+        int sectionEnd = content.length();
+        Matcher nextHeading = MARKDOWN_HEADING_PATTERN.matcher(content);
+        nextHeading.region(heading.end(), content.length());
+        if (nextHeading.find()) {
+            sectionEnd = nextHeading.start();
+        }
+        String body = content.substring(heading.end(), sectionEnd).trim();
+        if (body.length() < 30) {
+            return false;
+        }
+        String normalizedBody = normalizeLower(body);
+        int signalCount = 0;
+        if (containsAny(normalizedBody, "首选借鉴", "首选", "优先借鉴", "优先级", "推荐", "recommend")) {
+            signalCount++;
+        }
+        if (containsAny(normalizedBody, "风险边界", "风险", "证据不足", "待验证", "边界", "risk")) {
+            signalCount++;
+        }
+        if (containsAny(normalizedBody, "下一步行动", "下一步", "补证", "poc", "验证", "next step")) {
+            signalCount++;
+        }
+        return signalCount >= 2;
+    }
+
     private LlmReviewResult reviewClaimEvidenceWithLlm(AnalysisRun run, String previousContext) {
         String prompt = """
                 你是竞品分析工作流中的 claim-evidence Reviewer。请只检查结构化 claim 是否被 evidenceIds 真正支撑。
@@ -1172,7 +1230,7 @@ public class ReviewerNode implements AgentNode {
                 requirementSummary(run),
                 compactProfileBlock(run),
                 compactClaimsBlock(run),
-                abbreviate(draft.getContent(), 1800),
+                reportActionabilityReviewBlock(draft),
                 previousContext
         );
         return completeReviewSubtask("report-actionability", prompt);
@@ -1593,6 +1651,47 @@ public class ReviewerNode implements AgentNode {
             case REWORK_ANALYSIS -> "重做分析";
             case REVISE_REPORT -> "修订报告";
         };
+    }
+
+    private String reportActionabilityReviewBlock(AnalysisArtifact draft) {
+        String content = draft.getContent() == null ? "" : draft.getContent().trim();
+        if (!StringUtils.hasText(content)) {
+            return "暂无报告正文。";
+        }
+        String decisionSection = extractDecisionSummarySection(content);
+        StringBuilder block = new StringBuilder();
+        block.append("段落候选:\n").append(reportParagraphReviewBlock(draft));
+        block.append("\n\n决策摘要状态: ")
+                .append(hasValidDecisionSummarySection(content) ? "已包含有效结论与建议章节" : "未发现有效结论与建议章节");
+        if (StringUtils.hasText(decisionSection)) {
+            block.append("\n决策摘要章节:\n").append(abbreviate(decisionSection, 900));
+        }
+        block.append("\n\n报告末尾片段:\n").append(reportTailBlock(content, 1400));
+        return block.toString();
+    }
+
+    private String reportTailBlock(String content, int maxLength) {
+        if (!StringUtils.hasText(content) || content.length() <= maxLength) {
+            return content;
+        }
+        return "..." + content.substring(content.length() - maxLength);
+    }
+
+    private String extractDecisionSummarySection(String content) {
+        if (!StringUtils.hasText(content)) {
+            return "";
+        }
+        Matcher heading = DECISION_SUMMARY_HEADING_PATTERN.matcher(content);
+        if (!heading.find()) {
+            return "";
+        }
+        int sectionEnd = content.length();
+        Matcher nextHeading = MARKDOWN_HEADING_PATTERN.matcher(content);
+        nextHeading.region(heading.end(), content.length());
+        if (nextHeading.find()) {
+            sectionEnd = nextHeading.start();
+        }
+        return content.substring(heading.start(), sectionEnd).trim();
     }
 
     private String reportParagraphReviewBlock(AnalysisArtifact draft) {

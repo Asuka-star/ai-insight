@@ -63,6 +63,7 @@ final class AnalysisClaimRules {
     static boolean displayableClaim(AnalysisClaim claim) {
         return claim != null
                 && claim.getConfidence() != ConfidenceLevel.LOW
+                && SUPPORT_STATUS_SUPPORTED.equals(normalizeSupportStatus(claim.getSupportStatus()))
                 && !SUPPORT_STATUS_UNVERIFIED.equals(normalizeSupportStatus(claim.getSupportStatus()))
                 && claim.getEvidenceIds() != null
                 && !claim.getEvidenceIds().isEmpty()

@@ -84,6 +84,28 @@ class SourceTypeClassifierTest {
     }
 
     @Test
+    void keepsOfficialBlogAndNewsOnFirstPartyDomains() {
+        assertThat(classifier.classify("https://claude.com/blog", "Blog | Claude"))
+                .isEqualTo("technical_blog");
+        assertThat(classifier.authorityFor("https://claude.com/blog", "technical_blog"))
+                .isEqualTo("FIRST_PARTY_BLOG");
+
+        assertThat(classifier.classify(
+                "https://www.anthropic.com/news/updates-to-our-consumer-terms",
+                "Updates to Consumer Terms and Privacy Policy - Anthropic"
+        )).isEqualTo("technical_blog");
+        assertThat(classifier.authorityFor(
+                "https://www.anthropic.com/news/updates-to-our-consumer-terms",
+                "technical_blog"
+        )).isEqualTo("FIRST_PARTY_BLOG");
+
+        assertThat(classifier.classify("https://claude.com/product/overview", "The AI for Problem Solvers | Claude by Anthropic"))
+                .isEqualTo("official_site");
+        assertThat(classifier.authorityFor("https://claude.com/product/overview", "official_site"))
+                .isEqualTo("FIRST_PARTY_OFFICIAL");
+    }
+
+    @Test
     void downgradesThirdPartyPricingReferences() {
         String sourceType = classifier.classify("https://learn-cursor.com/docs/pricing", "Cursor pricing guide");
 

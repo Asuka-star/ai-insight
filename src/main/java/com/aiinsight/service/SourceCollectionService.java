@@ -780,22 +780,40 @@ public class SourceCollectionService {
                     .map(String::trim)
                     .toList());
         }
-        int sourcesPerCompetitor = searchSourcesPerCompetitor(Math.max(1, batches == null ? 0 : batches.size()));
-        for (SearchQueryPlanner.SearchQueryBatch batch : batches == null ? List.<SearchQueryPlanner.SearchQueryBatch>of() : batches) {
+        List<SearchQueryPlanner.SearchQueryBatch> safeBatches = batches == null ? List.of() : batches;
+        int sourcesPerCompetitor = searchSourcesPerCompetitor(Math.max(1, safeBatches.size()));
+        Set<String> budgetKeys = new LinkedHashSet<>();
+        for (SearchQueryPlanner.SearchQueryBatch batch : safeBatches) {
             ResearchSubtask subtask = new ResearchSubtask();
             subtask.setRunId(run.getId());
             subtask.setCompetitorName(batch.competitor());
-            subtask.setDimension(inferSubtaskDimension(batch.queries()));
+            subtask.setDimension(inferBatchDimension(run, batch));
             subtask.setQueries(new ArrayList<>(batch.queries()));
-            subtask.setSourcePreferences(run.getRequirement() == null
-                    ? List.of()
-                    : new ArrayList<>(nullToEmpty(run.getRequirement().getSourcePreferences())));
+            subtask.setSourcePreferences(sourcePreferencesForDimension(run, subtask.getDimension()));
             subtask.setPriority(recollecting ? ResearchSubtaskPriority.REVIEW_REPAIR : ResearchSubtaskPriority.NORMAL_SEARCH);
             subtask.setStatus(ResearchSubtaskStatus.SEARCHING);
             subtask.setAttempt(1);
             subtask.setStartedAt(Instant.now());
             plan.getSubtasks().add(subtask);
             plan.getEvidenceBudgets().add(evidenceBudget(run, batch, subtask.getDimension(), sourcesPerCompetitor, recollecting));
+            budgetKeys.add(coverageKey(batch.competitor(), subtask.getDimension()));
+        }
+        if (!recollecting && run.getRequirement() != null) {
+            for (String competitor : nullToEmpty(run.getRequirement().getCompetitors())) {
+                if (!StringUtils.hasText(competitor)) {
+                    continue;
+                }
+                for (String dimension : nullToEmpty(run.getRequirement().getDimensions())) {
+                    if (!StringUtils.hasText(dimension)) {
+                        continue;
+                    }
+                    String normalizedDimension = inferSubtaskDimension(List.of(dimension));
+                    String key = coverageKey(competitor, normalizedDimension);
+                    if (budgetKeys.add(key)) {
+                        plan.getEvidenceBudgets().add(evidenceBudget(competitor, normalizedDimension, sourcesPerCompetitor));
+                    }
+                }
+            }
         }
         run.getResearchPackage().setResearchCollectionPlan(plan);
         return plan;
@@ -814,6 +832,69 @@ public class SourceCollectionService {
         budget.setMinRagChunks(0);
         budget.setMaxAcceptedSources(searchSourcesForBatch(run, batch, sourcesPerCompetitor, recollecting));
         return budget;
+    }
+
+    private EvidenceBudget evidenceBudget(String competitor, String dimension, int sourcesPerCompetitor) {
+        EvidenceBudget budget = new EvidenceBudget();
+        budget.setCompetitorName(competitor);
+        budget.setDimension(dimension);
+        budget.setMinOfficialSources(mentionsAny(List.of(dimension), "pricing", "docs", "security", "release") ? 1 : 0);
+        budget.setMinThirdPartySources(mentionsAny(List.of(dimension), "reviews", "customers", "public_search") ? 1 : 0);
+        budget.setMinRagChunks(0);
+        budget.setMaxAcceptedSources(Math.max(1, sourcesPerCompetitor));
+        return budget;
+    }
+
+    private String inferBatchDimension(AnalysisRun run, SearchQueryPlanner.SearchQueryBatch batch) {
+        List<String> requestedDimensions = run.getRequirement() == null
+                ? List.of()
+                : nullToEmpty(run.getRequirement().getDimensions());
+        String queryText = String.join(" ", batch.queries() == null ? List.of() : batch.queries());
+        return requestedDimensions.stream()
+                .filter(StringUtils::hasText)
+                .filter(dimension -> queryMentionsDimension(queryText, dimension))
+                .findFirst()
+                .map(dimension -> inferSubtaskDimension(List.of(dimension)))
+                .orElseGet(() -> inferSubtaskDimension(batch.queries()));
+    }
+
+    private List<String> sourcePreferencesForDimension(AnalysisRun run, String dimension) {
+        LinkedHashSet<String> preferences = new LinkedHashSet<>();
+        if (run.getRequirement() != null) {
+            nullToEmpty(run.getRequirement().getSourcePreferences()).stream()
+                    .filter(StringUtils::hasText)
+                    .forEach(preferences::add);
+        }
+        String normalized = normalizeText(dimension);
+        if (containsAny(normalized, "pricing", "price", "plan", "定价", "价格")) {
+            preferences.addAll(List.of("pricing_page", "official_site"));
+        } else if (containsAny(normalized, "security", "permission", "compliance", "安全", "权限", "合规")) {
+            preferences.addAll(List.of("security_docs", "product_docs", "official_site"));
+        } else if (containsAny(normalized, "review", "feedback", "用户", "评价", "口碑")) {
+            preferences.addAll(List.of("public_reviews", "community", "third_party_report"));
+        } else if (containsAny(normalized, "release", "changelog", "更新", "发布")) {
+            preferences.addAll(List.of("release_notes", "technical_blog"));
+        } else {
+            preferences.addAll(List.of("official_site", "product_docs"));
+        }
+        return new ArrayList<>(preferences);
+    }
+
+    private boolean queryMentionsDimension(String queryText, String dimension) {
+        String text = normalizeText(queryText);
+        if (!StringUtils.hasText(text) || !StringUtils.hasText(dimension)) {
+            return false;
+        }
+        if (text.contains(normalizeText(dimension))) {
+            return true;
+        }
+        String canonical = inferSubtaskDimension(List.of(dimension));
+        return StringUtils.hasText(canonical) && !List.of("public_search", "docs", "features").contains(canonical)
+                && text.contains(normalizeText(canonical).replace('_', ' '));
+    }
+
+    private String coverageKey(String competitor, String dimension) {
+        return normalizeText(competitor) + "|" + normalizeText(dimension);
     }
 
     private ResearchCollectionPlan ensureResearchCollectionPlan(AnalysisRun run,
@@ -843,14 +924,17 @@ public class SourceCollectionService {
         if (plan == null) {
             return new CandidateDeduplication(candidates == null ? List.of() : candidates);
         }
-        Map<String, ResearchSubtask> subtaskByCompetitor = subtasksByCompetitor(plan);
+        Map<String, ResearchSubtask> subtaskByScope = subtasksByScope(plan);
         List<CandidateUrl> candidateUrls = new ArrayList<>();
         List<SearchCandidate> uniqueCandidates = new ArrayList<>();
         Map<String, CandidateUrl> firstByNormalizedUrl = new LinkedHashMap<>();
         for (SearchCandidate candidate : candidates == null ? List.<SearchCandidate>of() : candidates) {
             CandidateUrl candidateUrl = new CandidateUrl();
             candidateUrl.setRunId(run.getId());
-            ResearchSubtask subtask = subtaskByCompetitor.get(normalizeText(candidate.competitor()));
+            ResearchSubtask subtask = subtaskByScope.get(candidateScopeKey(candidate));
+            if (subtask == null) {
+                subtask = subtaskByScope.get(normalizeText(candidate.competitor()));
+            }
             if (subtask != null) {
                 candidateUrl.setSubtaskId(subtask.getId());
             }
@@ -884,9 +968,9 @@ public class SourceCollectionService {
         if (plan == null) {
             return;
         }
-        Map<String, Long> candidateCountByCompetitor = (candidates == null ? List.<SearchCandidate>of() : candidates).stream()
+        Map<String, Long> candidateCountByScope = (candidates == null ? List.<SearchCandidate>of() : candidates).stream()
                 .collect(java.util.stream.Collectors.groupingBy(
-                        candidate -> normalizeText(candidate.competitor()),
+                        this::candidateScopeKey,
                         LinkedHashMap::new,
                         java.util.stream.Collectors.counting()
                 ));
@@ -897,14 +981,15 @@ public class SourceCollectionService {
             }
         }
         for (ResearchSubtask subtask : nullToEmptySubtasks(plan)) {
-            String key = normalizeText(subtask.getCompetitorName());
-            subtask.setCandidateUrlCount(candidateCountByCompetitor.getOrDefault(key, 0L).intValue());
+            String scopeKey = subtaskScopeKey(subtask);
+            String competitorKey = normalizeText(subtask.getCompetitorName());
+            subtask.setCandidateUrlCount(candidateCountByScope.getOrDefault(scopeKey, 0L).intValue());
             subtask.setSearchLatencyMs(searchLatencyMs);
             if (subtask.getCandidateUrlCount() > 0) {
                 subtask.setStatus(ResearchSubtaskStatus.SEARCHED);
             } else {
                 subtask.setStatus(ResearchSubtaskStatus.FAILED);
-                subtask.setFailureReason(failuresByCompetitor.getOrDefault(key, "no_search_candidates"));
+                subtask.setFailureReason(failuresByCompetitor.getOrDefault(competitorKey, "no_search_candidates"));
                 subtask.setFinishedAt(Instant.now());
             }
         }
@@ -922,7 +1007,7 @@ public class SourceCollectionService {
             String key = normalizeText(subtask.getCompetitorName());
             SearchBatchResult result = resultByCompetitor.get(key);
             int fetched = result == null ? 0 : result.sources().size();
-            int accepted = acceptedByCompetitor == null ? 0 : acceptedByCompetitor.getOrDefault(key, 0);
+            int accepted = acceptedCountForSubtask(acceptedByCompetitor, subtask);
             subtask.setSearchLatencyMs(searchLatencyMs);
             subtask.setFetchLatencyMs(searchLatencyMs);
             subtask.setCandidateUrlCount(fetched);
@@ -969,7 +1054,7 @@ public class SourceCollectionService {
         for (ResearchSubtask subtask : nullToEmptySubtasks(plan)) {
             String key = normalizeText(subtask.getCompetitorName());
             int fetched = outcome.fetchedByCompetitor().getOrDefault(key, 0);
-            int accepted = outcome.acceptedByCompetitor().getOrDefault(key, 0);
+            int accepted = acceptedCountForSubtask(outcome.acceptedByCompetitor(), subtask);
             subtask.setFetchedPageCount(subtask.getFetchedPageCount() + fetched);
             subtask.setAcceptedEvidenceCount(subtask.getAcceptedEvidenceCount() + accepted);
             subtask.setFetchLatencyMs(fetchLatencyMs);
@@ -989,12 +1074,37 @@ public class SourceCollectionService {
         }
     }
 
-    private Map<String, ResearchSubtask> subtasksByCompetitor(ResearchCollectionPlan plan) {
+    private Map<String, ResearchSubtask> subtasksByScope(ResearchCollectionPlan plan) {
         Map<String, ResearchSubtask> subtasks = new LinkedHashMap<>();
         for (ResearchSubtask subtask : nullToEmptySubtasks(plan)) {
+            subtasks.putIfAbsent(subtaskScopeKey(subtask), subtask);
             subtasks.putIfAbsent(normalizeText(subtask.getCompetitorName()), subtask);
         }
         return subtasks;
+    }
+
+    private int acceptedCountForSubtask(Map<String, Integer> acceptedCounts, ResearchSubtask subtask) {
+        if (acceptedCounts == null || subtask == null) {
+            return 0;
+        }
+        return acceptedCounts.getOrDefault(subtaskScopeKey(subtask),
+                acceptedCounts.getOrDefault(normalizeText(subtask.getCompetitorName()), 0));
+    }
+
+    private String candidateScopeKey(SearchCandidate candidate) {
+        if (candidate == null) {
+            return "";
+        }
+        return normalizeText(candidate.competitor()) + "|" + inferSubtaskDimension(List.of(
+                candidate.query(),
+                candidate.sourceType(),
+                candidate.title(),
+                candidate.url()
+        ));
+    }
+
+    private String subtaskScopeKey(ResearchSubtask subtask) {
+        return normalizeText(subtask.getCompetitorName()) + "|" + normalizeText(subtask.getDimension());
     }
 
     private List<ResearchSubtask> nullToEmptySubtasks(ResearchCollectionPlan plan) {
@@ -1028,7 +1138,8 @@ public class SourceCollectionService {
         if (containsAny(text, "security", "compliance", "permission", "安全", "合规", "权限")) {
             return "security";
         }
-        if (containsAny(text, "customer", "case", "客户", "案例")) {
+        if (containsAny(text, "customer", "case", "target user", "target users", "persona", "personas",
+                "用户", "用户群", "客群", "目标用户", "用户画像", "客户", "案例")) {
             return "customers";
         }
         if (containsAny(text, "docs", "documentation", "文档")) {

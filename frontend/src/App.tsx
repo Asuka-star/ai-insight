@@ -669,6 +669,7 @@ export function App() {
     setArtifactPinned(false);
     setSelectedCitationKey(undefined);
     setSelectedAgent(null);
+    setTraceDrawerAgent("CLARIFIER");
     setPendingClarificationRunId(undefined);
     try {
       const competitorList = splitList(competitors);
@@ -778,6 +779,15 @@ export function App() {
     const requestToken = ++workspaceRequestTokenRef.current;
     setIsScopeBusy(true);
     setSelectedAgent(null);
+    setTraceDrawerAgent("CLARIFIER");
+    setRun((current) => current ? withOptimisticClarifierStep(current, buildClarifierScopeInputSummary(
+      industry,
+      outputGoal,
+      splitList(competitors),
+      splitList(dimensions),
+      splitLines(sourceUrls)
+    )) : current);
+    setPendingClarificationRunId(run.id);
     setEventMessage("正在重新澄清范围");
     try {
       const nextRun = await clarifyRequirement(run.id, {
@@ -1745,11 +1755,65 @@ function withOptimisticRerunStep(run: AnalysisRun | null, agentName: AgentName):
   };
 }
 
+function withOptimisticClarifierStep(run: AnalysisRun, inputSummary: string): AnalysisRun {
+  const latestClarifierStep = [...run.steps].reverse().find((step) => step.agentName === "CLARIFIER");
+  if (latestClarifierStep?.id.startsWith("local-clarifier-step-") && latestClarifierStep.status === "RUNNING") {
+    return run;
+  }
+  const startedAt = new Date().toISOString();
+  const stepId = `local-clarifier-step-${Date.now()}`;
+  return {
+    ...run,
+    status: "AWAITING_CONFIRMATION",
+    steps: [...run.steps, {
+      id: stepId,
+      agentName: "CLARIFIER",
+      title: AGENT_LABELS.CLARIFIER,
+      status: "RUNNING",
+      inputSummary,
+      startedAt,
+      issues: []
+    }],
+    traces: [...(run.traces ?? []), {
+      id: `local-clarifier-trace-${Date.now()}`,
+      stepId,
+      agentName: "CLARIFIER",
+      status: "RUNNING",
+      inputSnapshot: inputSummary,
+      processSnapshot: "Clarifier 正在根据左侧最新范围输入重新整理澄清草稿。",
+      decisionSummary: "等待 Clarifier 输出新的澄清问题与结构化范围建议。",
+      modelName: "Clarifier",
+      startedAt,
+      createdAt: startedAt
+    }],
+    updatedAt: startedAt
+  };
+}
+
+function buildClarifierScopeInputSummary(
+  industry: string,
+  outputGoal: string,
+  competitors: string[],
+  dimensions: string[],
+  sourceUrls: string[]
+) {
+  return [
+    `行业方向: ${industry.trim() || "未填写"}`,
+    `报告用途: ${outputGoal.trim() || "未填写"}`,
+    `竞品列表: ${competitors.length ? competitors.join("、") : "未填写"}`,
+    `分析维度: ${dimensions.length ? dimensions.join("、") : "未填写"}`,
+    `公开来源 URL: ${sourceUrls.length ? sourceUrls.join("、") : "未填写"}`
+  ].join("\n");
+}
+
 function mergeRunSnapshotWithLocalRunningStep(current: AnalysisRun | null, snapshot: AnalysisRun): AnalysisRun {
   if (!current || current.id !== snapshot.id) return snapshot;
-  const localRunningSteps = current.steps.filter((step) => step.id.startsWith("local-rerun-") && step.status === "RUNNING");
-  if (!localRunningSteps.length) return snapshot;
-  const preserved = localRunningSteps.filter((localStep) => {
+  const localRunningSteps = current.steps.filter((step) =>
+    (step.id.startsWith("local-rerun-") || step.id.startsWith("local-clarifier-step-")) && step.status === "RUNNING");
+  const localRunningTraces = (current.traces ?? []).filter((trace) =>
+    trace.id.startsWith("local-clarifier-trace-") && trace.status === "RUNNING");
+  if (!localRunningSteps.length && !localRunningTraces.length) return snapshot;
+  const preservedSteps = localRunningSteps.filter((localStep) => {
     const localStartedAt = timestampValue(localStep.startedAt);
     const latestSameAgent = [...snapshot.steps]
       .reverse()
@@ -1760,10 +1824,22 @@ function mergeRunSnapshotWithLocalRunningStep(current: AnalysisRun | null, snaps
     const latestStartedAt = timestampValue(latestSameAgent.startedAt);
     return latestStartedAt > 0 && localStartedAt > 0 && latestStartedAt < localStartedAt;
   });
-  if (!preserved.length) return snapshot;
+  const preservedTraces = localRunningTraces.filter((localTrace) => {
+    const localStartedAt = timestampValue(localTrace.startedAt ?? localTrace.createdAt);
+    const latestSameAgent = [...(snapshot.traces ?? [])]
+      .reverse()
+      .find((trace) => trace.agentName === localTrace.agentName);
+    if (!latestSameAgent) {
+      return true;
+    }
+    const latestStartedAt = timestampValue(latestSameAgent.startedAt ?? latestSameAgent.createdAt);
+    return latestStartedAt > 0 && localStartedAt > 0 && latestStartedAt < localStartedAt;
+  });
+  if (!preservedSteps.length && !preservedTraces.length) return snapshot;
   return {
     ...snapshot,
-    steps: [...snapshot.steps, ...preserved]
+    steps: [...snapshot.steps, ...preservedSteps],
+    traces: [...(snapshot.traces ?? []), ...preservedTraces]
   };
 }
 

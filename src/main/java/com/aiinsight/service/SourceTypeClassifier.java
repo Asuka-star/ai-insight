@@ -28,7 +28,11 @@ public class SourceTypeClassifier {
             return isFirstPartyReferenceUrl(url, title) ? "security_docs" : "third_party_article";
         }
         if (containsAny(combined, "/enterprise", " enterprise", "/product/", "/products/")) {
-            return isFirstPartyReferenceUrl(url, title) || looksLikeOfficialHost(url, title) ? "official_site" : "third_party_article";
+            ParsedUrl parsed = parse(url);
+            boolean firstPartyProductPath = parsed != null && firstPartyLikeHost(parsed.host(), url);
+            return isFirstPartyReferenceUrl(url, title) || looksLikeOfficialHost(url, title) || firstPartyProductPath
+                    ? "official_site"
+                    : "third_party_article";
         }
         if (containsAny(combined, "/integrations", "/integration", " integrations", " api ")) {
             return isFirstPartyReferenceUrl(url, title) ? "integration_docs" : "third_party_article";
@@ -38,6 +42,9 @@ public class SourceTypeClassifier {
         }
         if (containsAny(combined, "/release", "/changelog", "release notes", "changelog")) {
             return isFirstPartyReferenceUrl(url, title) ? "release_notes" : "article";
+        }
+        if (containsAny(combined, "/blog", "/news", " blog ", " product news")) {
+            return isFirstPartyReferenceUrl(url, title) || looksLikeOfficialHost(url, title) ? "technical_blog" : "article";
         }
         if (looksLikeOfficialHost(url, title)) {
             return "official_site";
@@ -82,7 +89,7 @@ public class SourceTypeClassifier {
         if (!StringUtils.hasText(host)) {
             return "UNKNOWN";
         }
-        if (isThirdPartyHost(host) || normalizedType.startsWith("third_party")) {
+        if (!firstPartyLikeHost(host, url) && (isThirdPartyHost(host) || normalizedType.startsWith("third_party"))) {
             return "THIRD_PARTY_GENERAL";
         }
         if (containsAny(host, "docs.", "doc.", "help.", "support.", "developer.", "developers.", "api.", "reference.")) {
@@ -102,7 +109,7 @@ public class SourceTypeClassifier {
             }
             return "THIRD_PARTY_GENERAL";
         }
-        if (looksLikeOfficialHost(url, "") || "pricing_page".equals(normalizedType)) {
+        if (looksLikeOfficialHost(url, "") || firstPartyLikeHost(host, url) || "pricing_page".equals(normalizedType)) {
             return "FIRST_PARTY_OFFICIAL";
         }
         return "UNKNOWN";
@@ -176,7 +183,8 @@ public class SourceTypeClassifier {
         return containsAny(
                 "/" + segments[0],
                 "/product", "/products", "/features", "/platform", "/enterprise",
-                "/solutions", "/security", "/integrations", "/customers", "/about", "/company"
+                "/solutions", "/security", "/integrations", "/customers", "/about", "/company",
+                "/blog", "/news"
         );
     }
 
@@ -243,6 +251,17 @@ public class SourceTypeClassifier {
         }
         // Fallback: host must look like an official product site (clean domain, official path)
         return looksLikeOfficialHost(url, "");
+    }
+
+    private boolean firstPartyLikeHost(String host, String url) {
+        if (!StringUtils.hasText(host) || isLocalHost(host) || host.endsWith(".test")) {
+            return false;
+        }
+        if (isThirdPartyHost(host)) {
+            return false;
+        }
+        ParsedUrl parsed = parse(url);
+        return parsed != null && looksLikeOfficialPath(parsed.path());
     }
 
     private boolean isThirdPartyHost(String host) {
@@ -323,6 +342,7 @@ public class SourceTypeClassifier {
     private static final java.util.Set<String> GENERIC_TITLE_TOKENS = java.util.Set.of(
             "docs", "doc", "guide", "guides", "documentation", "pricing", "plans", "plan",
             "enterprise", "deployment", "overview", "security", "trust", "privacy", "product",
+            "blog", "news", "update", "updates", "terms", "policy", "consumer", "and",
             "features", "feature", "integration", "integrations", "agent", "agents", "skills",
             "workflow", "workflows", "code", "coding", "developer", "developers"
     );

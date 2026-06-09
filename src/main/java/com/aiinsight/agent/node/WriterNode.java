@@ -3,6 +3,7 @@ package com.aiinsight.agent.node;
 import com.aiinsight.model.enums.AgentName;
 import com.aiinsight.model.run.AnalysisArtifact;
 import com.aiinsight.model.run.AnalysisRun;
+import com.aiinsight.model.enums.ClaimType;
 import com.aiinsight.model.enums.ConfidenceLevel;
 import com.aiinsight.model.enums.ArtifactType;
 import com.aiinsight.model.enums.ReviewAction;
@@ -56,6 +57,29 @@ import java.util.stream.Collectors;
 public class WriterNode implements AgentNode {
 
     private static final Pattern CLAIM_REFERENCE_PATTERN = Pattern.compile("\\[C-[^\\]]+]");
+    private static final Pattern SUPPORT_STATUS_COUNT_PATTERN = Pattern.compile(
+            "[（(]?\\s*(?:证据状态|验证状态|验证概况|evidence status|validation summary)?\\s*[:：]?\\s*SUPPORTED\\s*=\\s*\\d+(?:\\s*[,，、]\\s*PARTIAL\\s*=\\s*\\d+)?\\s*[,，、]\\s*UNVERIFIED\\s*=\\s*\\d+\\s*[)）]?",
+            Pattern.CASE_INSENSITIVE
+    );
+    private static final Pattern SUPPORT_STATUS_COUNT_LINE_PATTERN = Pattern.compile(
+            "^\\s*(?:[-*]\\s*)?(?:证据状态|验证状态|验证概况|evidence status|validation summary)[:：]?.*SUPPORTED\\s*=\\s*\\d+.*UNVERIFIED\\s*=\\s*\\d+.*$",
+            Pattern.CASE_INSENSITIVE
+    );
+    private static final Pattern SUPPORT_STATUS_LABEL_LINE_PATTERN = Pattern.compile(
+            "^\\s*(?:[-*]\\s*)?(?:证据状态|验证状态|验证概况|evidence status|validation summary)[:：]?.*(SUPPORTED|PARTIAL|UNVERIFIED).*$",
+            Pattern.CASE_INSENSITIVE
+    );
+    private static final Pattern SUPPORT_STATUS_LABEL_PAREN_PATTERN = Pattern.compile(
+            "[（(][^（）()\\n]*(?:SUPPORTED|PARTIAL|UNVERIFIED)[^（）()\\n]*[)）]",
+            Pattern.CASE_INSENSITIVE
+    );
+    private static final Pattern SUPPORT_STATUS_LABEL_INLINE_PATTERN = Pattern.compile(
+            "\\s*(?:证据状态|验证状态|验证概况|evidence status|validation summary)\\s*[:：]?\\s*(?:SUPPORTED|PARTIAL|UNVERIFIED)(?:\\s*[、,，/]\\s*(?:SUPPORTED|PARTIAL|UNVERIFIED))*\\s*(?:均有涉及|都有涉及|等)?",
+            Pattern.CASE_INSENSITIVE
+    );
+    private static final Pattern DECISION_SUMMARY_HEADING_PATTERN = Pattern.compile(
+            "(?m)^#{2,3}\\s*(结论与建议|决策总结|决策摘要|最终建议|综合结论)\\s*$"
+    );
     private static final int MAX_UPSTREAM_ARTIFACT_CHARS_FOR_PROMPT = 2_200;
     private static final TermOptions REPORT_LINE_TERM_OPTIONS = TermOptions.basic(3);
     private final LlmClient llmClient;
@@ -159,9 +183,10 @@ public class WriterNode implements AgentNode {
                 23. supportStatus=PARTIAL 或 confidence=MEDIUM 的结论只能写成“可参考、可进一步评估、公开资料显示”，不要写成“优势、表现突出、明确优先借鉴”。
                 24. 只有 supportStatus=SUPPORTED、confidence=HIGH 且证据索引显示 authority=FIRST_PARTY_* 的结论，才可以进入“一句话结论”和“建议优先级”的强建议。
                 25. 第三方、社区、镜像或 UNKNOWN authority 来源只能用于提出线索和补证方向，不能单独支撑竞品优势判断。
-                26. 结构化结论区块顶部的"验证概况"行汇总了 SUPPORTED 和 UNVERIFIED 的总数。当 UNVERIFIED 数量 > SUPPORTED 数量时，"一句话结论"和"建议优先级"必须明确注明整体证据置信度受限（如"基于当前有限证据…"），不能给出高置信度的排名或推荐。
+                26. 结构化结论区块顶部的"内部验证提示"只用于判断写作保守程度；如果待验证/弱支撑结论多于主报告可用结论，"一句话结论"和"建议优先级"必须明确注明整体证据置信度受限（如"基于当前有限证据…"），不能给出高置信度的排名或推荐。不要把内部验证提示、英文状态字段或状态数量复制到最终报告正文。
                 27. 如果竞品画像中某竞品定位标记为"待验证"，报告中所有关于该竞品的比较性结论必须附加证据局限性说明（如"该竞品定位基于有限公开资料，待官方证据确认"），不能将其作为确定性结论呈现。
                 28. 报告正文结束后，必须追加"竞品横向矩阵"和"SWOT 分析"两个独立章节（使用 ## 级标题）。矩阵和 SWOT 由你根据结构化结论、竞品画像和证据直接生成，不再由 Analyst 预处理。矩阵必须包含三个子部分：竞品判断表、用户指定维度覆盖表、待验证结论表。SWOT 必须覆盖优势、短板、机会、威胁四个维度。所有内容只能使用证据索引中的 [S] 编号，不要编造引用。confidence 为 LOW 或 status 为 UNVERIFIED 的结论只能放入"待验证结论"表，不能进入主判断。
+                29. 报告末尾必须追加"结论与建议"章节，集中给出首选借鉴方向、风险边界和下一步行动，直接回应用户"哪些竞品能力适合借鉴到 AI Insight 后续版本"的目标。
 
                 用户需求:
                 %s
@@ -392,6 +417,7 @@ public class WriterNode implements AgentNode {
         cleaned = removeInternalClaimReferences(cleaned);
         cleaned = removeLeakedVerificationMarkers(cleaned);
         cleaned = sanitizeCitationText(run, cleaned);
+        cleaned = ensureDecisionSummarySection(run, cleaned);
         return enforceCitationDiscipline(run, cleaned);
     }
 
@@ -405,16 +431,136 @@ public class WriterNode implements AgentNode {
         if (!hasText(line)) {
             return line;
         }
+        if (SUPPORT_STATUS_COUNT_LINE_PATTERN.matcher(line).matches()
+                || SUPPORT_STATUS_LABEL_LINE_PATTERN.matcher(line).matches()) {
+            return "";
+        }
         String normalized = line.replaceFirst("^(\\s*)待验证：\\s*(\\d+[.、]\\s*)", "$1$2待验证：");
         normalized = normalized.replaceFirst("^(\\s*[-*]\\s*)待验证：\\s*(\\d+[.、]\\s*)", "$1$2待验证：");
-        return normalized;
+        if (leaksSupportStatusCounts(normalized)) {
+            normalized = SUPPORT_STATUS_COUNT_PATTERN.matcher(normalized).replaceAll("");
+        }
+        if (leaksSupportStatusLabels(normalized)) {
+            normalized = SUPPORT_STATUS_LABEL_PAREN_PATTERN.matcher(normalized).replaceAll("");
+            normalized = SUPPORT_STATUS_LABEL_INLINE_PATTERN.matcher(normalized).replaceAll("");
+        }
+        return cleanupRemovedStatusText(normalized);
+    }
+
+    private boolean leaksSupportStatusCounts(String text) {
+        return SUPPORT_STATUS_COUNT_PATTERN.matcher(text).find();
+    }
+
+    private boolean leaksSupportStatusLabels(String text) {
+        return SUPPORT_STATUS_LABEL_PAREN_PATTERN.matcher(text).find()
+                || SUPPORT_STATUS_LABEL_INLINE_PATTERN.matcher(text).find();
+    }
+
+    private String cleanupRemovedStatusText(String text) {
+        return text
+                .replaceAll("[（(]\\s*[)）]", "")
+                .replaceAll("，\\s*，", "，")
+                .replaceAll(",\\s*,", ",")
+                .replaceAll("\\s+([，。；：])", "$1")
+                .replaceAll("([（(])\\s*[，,]\\s*", "$1")
+                .replaceAll("\\s{2,}", " ")
+                .trim();
+    }
+
+    private String ensureDecisionSummarySection(AnalysisRun run, String text) {
+        if (!hasText(text) || hasDecisionSummarySection(text)) {
+            return text;
+        }
+        String summary = decisionSummarySection(run);
+        if (!hasText(summary)) {
+            return text;
+        }
+        return text.stripTrailing() + "\n\n" + summary;
+    }
+
+    private boolean hasDecisionSummarySection(String text) {
+        return DECISION_SUMMARY_HEADING_PATTERN.matcher(text == null ? "" : text).find();
+    }
+
+    private String decisionSummarySection(AnalysisRun run) {
+        AnalysisClaim primary = primaryDecisionClaim(run);
+        String priority = primary == null
+                ? "首选借鉴：当前证据不足以形成确定优先级，建议先完成补证后再进入方案借鉴。"
+                : "首选借鉴：" + sentenceWithCitations(primary.getContent(), primary.getEvidenceIds());
+        return """
+                ## 结论与建议
+                - %s
+                - 风险边界：对证据不足或待验证的能力，不进入确定选型；安全合规、上下文管理、集成深度等维度仍需补充官方技术文档或实测证据。
+                - 下一步行动：围绕首选借鉴方向设计小范围 PoC，同时补齐企业安全、上下文管理和工具集成清单，再更新矩阵和 SWOT。
+                """.formatted(priority).trim();
+    }
+
+    private AnalysisClaim primaryDecisionClaim(AnalysisRun run) {
+        if (run == null || run.getClaims().isEmpty()) {
+            return null;
+        }
+        AnalysisClaim best = null;
+        int bestScore = Integer.MIN_VALUE;
+        for (AnalysisClaim claim : run.getClaims()) {
+            if (!mainReportClaim(claim)) {
+                continue;
+            }
+            int score = decisionClaimScore(claim);
+            if (score > bestScore) {
+                best = claim;
+                bestScore = score;
+            }
+        }
+        return best;
+    }
+
+    private int decisionClaimScore(AnalysisClaim claim) {
+        int score = 0;
+        if (claim.getConfidence() == ConfidenceLevel.HIGH) {
+            score += 10;
+        } else if (claim.getConfidence() == ConfidenceLevel.MEDIUM) {
+            score += 5;
+        }
+        if (claim.getType() == ClaimType.RECOMMENDATION) {
+            score += 6;
+        } else if (claim.getType() == ClaimType.STRENGTH || claim.getType() == ClaimType.COMPARISON) {
+            score += 4;
+        } else if (claim.getType() == ClaimType.OPPORTUNITY) {
+            score += 2;
+        }
+        if ("SUPPORTED".equalsIgnoreCase(textOrDefault(claim.getSupportStatus(), ""))) {
+            score += 3;
+        }
+        score += Math.min(3, claim.getEvidenceIds().size());
+        return score;
+    }
+
+    private String sentenceWithCitations(String text, List<String> evidenceIds) {
+        String body = removeInternalClaimReferences(textOrDefault(text, "优先参考已由公开证据支撑的能力。"));
+        String citations = evidenceIds == null || evidenceIds.isEmpty()
+                ? ""
+                : evidenceIds.stream()
+                .limit(3)
+                .map("[%s]"::formatted)
+                .collect(Collectors.joining(""));
+        if (!hasText(citations) || CITATION_PATTERN.matcher(body).find()) {
+            return body;
+        }
+        return appendCitationsToText(body, citations);
     }
 
     private String enforceCitationDiscipline(AnalysisRun run, String text) {
-        return text.lines()
-                .map(line -> enforceLineCitation(run, line))
-                .collect(Collectors.joining("\n"))
-                .trim();
+        String[] lines = text.split("\\R", -1);
+        List<String> sanitized = new ArrayList<>(lines.length);
+        for (int i = 0; i < lines.length; i++) {
+            String line = lines[i];
+            if (isMarkdownTableHeaderRow(lines, i)) {
+                sanitized.add(stripCitationsFromTableHeader(normalizeCitationPlacement(line)));
+                continue;
+            }
+            sanitized.add(enforceLineCitation(run, line));
+        }
+        return String.join("\n", sanitized).trim();
     }
 
     private String enforceLineCitation(AnalysisRun run, String line) {
@@ -483,6 +629,9 @@ public class WriterNode implements AgentNode {
     }
 
     private String prefixUnverified(String line) {
+        if (isMarkdownTableRow(line)) {
+            return prefixUnverifiedInTableRow(line);
+        }
         String trimmed = line.trim();
         if (trimmed.startsWith("待验证") || trimmed.startsWith("- 待验证") || trimmed.startsWith("* 待验证")) {
             return line;
@@ -497,6 +646,27 @@ public class WriterNode implements AgentNode {
             return line.replaceFirst("^(\\s*[-*]\\s*)", "$1待验证：");
         }
         return line.replaceFirst("^(\\s*)", "$1待验证：");
+    }
+
+    private String prefixUnverifiedInTableRow(String line) {
+        String[] cells = line.split("\\|", -1);
+        for (int i = 0; i < cells.length; i++) {
+            String cell = cells[i];
+            if (!hasText(cell)) {
+                continue;
+            }
+            String trimmed = cell.trim();
+            if (trimmed.startsWith("待验证")) {
+                return String.join("|", cells);
+            }
+            int leading = 0;
+            while (leading < cell.length() && Character.isWhitespace(cell.charAt(leading))) {
+                leading++;
+            }
+            cells[i] = cell.substring(0, leading) + "待验证：" + cell.substring(leading);
+            return String.join("|", cells);
+        }
+        return line;
     }
 
     private boolean needsOverclaimDowngrade(AnalysisRun run, String line) {
@@ -524,7 +694,7 @@ public class WriterNode implements AgentNode {
             return false;
         }
         String trimmed = line.trim();
-        if (trimmed.startsWith("#") || isMarkdownTableSeparator(trimmed)) {
+        if (trimmed.startsWith("#") || isMarkdownTableSeparator(trimmed) || isLikelyMarkdownTableHeaderRow(trimmed)) {
             return false;
         }
         String normalized = normalizeText(tableText(trimmed));
@@ -583,6 +753,45 @@ public class WriterNode implements AgentNode {
 
     private boolean isMarkdownTableRow(String line) {
         return line != null && line.trim().startsWith("|") && line.contains("|");
+    }
+
+    private boolean isMarkdownTableHeaderRow(String[] lines, int index) {
+        if (lines == null || index < 0 || index >= lines.length || !isMarkdownTableRow(lines[index])) {
+            return false;
+        }
+        return index + 1 < lines.length && isMarkdownTableSeparator(lines[index + 1].trim());
+    }
+
+    private String stripCitationsFromTableHeader(String line) {
+        return CITATION_PATTERN.matcher(line).replaceAll("").replaceAll("\\s+(?=\\|)", " ");
+    }
+
+    private boolean isLikelyMarkdownTableHeaderRow(String line) {
+        if (!isMarkdownTableRow(line)) {
+            return false;
+        }
+        List<String> cells = tableCells(line);
+        if (cells.size() < 2) {
+            return false;
+        }
+        boolean hasHeaderLabel = cells.stream()
+                .map(this::normalizeText)
+                .anyMatch(cell -> containsAny(cell,
+                        "维度", "竞品", "建议", "理由", "证据", "置信度", "下一步", "判断", "结论",
+                        "dimension", "competitor", "recommendation", "evidence", "confidence", "next"));
+        boolean allShortLabels = cells.stream()
+                .allMatch(cell -> cell.length() <= 32 && !cell.matches(".*[。！？；.!?;].*"));
+        return hasHeaderLabel && allShortLabels;
+    }
+
+    private List<String> tableCells(String line) {
+        if (!isMarkdownTableRow(line)) {
+            return List.of();
+        }
+        return Arrays.stream(line.trim().split("\\|", -1))
+                .map(String::trim)
+                .filter(AgentUtils::hasText)
+                .toList();
     }
 
     private boolean isMarkdownTableSeparator(String line) {
@@ -651,8 +860,8 @@ public class WriterNode implements AgentNode {
                 .filter(c -> "UNVERIFIED".equalsIgnoreCase(textOrDefault(c.getSupportStatus(), "")))
                 .count();
         long mainCount = run.getClaims().stream().filter(this::mainReportClaim).count();
-        String verificationSummary = "验证概况: 共 %d 条结论，SUPPORTED=%d，UNVERIFIED=%d，主报告可用=%d，待验证/弱支撑=%d。%s"
-                .formatted(total, supported, unverified, mainCount, total - mainCount,
+        String verificationSummary = "内部验证提示: 结构化结论共 %d 条，主报告可用 %d 条，待验证/弱支撑 %d 条。%s"
+                .formatted(total, mainCount, total - mainCount,
                         unverified > supported
                                 ? "⚠ 多数结论尚未验证，报告结论和一句话总结必须明确注明证据置信度受限。"
                                 : "");

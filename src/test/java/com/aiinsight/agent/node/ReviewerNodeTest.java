@@ -226,6 +226,41 @@ class ReviewerNodeTest {
     }
 
     @Test
+    void dropsMissingDecisionSummaryFindingWhenReportAlreadyHasDecisionSection() {
+        AnalysisRun run = new AnalysisRun(new com.aiinsight.model.run.AnalysisRequirement(
+                "对比 Cursor 与 Claude Code，给出可借鉴方向。",
+                "AI 编程助手",
+                List.of("Cursor", "Claude Code"),
+                List.of(),
+                List.of(),
+                List.of(),
+                "竞品分析报告"
+        ));
+        run.addArtifact(new AnalysisArtifact(
+                ArtifactType.REPORT_DRAFT,
+                "draft",
+                """
+                        ## 竞品对比
+
+                        Cursor 在 Agent 工作流上更适合作为 AI Insight 的优先参考方向 [S1]。
+
+                        ## 结论与建议
+                        - 首选借鉴：优先借鉴 Cursor 的 Agent 工作流，并围绕规划、修复和审查设计小范围 PoC [S1]。
+                        - 风险边界：上下文管理、安全合规和集成深度仍存在证据不足，不能进入确定选型。
+                        - 下一步行动：补齐官方技术文档与实测证据，再更新矩阵和 SWOT。
+                        """,
+                List.of("S1")
+        ));
+        run.getEvidenceSources().add(source("S1", "Cursor agent workflow evidence."));
+
+        new ReviewerNode(new CitationCoverageEvaluator(), missingDecisionSummaryLlmClient(), new FallbackReviewReportFactory()).execute(run);
+
+        assertThat(run.getReviewFindings())
+                .noneMatch(finding -> "report_missing_decision_summary".equals(finding.getCategory()));
+        assertThat(run.getReviewDecision().getAction()).isEqualTo(ReviewAction.PASS);
+    }
+
+    @Test
     void routesLlmMissingCitationToWriter() {
         AnalysisRun run = new AnalysisRun();
         run.addArtifact(new AnalysisArtifact(
@@ -269,6 +304,32 @@ class ReviewerNodeTest {
                     assertThat(finding.getLocationType()).isEqualTo(ReviewLocationType.EVIDENCE_SOURCE);
                     assertThat(finding.getParagraphIndex()).isNull();
                 });
+    }
+
+    @Test
+    void highLowQualitySourceRoutesToResearcherBeforeWriterIssues() {
+        AnalysisRun run = new AnalysisRun();
+        run.addArtifact(new AnalysisArtifact(
+                ArtifactType.REPORT_DRAFT,
+                "draft",
+                "Cursor has the strongest enterprise governance advantage.",
+                List.of("S44")
+        ));
+        run.getEvidenceSources().add(source("S44", "Claude official product overview."));
+
+        new ReviewerNode(new CitationCoverageEvaluator(), highSourceAndReportIssueLlmClient(), new FallbackReviewReportFactory()).execute(run);
+
+        assertThat(run.getReviewFindings())
+                .anySatisfy(finding -> {
+                    assertThat(finding.getSeverity()).isEqualTo(com.aiinsight.model.enums.ReviewSeverity.HIGH);
+                    assertThat(finding.getCategory()).isEqualTo("low_quality_source");
+                    assertThat(finding.getTargetAgent()).isEqualTo(AgentName.RESEARCHER);
+                    assertThat(finding.getCitationKey()).isEqualTo("S44");
+                });
+        assertThat(run.getReviewDecision().getAction()).isEqualTo(ReviewAction.RECOLLECT_EVIDENCE);
+        assertThat(run.getReviewDecision().getTargetAgent()).isEqualTo(AgentName.RESEARCHER);
+        assertThat(run.getReviewDecision().getRepairTasks())
+                .allSatisfy(task -> assertThat(task.getTargetAgent()).isEqualTo(AgentName.RESEARCHER));
     }
 
     @Test
@@ -416,6 +477,19 @@ class ReviewerNodeTest {
         };
     }
 
+    private LlmClient missingDecisionSummaryLlmClient() {
+        return fixedLlmFinding("""
+                {
+                  "severity": "HIGH",
+                  "category": "report_missing_decision_summary",
+                  "message": "Despite the previous request, the current report still lacks a decision summary.",
+                  "recommendation": "Add a conclusion and recommendation section.",
+                  "paragraphIndex": 1,
+                  "excerpt": "报告结尾于竞品对比部分，未包含独立的结论与建议章节。"
+                }
+                """);
+    }
+
     private LlmClient unlocatedHighLlmClient() {
         return fixedLlmFinding("""
                 {
@@ -436,6 +510,30 @@ class ReviewerNodeTest {
                   "recommendation": "Use a stronger official source."
                 }
                 """);
+    }
+
+    private LlmClient highSourceAndReportIssueLlmClient() {
+        return fixedLlmFindings(
+                """
+                        {
+                    "severity": "HIGH",
+                    "category": "report_quality_insufficient",
+                    "message": "Report summary is inaccurate.",
+                    "recommendation": "Revise the report summary.",
+                    "paragraphIndex": 0,
+                    "excerpt": "Cursor has the strongest enterprise governance advantage."
+                  }
+                        """,
+                """
+                        {
+                    "severity": "HIGH",
+                    "category": "low_quality_source",
+                    "message": "Source [S44] is misclassified as third-party although it is official.",
+                    "recommendation": "Reclassify or recollect the official source.",
+                    "citationKey": "S44"
+                  }
+                        """
+        );
     }
 
     private LlmClient unmatchedReportGapLlmClient() {

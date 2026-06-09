@@ -91,6 +91,9 @@ final class ClaimEvidenceBinder {
     }
 
     boolean evidenceSupportsClaim(AnalysisRun run, String citationKey, AnalysisClaim claim) {
+        if (!sourceMatchesSingleCompetitorClaim(run, citationKey, claim)) {
+            return false;
+        }
         if (boundFactSupportsEvidence(run, citationKey, claim)) {
             return true;
         }
@@ -159,10 +162,12 @@ final class ClaimEvidenceBinder {
 
     private boolean boundFactSupportsEvidence(AnalysisRun run, String citationKey, AnalysisClaim claim) {
         Set<String> boundFactIds = new LinkedHashSet<>(safeList(claim.getFactIds()));
+        Set<String> claimCompetitors = claimCompetitorKeys(claim);
         return run.getCompetitorFactSets().stream()
                 .flatMap(factSet -> factSet.getFacts().stream())
                 .filter(fact -> fact.getEvidenceIds().contains(citationKey))
                 .filter(fact -> boundFactIds.isEmpty() || boundFactIds.contains(fact.getId()))
+                .filter(fact -> claimCompetitors.size() != 1 || claimCompetitors.contains(competitorKey(fact.getCompetitorName())))
                 .anyMatch(fact -> factSupportsClaim(fact, claim));
     }
 
@@ -210,6 +215,35 @@ final class ClaimEvidenceBinder {
             return true;
         }
         return competitors.stream().anyMatch(competitor -> containsIgnoreCase(evidenceText, competitor));
+    }
+
+    private boolean sourceMatchesSingleCompetitorClaim(AnalysisRun run, String citationKey, AnalysisClaim claim) {
+        Set<String> claimCompetitors = claimCompetitorKeys(claim);
+        if (claimCompetitors.size() != 1) {
+            return true;
+        }
+        EvidenceSource source = AgentEvidenceSupport.sourceByCitationKey(run, citationKey);
+        if (source == null) {
+            return false;
+        }
+        String expectedCompetitor = claimCompetitors.iterator().next();
+        Set<String> coveredCompetitors = safeList(source.getCoveredCompetitors()).stream()
+                .map(this::competitorKey)
+                .filter(AgentUtils::hasText)
+                .collect(Collectors.toCollection(LinkedHashSet::new));
+        if (!coveredCompetitors.isEmpty()) {
+            return coveredCompetitors.contains(expectedCompetitor);
+        }
+        return safeList(claim.getCompetitorNames()).stream()
+                .filter(AgentUtils::hasText)
+                .anyMatch(competitor -> containsIgnoreCase(evidenceSourceText(source), competitor));
+    }
+
+    private Set<String> claimCompetitorKeys(AnalysisClaim claim) {
+        return safeList(claim.getCompetitorNames()).stream()
+                .map(this::competitorKey)
+                .filter(AgentUtils::hasText)
+                .collect(Collectors.toCollection(LinkedHashSet::new));
     }
 
     private Set<String> supportTerms(String text) {

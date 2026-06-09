@@ -313,7 +313,7 @@ class AnalysisWorkflowServiceTest {
                     assertThat(step.getInputSummary()).doesNotContain("来自上一 Agent 状态的输入");
                     assertThat(step.getOutputSummary()).doesNotContain("produced updated run state");
                 });
-        assertThat(finished.getSteps().get(0).getInputSummary()).contains("澄清原始需求");
+        assertThat(finished.getSteps().get(0).getInputSummary()).contains("澄清范围输入", "行业=", "竞品=", "分析维度=");
         assertThat(finished.getSteps().get(0).getOutputSummary()).contains("范围已澄清");
         assertThat(finished.getSteps())
                 .filteredOn(step -> step.getAgentName() == AgentName.RESEARCHER)
@@ -3429,7 +3429,7 @@ class AnalysisWorkflowServiceTest {
                 .satisfies(trace -> {
                     assertThat(trace.getAgentName()).isEqualTo(AgentName.CLARIFIER);
                     assertThat(trace.getStatus()).isEqualTo(StepStatus.RUNNING);
-                    assertThat(trace.getInputSnapshot()).contains("澄清原始需求");
+                    assertThat(trace.getInputSnapshot()).contains("澄清范围输入", "原始需求=");
                 });
         assertThat(completed.getTraces())
                 .singleElement()

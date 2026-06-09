@@ -382,6 +382,16 @@ public class WorkflowNodeExecutor {
         String prefix = routePrefix(routeSummary);
         AnalysisRequirement requirement = run.getRequirement();
         AgentName agentName = node.name();
+        if (agentName == AgentName.CLARIFIER) {
+            return prefix + "澄清范围输入：行业=%s，竞品=%s，分析维度=%s，报告用途=%s，指定URL=%s，原始需求=%s".formatted(
+                    textOrDefault(requirement == null ? null : requirement.getIndustry(), "未填写"),
+                    listAll(requirement == null ? List.of() : requirement.getCompetitors()),
+                    listAll(requirement == null ? List.of() : requirement.getDimensions()),
+                    textOrDefault(requirement == null ? null : requirement.getOutputGoal(), "未填写"),
+                    listAll(requirement == null ? List.of() : requirement.getSourceUrls()),
+                    textOrDefault(requirement == null ? null : requirement.getOriginalPrompt(), "未填写")
+            );
+        }
         return switch (agentName) {
             case CLARIFIER -> prefix + "澄清原始需求：%s".formatted(
                     textOrDefault(requirement == null ? null : requirement.getOriginalPrompt(), "未填写原始需求")

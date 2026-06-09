@@ -108,7 +108,7 @@ public class ResearchCoverageService {
                 int existing = acceptedEvidenceCount(run, competitor, dimension);
                 Set<String> missingSourceTypes = missingSourceTypes(run, competitor, dimension);
                 ResearchSubtask subtask = matchingSubtask(plan, competitor, dimension);
-                if (subtask != null && subtask.getAcceptedEvidenceCount() > 0) {
+                if (existing == 0 && subtaskCanBackfillCoverage(subtask, dimension)) {
                     existing = Math.max(existing, subtask.getAcceptedEvidenceCount());
                 }
                 log.debug("Coverage gap detail: runId={}, competitor={}, dimension={}, required={}, existing={}, " +
@@ -255,6 +255,7 @@ public class ResearchCoverageService {
         return (int) run.getEvidenceSources().stream()
                 .filter(source -> sourceMatchesCompetitor(source, competitor))
                 .filter(source -> sourceMatchesDimension(source, dimension))
+                .filter(source -> sourceAcceptableForDimension(source, dimension))
                 .count();
     }
 
@@ -267,6 +268,7 @@ public class ResearchCoverageService {
         Set<String> existing = run.getEvidenceSources().stream()
                 .filter(source -> sourceMatchesCompetitor(source, competitor))
                 .filter(source -> sourceMatchesDimension(source, dimension))
+                .filter(source -> sourceAcceptableForDimension(source, dimension))
                 .map(EvidenceSource::getSourceType)
                 .filter(StringUtils::hasText)
                 .map(this::normalizeSourceType)
@@ -314,6 +316,62 @@ public class ResearchCoverageService {
         }
         String text = "%s %s %s %s".formatted(source.getTitle(), source.getSourceType(), source.getSnippet(), source.getRawText());
         return dimensionTerms(dimension).stream().anyMatch(term -> contains(text, term));
+    }
+
+    private boolean sourceAcceptableForDimension(EvidenceSource source, String dimension) {
+        String normalizedDimension = normalize(dimension);
+        if (containsAny(normalizedDimension, "review", "feedback", "用户", "口碑")) {
+            if (!isUsableFetchedSource(source, true)) {
+                return false;
+            }
+            String sourceType = normalizeSourceType(source.getSourceType());
+            String authority = normalize(source.getSourceAuthority());
+            return containsAny(sourceType, "user_review", "public_review", "community", "forum", "survey", "interview")
+                    || containsAny(authority, "community", "user_provided")
+                    || containsAny("%s %s %s".formatted(source.getTitle(), source.getSnippet(), source.getRawText()),
+                    "user review", "customer feedback", "users report", "用户评价", "用户反馈", "口碑");
+        }
+        if (!isUsableFetchedSource(source, false)) {
+            return false;
+        }
+        return true;
+    }
+
+    private boolean isUsableFetchedSource(EvidenceSource source, boolean allowLowQualityReviewSource) {
+        if (source == null) {
+            return false;
+        }
+        String status = normalize(source.getCollectionStatus());
+        String quality = normalize(source.getSourceQuality());
+        String freshness = normalize(source.getFreshness());
+        String failureReason = normalize(source.getFailureReason());
+        if (containsAny(status, "fetch_failed", "blocked_by_robots", "unusable_content")) {
+            return false;
+        }
+        if (containsAny(freshness, "fetch_failed", "search_result_snippet")) {
+            return false;
+        }
+        boolean reviewSource = containsAny(normalizeSourceType(source.getSourceType()), "user_review", "public_review", "community", "forum");
+        if (containsAny(quality, "low", "unusable") && !(allowLowQualityReviewSource && reviewSource)) {
+            return false;
+        }
+        if (containsAny(failureReason, "metadata_only", "empty_text", "thin_text", "robots_blocked", "anti_bot")) {
+            return false;
+        }
+        return StringUtils.hasText(source.getRawText()) || StringUtils.hasText(source.getSnippet());
+    }
+
+    private boolean subtaskCanBackfillCoverage(ResearchSubtask subtask, String dimension) {
+        if (subtask == null || subtask.getAcceptedEvidenceCount() <= 0) {
+            return false;
+        }
+        String normalizedDimension = normalize(dimension);
+        if (containsAny(normalizedDimension, "review", "feedback", "用户", "口碑")) {
+            return nullToEmpty(subtask.getSourcePreferences()).stream()
+                    .map(this::normalizeSourceType)
+                    .anyMatch(sourceType -> containsAny(sourceType, "user_review", "public_review", "community", "survey", "interview"));
+        }
+        return true;
     }
 
     private String inferCompetitor(AnalysisRun run, String text) {

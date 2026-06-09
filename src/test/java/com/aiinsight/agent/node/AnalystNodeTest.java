@@ -645,8 +645,69 @@ class AnalystNodeTest {
                 .satisfies(claim -> {
                     assertThat(claim.getConfidence()).isEqualTo(ConfidenceLevel.MEDIUM);
                     assertThat(claim.getSupportStatus()).isEqualTo("PARTIAL");
-                    assertThat(claim.getEligibleForMainReport()).isTrue();
+                    assertThat(claim.getRecommendedPlacement()).isEqualTo("VALIDATION_BACKLOG");
+                    assertThat(claim.getEligibleForMainReport()).isFalse();
                 });
+    }
+
+    @Test
+    void correctsClaimDimensionFromContentWhenLlmUsesWrongRequestedDimension() {
+        LlmClient llmClient = new LlmClient() {
+            @Override
+            public boolean isAvailable() {
+                return true;
+            }
+
+            @Override
+            public String complete(com.aiinsight.llm.ChatRequest request) {
+                return """
+                        {
+                          "claims": [
+                            {
+                              "type": "COMPARISON",
+                              "content": "Cursor深度集成IDE和开发工具；Claude Code支持从终端、IDE、Slack或Web工作。",
+                              "confidence": "HIGH",
+                              "dimension": "代码理解与生成能力",
+                              "supportStatus": "SUPPORTED",
+                              "recommendedPlacement": "MATRIX",
+                              "supportReason": "证据直接说明 IDE 和终端入口。",
+                              "evidenceQuotes": ["IDE and terminal integration"],
+                              "competitorNames": ["Cursor", "Claude Code"],
+                              "evidenceIds": ["S1"]
+                            }
+                          ]
+                        }
+                        """;
+            }
+        };
+        AnalysisRun run = new AnalysisRun(new AnalysisRequirement(
+                "Analyze AI coding tools",
+                "AI coding tools",
+                List.of("Cursor", "Claude Code"),
+                List.of("代码理解与生成能力", "IDE/终端集成"),
+                List.of("official_site"),
+                List.of()
+        ));
+        run.getEvidenceSources().add(new EvidenceSource(
+                "S1",
+                "Claude Code product",
+                "https://claude.com/product/claude-code",
+                "official_site",
+                "FETCHED",
+                "LIVE_FETCHED",
+                "HIGH",
+                "NONE",
+                "Build, debug, and ship from your terminal, IDE, Slack, or the web.",
+                "Build, debug, and ship from your terminal, IDE, Slack, or the web.",
+                "test evidence"
+        ));
+        run.getEvidenceSources().get(0).setSourceAuthority("FIRST_PARTY_OFFICIAL");
+
+        new AnalystNode(llmClient, new ObjectMapper(), new FallbackAnalysisDraftFactory()).execute(run);
+
+        assertThat(run.getClaims())
+                .singleElement()
+                .satisfies(claim -> assertThat(claim.getDimension()).isEqualTo("IDE/终端集成"));
     }
 
     @Test
@@ -786,6 +847,71 @@ class AnalystNodeTest {
                 .containsExactly("C-WORKFLOW", "C-SECURITY");
         assertThat(run.getClaims()).extracting(AnalysisClaim::getContent)
                 .containsExactly(workflowClaim, securityClaim);
+    }
+
+    @Test
+    void prunesEvidenceFromOtherCompetitorsForSingleCompetitorClaim() {
+        LlmClient llmClient = new LlmClient() {
+            @Override
+            public boolean isAvailable() {
+                return true;
+            }
+
+            @Override
+            public String complete(ChatRequest request) {
+                return """
+                        {
+                          "claims": [
+                            {
+                              "type": "STRENGTH",
+                              "content": "Cursor provides an agent workflow for planning and fixing code changes.",
+                              "confidence": "HIGH",
+                              "supportStatus": "SUPPORTED",
+                              "recommendedPlacement": "MATRIX",
+                              "supportReason": "Cursor evidence directly describes the agent workflow.",
+                              "evidenceQuotes": ["Cursor provides an agent workflow"],
+                              "competitorNames": ["Cursor"],
+                              "evidenceIds": ["S1", "S2"]
+                            }
+                          ]
+                        }
+                        """;
+            }
+        };
+        AnalysisRun run = new AnalysisRun(new AnalysisRequirement(
+                "Analyze AI coding tools",
+                "AI coding tools",
+                List.of("Cursor", "Claude Code"),
+                List.of("Agent 工作流"),
+                List.of("official_site"),
+                List.of()
+        ));
+        EvidenceSource cursorSource = firstPartyEvidence(
+                "S1",
+                "Cursor agent docs",
+                "https://cursor.com/docs/agent",
+                "Cursor provides an agent workflow for planning and fixing code changes."
+        );
+        cursorSource.setCoveredCompetitors(List.of("Cursor"));
+        EvidenceSource claudeSource = firstPartyEvidence(
+                "S2",
+                "Claude Code product",
+                "https://claude.com/product/overview",
+                "Claude Code helps developers build from terminal, IDE, Slack, or web."
+        );
+        claudeSource.setCoveredCompetitors(List.of("Claude Code"));
+        run.getEvidenceSources().add(cursorSource);
+        run.getEvidenceSources().add(claudeSource);
+
+        new AnalystNode(llmClient, new ObjectMapper(), new FallbackAnalysisDraftFactory()).execute(run);
+
+        assertThat(run.getClaims())
+                .singleElement()
+                .satisfies(claim -> {
+                    assertThat(claim.getEvidenceIds()).containsExactly("S1");
+                    assertThat(claim.getConfidence()).isEqualTo(ConfidenceLevel.MEDIUM);
+                    assertThat(claim.getSupportStatus()).isEqualTo("SUPPORTED");
+                });
     }
 
     private CompetitorFactSet cursorFactSet() {

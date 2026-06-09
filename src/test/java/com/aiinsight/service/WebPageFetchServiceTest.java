@@ -9,6 +9,7 @@ import org.springframework.boot.test.system.OutputCaptureExtension;
 
 import java.io.IOException;
 import java.net.InetSocketAddress;
+import java.net.URI;
 import java.net.ServerSocket;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
@@ -353,6 +354,59 @@ class WebPageFetchServiceTest {
             assertThat(second.getComplianceNote()).contains("cacheHit=true", "contentHash=");
             assertThat(pageRequests).hasValue(1);
             assertThat(robotsRequests).hasValue(1);
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    void repairsStaleOfficialSourceClassificationOnCacheHit() throws IOException {
+        FetchedPageCache cache = new FetchedPageCache(Duration.ofHours(1));
+        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        server.createContext("/robots.txt", exchange -> {
+            byte[] body = "User-agent: *\nAllow: /\n".getBytes(StandardCharsets.UTF_8);
+            exchange.sendResponseHeaders(200, body.length);
+            exchange.getResponseBody().write(body);
+            exchange.close();
+        });
+        server.start();
+        try {
+            URI requestedUri = URI.create(url(server, "/product"));
+            WebPageFetchService.FetchedPage stale = WebPageFetchService.FetchedPage.success(
+                    "https://claude.com/product/overview",
+                    "The AI for Problem Solvers | Claude by Anthropic",
+                    "Claude product overview explains AI assistance, coding, collaboration, security, enterprise workflows, integrations, usage scenarios, product capabilities, customer support, and enough body text for cached evidence.",
+                    "statusCode=200; contentType=text/html; sourceType=third_party_article; sourceQuality=MEDIUM; failureReason=NONE; retryCount=0; extractionMode=main_content; contentHash=abc.",
+                    "third_party_article",
+                    "MEDIUM",
+                    "NONE",
+                    200,
+                    "text/html"
+            );
+            cache.put(requestedUri, stale);
+            WebPageFetchService service = new WebPageFetchService(
+                    Duration.ofSeconds(1),
+                    Duration.ofSeconds(2),
+                    new SourceTypeClassifier(),
+                    new PageQualityEvaluator(),
+                    Duration.ZERO,
+                    Duration.ofHours(1),
+                    1,
+                    null,
+                    Duration.ofHours(1),
+                    Duration.ofHours(1),
+                    cache
+            );
+
+            var page = service.fetch(requestedUri.toString());
+
+            assertThat(page.isCacheHit()).isTrue();
+            assertThat(page.getSourceType()).isEqualTo("official_site");
+            assertThat(page.getSourceQuality()).isEqualTo("HIGH");
+
+            var repaired = cache.get(requestedUri).orElseThrow();
+            assertThat(repaired.getSourceType()).isEqualTo("official_site");
+            assertThat(repaired.getSourceQuality()).isEqualTo("HIGH");
         } finally {
             server.stop(0);
         }
