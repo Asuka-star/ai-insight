@@ -1148,6 +1148,9 @@ class AnalysisWorkflowServiceTest {
                     assertThat(resultImport.getStatus()).isEqualTo("IMPORTED");
                     assertThat(resultImport.getResultCount()).isEqualTo(3);
                     assertThat(resultImport.getEvidenceIds()).isNotEmpty();
+                    assertThat(resultImport.getRawText()).contains("Sample size: 3");
+                    assertThat(resultImport.getTableHeaders()).contains("提交时间", "受访者角色");
+                    assertThat(resultImport.getTableRows()).hasSize(3);
                 });
         assertThat(imported.getEvidenceSources())
                 .anySatisfy(source -> {
@@ -1157,7 +1160,7 @@ class AnalysisWorkflowServiceTest {
         assertThat(imported.getResearchPackage().getSurveyInsights()).isEmpty();
         assertThat(imported.getSteps()).isEmpty();
         assertThat(imported.isPendingResearchInputRevision()).isTrue();
-        assertThat(imported.getPendingResearchInputReason()).contains("click apply");
+        assertThat(imported.getPendingResearchInputReason()).contains("点击", "应用并重跑 Extractor");
 
         AnalysisRun applied = service.rerunAgent(run.getId(), AgentName.EXTRACTOR);
 

@@ -13,13 +13,11 @@ interface ResourcePackDrawerProps {
   inputKey: number;
   title: string;
   sourceType: string;
-  sensitive: boolean;
   notes: string;
   onClose: () => void;
   onFileChange: (file: File | null) => void;
   onTitleChange: (value: string) => void;
   onSourceTypeChange: (value: string) => void;
-  onSensitiveChange: (value: boolean) => void;
   onNotesChange: (value: string) => void;
   onUpload: () => void;
   onDelete: (citationKey: string) => void;
@@ -37,13 +35,11 @@ export function ResourcePackDrawer({
   inputKey,
   title,
   sourceType,
-  sensitive,
   notes,
   onClose,
   onFileChange,
   onTitleChange,
   onSourceTypeChange,
-  onSensitiveChange,
   onNotesChange,
   onUpload,
   onDelete,
@@ -97,7 +93,7 @@ export function ResourcePackDrawer({
         <section className="resource-upload-panel">
           <div className="subsection-title">
             <strong>放入新文件</strong>
-            <small>支持 TXT、Markdown、PDF、DOCX</small>
+            <small>仅加入当前分析任务</small>
           </div>
           <label>
             文件
@@ -127,10 +123,6 @@ export function ResourcePackDrawer({
                 <option value="pricing_document">价格资料</option>
               </select>
             </label>
-            <label className="check-row evidence-sensitive">
-              <input type="checkbox" checked={sensitive} onChange={(event) => onSensitiveChange(event.target.checked)} />
-              内部资料
-            </label>
           </div>
           <label>
             备注
@@ -150,6 +142,7 @@ export function ResourcePackDrawer({
               <Clock3 size={14} /> {processingCount} 个文件正在解析、切片或向量化，完成后才能重跑 Agent。
             </p>
           ) : null}
+          <p className="resource-global-note">用户资源包中的文件只会加入当前分析任务，作为本任务可引用的用户提供证据。</p>
         </section>
 
         <section className="resource-library">
@@ -173,9 +166,7 @@ export function ResourcePackDrawer({
                     <FileText size={16} />
                     <span>
                       <strong>{source.title || source.citationKey}</strong>
-                      <small>
-                        {source.citationKey} · {sourceTypeLabel(source.sourceType)} · {resourceVisibility(source)}
-                      </small>
+                      <small>{source.citationKey} · {sourceTypeLabel(source.sourceType)} · 当前任务</small>
                       <ResourceStatus source={source} />
                     </span>
                   </button>
@@ -207,7 +198,7 @@ export function ResourcePackDrawer({
                       </div>
                       <div>
                         <dt>权限</dt>
-                        <dd>{resourceVisibility(activeSource)}</dd>
+                        <dd>当前任务资源包</dd>
                       </div>
                       <div>
                         <dt>质量</dt>
@@ -218,7 +209,13 @@ export function ResourcePackDrawer({
                         <dd>{resourceStatusLabel(activeSource)}</dd>
                       </div>
                     </dl>
-                    <p className="resource-snippet">{activeSource.snippet || "暂无可预览摘要"}</p>
+                    <div className="resource-content-viewer">
+                      <div className="resource-content-title">
+                        <strong>文件内容</strong>
+                        <small>{previewSourceLabel(activeSource)}</small>
+                      </div>
+                      <pre>{resourcePreviewText(activeSource)}</pre>
+                    </div>
                     {activeSource.ingestionMessage ? <p className="resource-note">{activeSource.ingestionMessage}</p> : null}
                     {activeSource.complianceNote ? <p className="resource-note">{activeSource.complianceNote}</p> : null}
                   </>
@@ -228,7 +225,7 @@ export function ResourcePackDrawer({
           ) : (
             <div className="empty-state resource-empty">
               <strong>当前会话还没有文件</strong>
-              <span>上传后，它会作为可引用证据进入后续信息采集和分析。</span>
+              <span>上传后，它会加入当前分析任务，并作为可引用证据参与后续信息采集和分析。</span>
             </div>
           )}
         </section>
@@ -310,13 +307,6 @@ function sourceTypeLabel(value?: string) {
   }
 }
 
-function resourceVisibility(source: EvidenceSource) {
-  if (source.sourceAuthority === "INTERNAL_ONLY" || source.sourceQuality === "INTERNAL_ONLY" || source.freshness === "INTERNAL_ONLY") {
-    return "内部资料";
-  }
-  return "用户提供";
-}
-
 function sourceQualityLabel(value?: string) {
   switch (value?.toUpperCase()) {
     case "HIGH":
@@ -332,4 +322,28 @@ function sourceQualityLabel(value?: string) {
     default:
       return value || "未知";
   }
+}
+
+function previewSourceLabel(source: EvidenceSource) {
+  if (source.rawText?.trim()) {
+    return "解析原文";
+  }
+  if (source.snippet?.trim()) {
+    return "摘要预览";
+  }
+  return "等待解析";
+}
+
+function resourcePreviewText(source: EvidenceSource) {
+  const text = source.rawText?.trim() || source.snippet?.trim();
+  if (text) {
+    return text;
+  }
+  if (source.ingestionStatus === "PROCESSING") {
+    return "文件正在解析中，完成后会在这里显示具体内容。";
+  }
+  if (source.ingestionStatus === "FAILED") {
+    return source.ingestionMessage || "文件处理失败，暂无可查看内容。";
+  }
+  return "暂无可查看内容。";
 }

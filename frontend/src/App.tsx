@@ -107,7 +107,6 @@ export function App() {
   const [documentFile, setDocumentFile] = useState<File | null>(null);
   const [documentTitle, setDocumentTitle] = useState("");
   const [documentSourceType, setDocumentSourceType] = useState("document");
-  const [documentSensitive, setDocumentSensitive] = useState(false);
   const [documentNotes, setDocumentNotes] = useState("");
   const [isUploadingDocument, setIsUploadingDocument] = useState(false);
   const [documentInputKey, setDocumentInputKey] = useState(0);
@@ -1030,26 +1029,25 @@ export function App() {
     if (!run || !documentFile || runMutationDisabled || isUploadingDocument) return;
     const runId = run.id;
     setIsUploadingDocument(true);
-    setEventMessage("正在把文件加入用户资源包");
+    setEventMessage("正在把文件加入当前任务资源包");
     try {
       const nextRun = await uploadDocument(runId, {
         file: documentFile,
         title: documentTitle.trim() || undefined,
         sourceType: documentSourceType,
-        sensitive: documentSensitive,
+        sensitive: false,
         notes: documentNotes.trim() || undefined,
-        global: true
+        global: false
       });
       if (!isCurrentWorkspaceRun(runId)) return;
       setRun(nextRun);
       setDocumentFile(null);
       setDocumentTitle("");
       setDocumentSourceType("document");
-      setDocumentSensitive(false);
       setDocumentNotes("");
       setDocumentInputKey((value) => value + 1);
       setHistoryRuns((runs) => upsertHistorySummary(runs, summaryFromRun(nextRun)));
-      setEventMessage("文件已加入用户资源包");
+      setEventMessage("文件已加入当前任务资源包");
     } catch (error) {
       if (!isCurrentWorkspaceRun(runId)) return;
       setEventMessage(error instanceof Error ? `文件上传失败：${error.message}` : "文件上传失败");
@@ -1451,7 +1449,6 @@ export function App() {
                   questionnaire={run?.researchPackage?.researchPlan?.questionnaire}
                   interviewGuide={run?.researchPackage?.researchPlan?.interviewGuide}
                   interviewInsights={run?.researchPackage?.interviewInsights ?? []}
-                  surveyResultImports={run?.researchPackage?.surveyResultImports ?? []}
                   surveyInsights={run?.researchPackage?.surveyInsights ?? []}
                   disabled={runMutationDisabled}
                   busy={surveyBusy}
@@ -1658,13 +1655,11 @@ export function App() {
         inputKey={documentInputKey}
         title={documentTitle}
         sourceType={documentSourceType}
-        sensitive={documentSensitive}
         notes={documentNotes}
         onClose={() => setResourcePackOpen(false)}
         onFileChange={setDocumentFile}
         onTitleChange={setDocumentTitle}
         onSourceTypeChange={setDocumentSourceType}
-        onSensitiveChange={setDocumentSensitive}
         onNotesChange={setDocumentNotes}
         onUpload={handleUploadDocument}
         onDelete={handleDeleteUserResource}

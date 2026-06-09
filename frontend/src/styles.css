@@ -679,14 +679,12 @@ h3 {
 }
 
 .research-question-list,
-.research-import-list,
 .research-insight-grid {
   display: grid;
   gap: 10px;
 }
 
 .research-question,
-.research-import,
 .research-insight {
   display: grid;
   gap: 6px;
@@ -702,7 +700,6 @@ h3 {
 }
 
 .research-question small,
-.research-import small,
 .research-insight small {
   color: var(--muted);
   font-size: 11px;
@@ -710,7 +707,6 @@ h3 {
 }
 
 .research-question strong,
-.research-import strong,
 .research-insight strong {
   overflow-wrap: anywhere;
 }
@@ -734,7 +730,7 @@ h3 {
 }
 
 .research-insight-grid {
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: 1fr;
 }
 
 .research-insight-toolbar {
@@ -2671,51 +2667,10 @@ h3 {
   line-height: 1.45;
 }
 
-.schema-insight-values,
 .schema-quote-list {
   display: grid;
   gap: 4px;
   min-width: 0;
-}
-
-.schema-insight-values.compact {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
-}
-
-.schema-insight-value {
-  min-width: 0;
-  overflow-wrap: anywhere;
-}
-
-.schema-insight-values:not(.compact) .schema-insight-value {
-  position: relative;
-  padding-left: 10px;
-}
-
-.schema-insight-values:not(.compact) .schema-insight-value::before {
-  position: absolute;
-  left: 0;
-  top: 0.62em;
-  width: 4px;
-  height: 4px;
-  border-radius: 50%;
-  background: var(--teal);
-  content: "";
-}
-
-.schema-insight-values.compact .schema-insight-value {
-  border-radius: 4px;
-  background: #eef4f1;
-  color: var(--muted);
-  padding: 2px 6px;
-  font-size: 11px;
-  font-weight: 780;
-}
-
-.schema-empty-value {
-  color: var(--faint);
 }
 
 .schema-quote-list small {
@@ -3336,10 +3291,51 @@ h3 {
   background: var(--panel-soft);
 }
 
+.resource-content-viewer {
+  display: grid;
+  min-width: 0;
+  gap: 8px;
+}
+
+.resource-content-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.resource-content-title small {
+  color: var(--faint);
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.resource-content-viewer pre {
+  max-height: min(44vh, 420px);
+  margin: 0;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel-soft);
+  padding: 10px;
+  color: var(--ink);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.55;
+}
+
 .resource-note {
   border: 1px solid rgba(169, 102, 20, 0.22);
   background: #fff8ec;
   color: #7a4e13;
+}
+
+.resource-global-note {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
 }
 
 .resource-processing-note {

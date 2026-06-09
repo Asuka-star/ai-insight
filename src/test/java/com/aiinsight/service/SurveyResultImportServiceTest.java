@@ -53,6 +53,9 @@ class SurveyResultImportServiceTest {
 
         assertThat(batch.responseCount()).isEqualTo(3);
         assertThat(batch.rawText()).contains("Sample size: 3");
+        assertThat(batch.tableHeaders()).containsExactly("提交时间", "受访者角色", "AI 搜索是否重要？", "权限治理是否影响采购？", "补充反馈");
+        assertThat(batch.tableRows()).hasSize(3);
+        assertThat(batch.tableRows().get(0)).containsExactly("2026-06-01", "产品经理", "非常重要", "影响", "希望保留引用证据");
         assertThat(batch.rawText()).contains("Respondent segments: 产品经理=1; 研发负责人=1; IT 管理员=1");
         assertThat(batch.rawText()).contains("Q: AI 搜索是否重要？");
         assertThat(batch.rawText()).contains("非常重要=2");

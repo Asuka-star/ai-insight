@@ -146,7 +146,17 @@ public class SurveyResultImportService {
                 questionFindings(sheet, questionIndexes, responseCount),
                 openFeedback(sheet)
         );
-        return new SurveyResultBatch("import-" + UUID.randomUUID(), title, responseCount, rawText.trim());
+        return new SurveyResultBatch(
+                "import-" + UUID.randomUUID(),
+                title,
+                responseCount,
+                rawText.trim(),
+                new ArrayList<>(sheet.headers()),
+                sheet.rows().stream()
+                        .map(ArrayList::new)
+                        .map(row -> normalizeRowWidth(row, sheet.headers().size()))
+                        .toList()
+        );
     }
 
     private List<Integer> questionIndexes(List<String> headers) {
@@ -397,6 +407,17 @@ public class SurveyResultImportService {
         if (row.stream().anyMatch(StringUtils::hasText)) {
             rows.add(new ArrayList<>(row));
         }
+    }
+
+    private List<String> normalizeRowWidth(List<String> row, int width) {
+        List<String> normalized = new ArrayList<>(row);
+        while (normalized.size() < width) {
+            normalized.add("");
+        }
+        if (normalized.size() > width) {
+            return new ArrayList<>(normalized.subList(0, width));
+        }
+        return normalized;
     }
 
     private String csvLine(List<String> values) {

@@ -550,6 +550,11 @@ public class AnalysisWorkflowService {
         resultImport.setQuestionnaire(questionnaire);
         resultImport.setFileName(fileName);
         resultImport.setResultCount(results.responseCount());
+        resultImport.setRawText(results.rawText());
+        resultImport.setTableHeaders(new ArrayList<>(results.tableHeaders()));
+        resultImport.setTableRows(results.tableRows().stream()
+                .<List<String>>map(ArrayList::new)
+                .toList());
 
         UserProvidedEvidence evidence = new UserProvidedEvidence(
                 "Imported survey results - " + results.title(),
@@ -560,7 +565,7 @@ public class AnalysisWorkflowService {
         String citationKey = attachUserEvidence(run, evidence);
         resultImport.getEvidenceIds().add(citationKey);
         run.getResearchPackage().getSurveyResultImports().add(resultImport);
-        markResearchInputPending(run, "Imported survey results as " + citationKey + "; click apply to rerun Extractor and downstream agents.");
+        markResearchInputPending(run, "问卷结果已导入为 " + citationKey + "；点击“应用并重跑 Extractor”后会刷新 Extractor 及下游 Agent。");
         repository.save(run);
         eventBroker.publish(run, "survey_results_imported", "问卷结果已导入：" + citationKey);
         return run;
@@ -595,6 +600,7 @@ public class AnalysisWorkflowService {
                 }
                 return matched;
             });
+            removed = removeSurveyImport(run, normalizedId, removedEvidenceIds) || removed;
         } else {
             throw new InvalidRunStateException(runId, "unsupported research insight type: " + insightType);
         }
@@ -612,6 +618,18 @@ public class AnalysisWorkflowService {
         repository.save(run);
         eventBroker.publish(run, "research_insight_deleted", "结构化洞察已删除");
         return run;
+    }
+
+    private boolean removeSurveyImport(AnalysisRun run, String normalizedId, Set<String> removedEvidenceIds) {
+        return run.getResearchPackage().getSurveyResultImports().removeIf(result -> {
+            boolean matched = normalizedId.equals(String.valueOf(result.getId()))
+                    || normalizedId.equals(result.getBatchId())
+                    || safeList(result.getEvidenceIds()).contains(normalizedId);
+            if (matched) {
+                collectInsightEvidenceIds(removedEvidenceIds, result.getEvidenceIds());
+            }
+            return matched;
+        });
     }
 
     private void collectInsightEvidenceIds(Set<String> evidenceIds, String evidenceId) {

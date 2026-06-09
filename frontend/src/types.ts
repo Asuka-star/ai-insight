@@ -202,6 +202,7 @@ export interface EvidenceSource {
   contentHash?: string;
   cacheHit?: boolean;
   snippet: string;
+  rawText?: string;
   complianceNote?: string;
   ingestionStatus?: "PROCESSING" | "READY" | "FAILED" | string;
   ingestionStage?: string;
@@ -495,6 +496,9 @@ export interface SurveyResultImport {
   questionnaire?: Questionnaire;
   status?: string;
   resultCount?: number;
+  rawText?: string;
+  tableHeaders?: string[];
+  tableRows?: string[][];
   evidenceIds?: string[];
   fileName?: string;
   importedAt?: string;

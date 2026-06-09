@@ -1,12 +1,11 @@
 import { useEffect, useMemo, useState, type Dispatch, type SetStateAction } from "react";
-import { ChevronDown, ClipboardList, DownloadCloud, FileSpreadsheet, MessageSquareText, Pencil, Plus, RefreshCw, Save, Trash2, X } from "lucide-react";
-import type { InterviewGuide, InterviewInsight, Questionnaire, SurveyInsight, SurveyQuestion, SurveyResultImport } from "../types";
+import { ChevronDown, ClipboardList, DownloadCloud, MessageSquareText, Pencil, Plus, RefreshCw, Save, Trash2, X } from "lucide-react";
+import type { InterviewGuide, InterviewInsight, Questionnaire, SurveyInsight, SurveyQuestion } from "../types";
 
 interface ResearchDesignPanelProps {
   questionnaire?: Questionnaire;
   interviewGuide?: InterviewGuide;
   interviewInsights?: InterviewInsight[];
-  surveyResultImports?: SurveyResultImport[];
   surveyInsights?: SurveyInsight[];
   disabled?: boolean;
   busy?: boolean;
@@ -23,7 +22,6 @@ export function ResearchDesignPanel({
   questionnaire,
   interviewGuide,
   interviewInsights = [],
-  surveyResultImports = [],
   surveyInsights = [],
   disabled,
   busy,
@@ -225,27 +223,6 @@ export function ResearchDesignPanel({
 
         <section className="research-card">
           <div className="research-card-title">
-            <FileSpreadsheet size={16} />
-            <strong>结果回收</strong>
-            {surveyInsights.length ? <small>{surveyInsights.length} 洞察</small> : null}
-          </div>
-          {surveyResultImports.length ? (
-            <div className="research-import-list">
-              {surveyResultImports.slice(-4).reverse().map((resultImport) => (
-                <article className="research-import" key={resultImport.id}>
-                  <strong>{resultImport.title || "问卷结果"}</strong>
-                  <small>{resultImport.fileName || "手动导入"} / {resultImport.status || "IMPORTED"} / {resultImport.resultCount ?? 0} responses</small>
-                  {resultImport.evidenceIds?.length ? <ChipList values={resultImport.evidenceIds} compact /> : null}
-                </article>
-              ))}
-            </div>
-          ) : (
-            <p className="muted-text">导入 CSV/XLSX 后会在这里显示回收批次与证据编号。</p>
-          )}
-        </section>
-
-        <section className="research-card">
-          <div className="research-card-title">
             <MessageSquareText size={16} />
             <strong>访谈提纲</strong>
             {interviewGuide?.targetRoles?.length ? <small>{interviewGuide.targetRoles.join(" / ")}</small> : null}
@@ -271,7 +248,7 @@ export function ResearchDesignPanel({
       <section className="research-card wide">
         <div className="research-card-title">
           <strong>已结构化洞察</strong>
-          <small>{surveyInsights.length} 问卷 / {interviewInsights.length} 访谈</small>
+          <small>{surveyInsights.length} 问卷 · {interviewInsights.length} 访谈</small>
         </div>
         <div className="research-insight-grid">
           {surveyInsights.map((insight) => {

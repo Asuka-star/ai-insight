@@ -22,6 +22,9 @@ public class SurveyResultImport {
     private String fileName;
     private String status = "IMPORTED";
     private int resultCount;
+    private String rawText;
+    private List<String> tableHeaders = new ArrayList<>();
+    private List<List<String>> tableRows = new ArrayList<>();
     private List<String> evidenceIds = new ArrayList<>();
     private Instant importedAt = Instant.now();
 }
