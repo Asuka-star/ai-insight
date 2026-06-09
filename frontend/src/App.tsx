@@ -45,7 +45,7 @@ import { DeleteHistoryDialog } from "./components/DeleteHistoryDialog";
 import { ResourcePackDrawer } from "./components/ResourcePackDrawer";
 import { SegmentedTabs, type SegmentedTabOption } from "./components/SegmentedTabs";
 
-type MainView = "dag" | "research" | "report" | "schema" | "matrix" | "swot";
+type MainView = "dag" | "research" | "report" | "schema";
 type LeftPanelId = "scope" | "context" | "evidence";
 type RightPanelId = "timeline" | "evidence" | "review" | "metrics";
 type BackendStatus = "checking" | "connected" | "failed";
@@ -434,13 +434,7 @@ export function App() {
         ?? reportArtifacts.at(-1);
   }, [reportArtifacts, selectedArtifact]);
 
-  const matrixArtifact = useMemo(() => {
-    return [...(run?.artifacts ?? [])].reverse().find((artifact) => artifact.type === "COMPETITIVE_MATRIX");
-  }, [run?.artifacts]);
 
-  const swotArtifact = useMemo(() => {
-    return [...(run?.artifacts ?? [])].reverse().find((artifact) => artifact.type === "SWOT_ANALYSIS");
-  }, [run?.artifacts]);
 
   useEffect(() => {
     if (selectedArtifact && selectedArtifact.id !== selectedArtifactId) {
@@ -1190,9 +1184,7 @@ export function App() {
     { value: "dag", label: "智能体流程" },
     { value: "report", label: "报告" },
     { value: "research", label: "问卷访谈" },
-    { value: "schema", label: "结构化信息" },
-    { value: "matrix", label: "竞品矩阵" },
-    { value: "swot", label: "SWOT 分析" }
+    { value: "schema", label: "结构化信息" }
   ];
 
   return (
@@ -1445,21 +1437,6 @@ export function App() {
               </div>
             ) : null}
 
-            {mainView === "matrix" ? (
-              <div className="tab-content">
-                <Suspense fallback={<PanelLoading label="正在加载矩阵阅读器" />}>
-                  <ArtifactViewer artifact={matrixArtifact} sources={run?.evidenceSources ?? []} onSelectCitation={handleSelectCitation} />
-                </Suspense>
-              </div>
-            ) : null}
-
-            {mainView === "swot" ? (
-              <div className="tab-content">
-                <Suspense fallback={<PanelLoading label="正在加载 SWOT 阅读器" />}>
-                  <ArtifactViewer artifact={swotArtifact} sources={run?.evidenceSources ?? []} onSelectCitation={handleSelectCitation} />
-                </Suspense>
-              </div>
-            ) : null}
           </section>
         </section>
 

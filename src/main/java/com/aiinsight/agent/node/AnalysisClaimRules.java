@@ -88,4 +88,17 @@ final class AnalysisClaimRules {
                 claim.getType()
         ));
     }
+
+    // 宽松的 SWOT 过滤：只要 claim 基本可展示（非 LOW、非 UNVERIFIED、有证据），
+    // 不管 recommendedPlacement 是 MATRIX 还是 SWOT，都可以作为 SWOT 的降级内容。
+    // 这解决了 Analyst 把 STRENGTH/WEAKNESS 类 claim 标记为 VALIDATION_BACKLOG
+    // 导致 SWOT 全部为空的问题。
+    static boolean displayableSwotClaim(AnalysisClaim claim) {
+        return claim != null
+                && claim.getConfidence() != ConfidenceLevel.LOW
+                && !SUPPORT_STATUS_UNVERIFIED.equals(normalizeSupportStatus(claim.getSupportStatus()))
+                && claim.getEvidenceIds() != null
+                && !claim.getEvidenceIds().isEmpty()
+                && !containsUncertaintyMarker(claim.getContent());
+    }
 }

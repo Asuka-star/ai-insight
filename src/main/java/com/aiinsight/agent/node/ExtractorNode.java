@@ -32,6 +32,7 @@ import static com.aiinsight.util.AgentUtils.abbreviate;
 import static com.aiinsight.util.AgentUtils.containsAny;
 import static com.aiinsight.util.AgentUtils.containsIgnoreCase;
 import static com.aiinsight.util.AgentUtils.knownEvidenceIds;
+import static com.aiinsight.util.AgentUtils.latestArtifact;
 import static com.aiinsight.util.AgentUtils.normalizeLower;
 import static com.aiinsight.util.AgentUtils.nullToEmpty;
 import static com.aiinsight.util.AgentUtils.safeList;
@@ -375,6 +376,102 @@ public class ExtractorNode implements AgentNode {
         return containsIgnoreCase(text, competitor);
     }
 
+    private CompetitorProfile previousProfileFor(List<CompetitorProfile> previousProfiles, String competitor) {
+        if (previousProfiles == null || previousProfiles.isEmpty()) {
+            return null;
+        }
+        return previousProfiles.stream()
+                .filter(p -> normalizeLower(p.getProductName()).equals(normalizeLower(competitor)))
+                .findFirst()
+                .orElse(null);
+    }
+
+    private String formatPreviousProfile(CompetitorProfile profile) {
+        return """
+                productName: %s
+                companyName: %s
+                positioning: %s
+                targetUsers: %s
+                features: %s
+                pricing.strategySummary: %s
+                pricing.plans: %s
+                personas: %s
+                strengths: %s
+                weaknesses: %s
+                evidenceIds: %s
+                """.formatted(
+                profile.getProductName(),
+                profile.getCompanyName(),
+                profile.getPositioning(),
+                profile.getTargetUsers(),
+                profile.getFeatureTree() == null ? "[]" : profile.getFeatureTree().getRoots().stream()
+                        .map(n -> "%s(%s)%s".formatted(n.getName(), abbreviate(n.getDescription(), 60), n.getEvidenceIds()))
+                        .collect(Collectors.joining(", ")),
+                profile.getPricingModel() == null ? "待验证" : profile.getPricingModel().getStrategySummary(),
+                profile.getPricingModel() == null ? "[]" : profile.getPricingModel().getPlans().stream()
+                        .map(p -> "%s/%s/%s".formatted(p.getName(), p.getPriceText(), p.getBillingCycle()))
+                        .collect(Collectors.joining(", ")),
+                profile.getPersonas() == null ? "[]" : profile.getPersonas().stream()
+                        .map(p -> "%s(%s)".formatted(p.getName(), p.getSegment()))
+                        .collect(Collectors.joining(", ")),
+                profile.getStrengths(),
+                profile.getWeaknesses(),
+                profile.getEvidenceIds()
+        );
+    }
+
+    /**
+     * 结构性保留：当 LLM 在增量模式下重新生成 profile 时，对于 repair tasks 未涉及的区域，
+     * 恢复为上一轮的原始数据，防止 LLM 非确定性导致未标记区域震荡。
+     */
+    private void preserveUnchangedSections(CompetitorProfile previous, CompetitorProfile revised,
+                                            AnalysisRun run, String competitor) {
+        ReviewDecision decision = run.getRepairDecisionFor(AgentName.EXTRACTOR);
+        if (decision == null || decision.getRepairTasks().isEmpty()) {
+            return;
+        }
+        List<ReviewRepairTask> tasks = decision.getRepairTasks().stream()
+                .filter(t -> t.getTargetAgent() == AgentName.EXTRACTOR)
+                .filter(t -> repairTaskMentionsCompetitor(t, competitor))
+                .toList();
+        if (tasks.isEmpty()) {
+            return;
+        }
+        String taskText = tasks.stream()
+                .map(t -> "%s %s %s %s %s".formatted(
+                        nullToEmpty(t.getCategory()),
+                        nullToEmpty(t.getInstruction()),
+                        nullToEmpty(t.getCurrentText()),
+                        nullToEmpty(t.getExpectedFix()),
+                        nullToEmpty(t.getExcerpt())))
+                .collect(Collectors.joining(" "))
+                .toLowerCase(Locale.ROOT);
+        boolean mentionsPricing = containsAny(taskText, "pricing", "price", "plan", "价格", "定价", "套餐");
+        boolean mentionsFeatures = containsAny(taskText, "feature", "功能", "能力", "capability");
+        boolean mentionsPersonas = containsAny(taskText, "persona", "用户画像", "用户", "target user", "用户群");
+        if (!mentionsFeatures && previous.getFeatureTree() != null) {
+            revised.setFeatureTree(previous.getFeatureTree());
+        }
+        if (!mentionsPricing && previous.getPricingModel() != null) {
+            revised.setPricingModel(previous.getPricingModel());
+        }
+        if (!mentionsPersonas && previous.getPersonas() != null) {
+            revised.setPersonas(previous.getPersonas());
+        }
+    }
+
+    private boolean hasRepairTasksFor(AnalysisRun run, String competitor) {
+        ReviewDecision decision = run.getRepairDecisionFor(AgentName.EXTRACTOR);
+        if (decision == null
+                || decision.getAction() != ReviewAction.REWORK_ANALYSIS
+                || decision.getTargetAgent() != AgentName.EXTRACTOR) {
+            return false;
+        }
+        return decision.getRepairTasks().stream()
+                .filter(task -> task.getTargetAgent() == AgentName.EXTRACTOR)
+                .anyMatch(task -> repairTaskMentionsCompetitor(task, competitor));
+    }
+
     private String compactRepairTaskLine(ReviewRepairTask task) {
         return "- action=%s fact=%s claim=%s citation=%s currentText=%s instruction=%s expectedFix=%s".formatted(
                 nullToEmpty(task.getAction()),
@@ -420,23 +517,33 @@ public class ExtractorNode implements AgentNode {
 
     private List<CompetitorProfile> extractProfilesPerCompetitor(AnalysisRun run) {
         List<CompetitorProfile> fallbackProfiles = fallbackExtractionFactory.buildProfiles(run);
+        List<CompetitorProfile> previousProfiles = latestArtifact(run.getArtifacts(), ArtifactType.COMPETITOR_PROFILE)
+                .<List<CompetitorProfile>>map(artifact -> run.getCompetitorProfiles())
+                .orElse(List.of());
         List<CompetitorProfile> profiles = new ArrayList<>();
         for (String competitor : run.getRequirement().getCompetitors()) {
             if (!StringUtils.hasText(competitor)) {
                 continue;
             }
-            profiles.add(extractSingleProfileWithLlm(run, competitor.trim(), fallbackFor(fallbackProfiles, competitor)));
+            CompetitorProfile previousProfile = previousProfileFor(previousProfiles, competitor);
+            CompetitorProfile extracted = extractSingleProfileWithLlm(run, competitor.trim(),
+                    fallbackFor(fallbackProfiles, competitor), previousProfile);
+            if (previousProfile != null && hasRepairTasksFor(run, competitor)) {
+                preserveUnchangedSections(previousProfile, extracted, run, competitor);
+            }
+            profiles.add(extracted);
         }
         return profiles;
     }
 
     private CompetitorProfile extractSingleProfileWithLlm(AnalysisRun run,
                                                           String competitor,
-                                                          CompetitorProfile fallbackProfile) {
+                                                          CompetitorProfile fallbackProfile,
+                                                          CompetitorProfile previousProfile) {
         String raw = llmClient.complete(new ChatRequest(
                 List.of(
                         ChatMessage.system("你是竞品结构化抽取 Agent。只输出合法 JSON 对象，不要输出 Markdown。只抽取证据支持的事实。"),
-                        ChatMessage.user(singleCompetitorPrompt(run, competitor))
+                        ChatMessage.user(singleCompetitorPrompt(run, competitor, previousProfile))
                 ),
                 new ChatOptions(0.1, 1800)
         ).tagged(name().name(), "profile-extraction:%s".formatted(competitor)));
@@ -450,7 +557,7 @@ public class ExtractorNode implements AgentNode {
                 .orElseGet(() -> parsedProfiles.get(0));
     }
 
-    private String singleCompetitorPrompt(AnalysisRun run, String competitor) {
+    private String singleCompetitorPrompt(AnalysisRun run, String competitor, CompetitorProfile previousProfile) {
         return """
                 只抽取一个竞品：%s。
 
@@ -480,6 +587,8 @@ public class ExtractorNode implements AgentNode {
                 证据片段索引：
                 %s
 
+                %s
+
                 复核修复任务：
                 %s
                 """.formatted(
@@ -487,6 +596,9 @@ public class ExtractorNode implements AgentNode {
                 competitor,
                 competitor,
                 evidenceBlock(run, competitor),
+                previousProfile != null
+                        ? "上一轮抽取结果（仅修改修复任务指名的部分，其余必须原样保留）：\n" + formatPreviousProfile(previousProfile)
+                        : "",
                 repairPlanBlock(run, competitor)
         );
     }

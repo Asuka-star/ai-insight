@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useRef } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import rehypeRaw from "rehype-raw";
+import rehypeSanitize, { defaultSchema } from "rehype-sanitize";
 import { FileText } from "lucide-react";
 import type { AnalysisArtifact, ArtifactLocateRequest, EvidenceSource } from "../types";
 import { ARTIFACT_LABELS } from "../constants";
@@ -11,6 +13,17 @@ interface ArtifactViewerProps {
   onSelectCitation: (citationKey: string) => void;
   locateRequest?: ArtifactLocateRequest;
 }
+
+const artifactSanitizeSchema = {
+  ...defaultSchema,
+  tagNames: [...(defaultSchema.tagNames ?? []), "br"],
+  attributes: {
+    ...defaultSchema.attributes,
+    a: [...(defaultSchema.attributes?.a ?? []), ["href"]],
+    code: [...(defaultSchema.attributes?.code ?? []), ["className"]],
+    span: [...(defaultSchema.attributes?.span ?? []), ["className"]]
+  }
+};
 
 export function ArtifactViewer({ artifact, sources = [], onSelectCitation, locateRequest }: ArtifactViewerProps) {
   const readerRef = useRef<HTMLElement>(null);
@@ -63,6 +76,7 @@ export function ArtifactViewer({ artifact, sources = [], onSelectCitation, locat
       </header>
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
+        rehypePlugins={[rehypeRaw, [rehypeSanitize, artifactSanitizeSchema]]}
         components={{
           a({ href, children }) {
             const citationKey = citationKeyFromHref(href);
@@ -97,7 +111,19 @@ export function ArtifactViewer({ artifact, sources = [], onSelectCitation, locat
 }
 
 function linkifyCitations(markdown: string) {
-  return markdown.replace(/\[((?:S\d+\s*(?:[,，、]\s*)?)+)]/g, (_, citationGroup: string) => {
+  // 把段落内的单个换行折叠为空格，避免 ReactMarkdown 把 LLM 输出中的软换行渲染成 <br>。
+  // 双换行（段落分隔）和 Markdown 结构元素（标题、列表、表格、代码块等）不受影响。
+  const joined = markdown
+    .split(/\n{2,}/)
+    .map((block) => {
+      const trimmed = block.trimStart();
+      if (/^[#`>|\-*+]|\d+\.\s/.test(trimmed)) {
+        return block;
+      }
+      return block.replace(/\n/g, " ");
+    })
+    .join("\n\n");
+  return joined.replace(/\[((?:S\d+\s*(?:[,，、]\s*)?)+)]/g, (_, citationGroup: string) => {
     const citationKeys = citationGroup.match(/S\d+/g) ?? [];
     return citationKeys.map((citationKey) => `[\\[${citationKey}\\]](#citation-${citationKey})`).join("");
   });

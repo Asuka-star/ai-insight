@@ -24,8 +24,6 @@ export type ArtifactType =
   | "RESEARCH_PLAN"
   | "FACT_EXTRACTION"
   | "COMPETITOR_PROFILE"
-  | "COMPETITIVE_MATRIX"
-  | "SWOT_ANALYSIS"
   | "REPORT_DRAFT"
   | "REVIEW_FINDINGS"
   // Kept for historical runs created before the final-copy step was removed.

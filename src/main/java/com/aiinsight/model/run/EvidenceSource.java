@@ -5,6 +5,8 @@ import lombok.NoArgsConstructor;
 import lombok.Setter;
 
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.UUID;
 
 @Getter
@@ -36,6 +38,8 @@ public class EvidenceSource {
     private Instant ingestionStartedAt;
     private Instant ingestionCompletedAt;
     private boolean globalResource;
+    private List<String> coveredCompetitors = new ArrayList<>();
+    private List<String> coveredDimensions = new ArrayList<>();
     private Instant retrievedAt = Instant.now();
 
     public EvidenceSource(String citationKey, String title, String url, String snippet) {

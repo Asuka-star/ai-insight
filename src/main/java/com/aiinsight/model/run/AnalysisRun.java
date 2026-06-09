@@ -56,6 +56,8 @@ public class AnalysisRun {
     private List<WorkflowTransition> workflowTransitions = new ArrayList<>();
     private List<ReviewFinding> reviewFindings = new ArrayList<>();
     private List<String> recommendedActions = new ArrayList<>();
+    // 质检阶段标记为低质量的 URL 会追加到这里，Researcher 重新采集时跳过这些地址。
+    private List<String> excludedSourceUrls = new ArrayList<>();
     private Integer maxReviewReworkAttempts;
     private String errorMessage;
     private Instant createdAt = Instant.now();

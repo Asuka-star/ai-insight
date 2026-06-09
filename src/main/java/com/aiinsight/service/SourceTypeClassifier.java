@@ -92,7 +92,15 @@ public class SourceTypeClassifier {
             return "FIRST_PARTY_BLOG";
         }
         if (containsAny(normalizedType, "docs", "security", "integration")) {
-            return "FIRST_PARTY_DOCS";
+            // SourceType suggests docs/security/integration content, but we must verify the
+            // host actually belongs to the product's official domain. Without this check,
+            // third-party guide sites (e.g., verdent.ai, learn-X.com) get misclassified as
+            // FIRST_PARTY_DOCS, which inflates their authority and misleads the Writer and
+            // Reviewer into treating their content as authoritative.
+            if (hasFirstPartyDocsHost(host, url)) {
+                return "FIRST_PARTY_DOCS";
+            }
+            return "THIRD_PARTY_GENERAL";
         }
         if (looksLikeOfficialHost(url, "") || "pricing_page".equals(normalizedType)) {
             return "FIRST_PARTY_OFFICIAL";
@@ -212,6 +220,29 @@ public class SourceTypeClassifier {
     private boolean isPublicReviewHost(String url) {
         ParsedUrl parsed = parse(url);
         return parsed != null && containsAny(parsed.host(), "reddit.", "g2.", "capterra.", "trustpilot.");
+    }
+
+    /**
+     * Verifies that a host genuinely belongs to a first-party documentation domain.
+     * Requires at least one strong signal: docs subdomain (docs.cursor.com), official
+     * docs path (/docs/...), or a clean official-looking host. This prevents third-party
+     * guide/tutorial sites from being elevated to FIRST_PARTY_DOCS authority.
+     */
+    private boolean hasFirstPartyDocsHost(String host, String url) {
+        if (!StringUtils.hasText(host)) {
+            return false;
+        }
+        // Strong signal: docs-related subdomain
+        if (containsAny(host, "docs.", "doc.", "help.", "support.", "developer.", "developers.", "api.", "reference.")) {
+            return true;
+        }
+        // Strong signal: docs path in URL
+        ParsedUrl parsed = parse(url);
+        if (parsed != null && containsAny(parsed.path(), "/docs", "/doc", "/help", "/reference", "/api")) {
+            return true;
+        }
+        // Fallback: host must look like an official product site (clean domain, official path)
+        return looksLikeOfficialHost(url, "");
     }
 
     private boolean isThirdPartyHost(String host) {

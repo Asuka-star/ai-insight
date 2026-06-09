@@ -111,161 +111,6 @@ class AnalystNodeTest {
     }
 
     @Test
-    void matrixAndSwotIgnoreDraftTextAndRenderOnlyFromClaims() {
-        LlmClient unavailableLlm = new LlmClient() {
-            @Override
-            public boolean isAvailable() {
-                return false;
-            }
-
-            @Override
-            public String complete(ChatRequest request) {
-                throw new IllegalStateException("LLM is not configured");
-            }
-        };
-        FallbackAnalysisDraftFactory noisyFallback = new FallbackAnalysisDraftFactory() {
-            @Override
-            public AnalysisDraft build(AnalysisRun run) {
-                AnalysisClaim claim = new AnalysisClaim();
-                claim.setType(ClaimType.OPPORTUNITY);
-                claim.setContent("Cursor Composer is a useful benchmark for multi-file editing.");
-                claim.setConfidence(ConfidenceLevel.MEDIUM);
-                claim.setCompetitorNames(List.of("Cursor"));
-                claim.setEvidenceIds(List.of("S1"));
-                return new AnalysisDraft(
-                        List.of(claim),
-                        "UNSUPPORTED MATRIX TEXT [S1]",
-                        "UNSUPPORTED SWOT TEXT [S1]"
-                );
-            }
-        };
-        AnalysisRun run = new AnalysisRun(new AnalysisRequirement(
-                "Analyze Cursor",
-                "AI coding tools",
-                List.of("Cursor"),
-                List.of("features"),
-                List.of("official_site"),
-                List.of()
-        ));
-        run.getEvidenceSources().add(new EvidenceSource(
-                "S1",
-                "Cursor product page",
-                "https://example.test/cursor",
-                "official_site",
-                "FETCHED",
-                "LIVE_FETCHED",
-                "HIGH",
-                "NONE",
-                "Cursor Composer supports multi-file code edits.",
-                "Cursor Composer supports multi-file code edits.",
-                "test evidence"
-        ));
-
-        new AnalystNode(unavailableLlm, new ObjectMapper(), noisyFallback).execute(run);
-
-        String matrix = run.getArtifacts().stream()
-                .filter(artifact -> artifact.getType() == ArtifactType.COMPETITIVE_MATRIX)
-                .reduce((first, second) -> second)
-                .orElseThrow()
-                .getContent();
-        String swot = run.getArtifacts().stream()
-                .filter(artifact -> artifact.getType() == ArtifactType.SWOT_ANALYSIS)
-                .reduce((first, second) -> second)
-                .orElseThrow()
-                .getContent();
-        assertThat(matrix)
-                .doesNotContain("Cursor Composer is a useful benchmark")
-                .doesNotContain("UNSUPPORTED MATRIX TEXT");
-        assertThat(swot)
-                .contains("Cursor Composer is a useful benchmark")
-                .doesNotContain("UNSUPPORTED SWOT TEXT");
-    }
-
-    @Test
-    void matrixAndSwotKeepLowConfidenceClaimsInValidationBacklog() {
-        LlmClient llmClient = new LlmClient() {
-            @Override
-            public boolean isAvailable() {
-                return true;
-            }
-
-            @Override
-            public String complete(ChatRequest request) {
-                return """
-                        {
-                          "claims": [
-                            {
-                              "type": "COMPARISON",
-                              "content": "Cursor positioning is still an unverified strategic claim.",
-                              "confidence": "LOW",
-                              "dimension": "团队协作",
-                              "supportStatus": "UNVERIFIED",
-                              "recommendedPlacement": "MATRIX",
-                              "competitorNames": ["Cursor"],
-                              "evidenceIds": []
-                            },
-                            {
-                              "type": "STRENGTH",
-                              "content": "Cursor has a publishable multi-file editing strength.",
-                              "confidence": "MEDIUM",
-                              "dimension": "代码理解与生成能力",
-                              "supportStatus": "SUPPORTED",
-                              "recommendedPlacement": "SWOT",
-                              "competitorNames": ["Cursor"],
-                              "evidenceIds": ["S1"]
-                            },
-                            {
-                              "type": "FACT",
-                              "content": "Cursor has a supported note that should not be published in main views.",
-                              "confidence": "MEDIUM",
-                              "dimension": "综合判断",
-                              "supportStatus": "SUPPORTED",
-                              "recommendedPlacement": "NONE",
-                              "competitorNames": ["Cursor"],
-                              "evidenceIds": ["S1"]
-                            }
-                          ]
-                        }
-                        """;
-            }
-        };
-        AnalysisRun run = new AnalysisRun(new AnalysisRequirement(
-                "Analyze Cursor",
-                "AI coding tools",
-                List.of("Cursor"),
-                List.of("代码理解与生成能力", "团队协作"),
-                List.of("official_site"),
-                List.of()
-        ));
-        run.getEvidenceSources().add(new EvidenceSource(
-                "S1",
-                "Cursor product page",
-                "https://example.test/cursor",
-                "official_site",
-                "FETCHED",
-                "LIVE_FETCHED",
-                "HIGH",
-                "NONE",
-                "Cursor has a publishable multi-file editing strength.",
-                "Cursor has a publishable multi-file editing strength.",
-                "test evidence"
-        ));
-
-        new AnalystNode(llmClient, new ObjectMapper(), new FallbackAnalysisDraftFactory()).execute(run);
-
-        String matrix = latestArtifact(run, ArtifactType.COMPETITIVE_MATRIX);
-        String swot = latestArtifact(run, ArtifactType.SWOT_ANALYSIS);
-        assertThat(matrix)
-                .contains("## 待验证结论", "Cursor positioning is still an unverified strategic claim")
-                .contains("Cursor has a supported note that should not be published in main views", "放置建议为不展示")
-                .contains("| 团队协作 | 证据不足，待验证。 | LOW | 证据不足 |")
-                .contains("| Cursor | 暂无可归属的结构化结论。 | LOW | 证据不足 |");
-        assertThat(swot)
-                .contains("Cursor has a publishable multi-file editing strength")
-                .doesNotContain("Cursor positioning is still an unverified strategic claim");
-    }
-
-    @Test
     void analystRepairKeepsClaimIdAndDowngradesUnresolvedTaskClaim() {
         String claimText = "Cursor Composer is clearly the strongest workflow benchmark.";
         LlmClient llmClient = new LlmClient() {
@@ -416,12 +261,6 @@ class AnalystNodeTest {
         assertThat(repaired.getConfidence()).isEqualTo(ConfidenceLevel.LOW);
         assertThat(repaired.getSupportStatus()).isEqualTo("UNVERIFIED");
         assertThat(repaired.getRecommendedPlacement()).isEqualTo("VALIDATION_BACKLOG");
-
-        String matrix = latestArtifact(run, ArtifactType.COMPETITIVE_MATRIX);
-        assertThat(matrix)
-                .doesNotContain("| Cursor | FACT: " + claimText)
-                .doesNotContain("| FACT | LOW | UNVERIFIED | VALIDATION_BACKLOG")
-                .contains("## 待验证结论", claimText);
     }
 
     @Test
@@ -873,6 +712,82 @@ class AnalystNodeTest {
                 });
     }
 
+    @Test
+    void incrementalRepairDoesNotReuseOneRevisedClaimForMultipleTargetedClaims() {
+        String workflowClaim = "Cursor Composer supports multi-file workflow editing.";
+        String securityClaim = "Cursor provides SAML security controls.";
+        LlmClient llmClient = new LlmClient() {
+            @Override
+            public boolean isAvailable() {
+                return true;
+            }
+
+            @Override
+            public String complete(ChatRequest request) {
+                return """
+                        {
+                          "claims": [
+                            {
+                              "type": "FACT",
+                              "content": "%s",
+                              "confidence": "HIGH",
+                              "supportStatus": "SUPPORTED",
+                              "recommendedPlacement": "MATRIX",
+                              "competitorNames": ["Cursor"],
+                              "evidenceIds": ["S1"]
+                            },
+                            {
+                              "type": "FACT",
+                              "content": "%s",
+                              "confidence": "HIGH",
+                              "supportStatus": "SUPPORTED",
+                              "recommendedPlacement": "MATRIX",
+                              "competitorNames": ["Cursor"],
+                              "evidenceIds": ["S2"]
+                            }
+                          ]
+                        }
+                        """.formatted(workflowClaim, securityClaim);
+            }
+        };
+        AnalysisRun run = new AnalysisRun(new AnalysisRequirement(
+                "Analyze Cursor",
+                "AI coding tools",
+                List.of("Cursor"),
+                List.of("features", "security"),
+                List.of("official_site"),
+                List.of()
+        ));
+        run.getEvidenceSources().add(firstPartyEvidence(
+                "S1",
+                "Cursor product page",
+                "https://example.test/cursor",
+                "Cursor Composer supports multi-file workflow editing."
+        ));
+        run.getEvidenceSources().add(firstPartyEvidence(
+                "S2",
+                "Cursor security docs",
+                "https://example.test/cursor/security",
+                "Cursor provides SAML security controls."
+        ));
+        run.getClaims().add(previousClaim("C-WORKFLOW", workflowClaim, "S1"));
+        run.getClaims().add(previousClaim("C-SECURITY", securityClaim, "S2"));
+
+        run.getReviewDecision().setAction(ReviewAction.REWORK_ANALYSIS);
+        run.getReviewDecision().setTargetAgent(AgentName.ANALYST);
+        run.getReviewDecision().setRepairTasks(List.of(
+                repairTaskFor("C-WORKFLOW", workflowClaim),
+                repairTaskFor("C-SECURITY", securityClaim)
+        ));
+
+        new AnalystNode(llmClient, new ObjectMapper(), new FallbackAnalysisDraftFactory()).execute(run);
+
+        assertThat(run.getClaims()).extracting(AnalysisClaim::getId)
+                .containsExactly("C-WORKFLOW", "C-SECURITY");
+        assertThat(run.getClaims()).extracting(AnalysisClaim::getContent)
+                .containsExactly(workflowClaim, securityClaim);
+    }
+
     private CompetitorFactSet cursorFactSet() {
         ExtractedFact fact = new ExtractedFact();
         fact.setId("F1");
@@ -892,6 +807,46 @@ class AnalystNodeTest {
         return factSet;
     }
 
+    private AnalysisClaim previousClaim(String id, String content, String evidenceId) {
+        AnalysisClaim claim = new AnalysisClaim();
+        claim.setId(id);
+        claim.setType(ClaimType.FACT);
+        claim.setContent(content);
+        claim.setConfidence(ConfidenceLevel.HIGH);
+        claim.setSupportStatus("SUPPORTED");
+        claim.setRecommendedPlacement("MATRIX");
+        claim.setCompetitorNames(List.of("Cursor"));
+        claim.setEvidenceIds(List.of(evidenceId));
+        return claim;
+    }
+
+    private ReviewRepairTask repairTaskFor(String claimId, String currentText) {
+        ReviewRepairTask task = new ReviewRepairTask();
+        task.setTargetAgent(AgentName.ANALYST);
+        task.setClaimId(claimId);
+        task.setCategory("claim_style_revision");
+        task.setCurrentText(currentText);
+        return task;
+    }
+
+    private EvidenceSource firstPartyEvidence(String citationKey, String title, String url, String text) {
+        EvidenceSource source = new EvidenceSource(
+                citationKey,
+                title,
+                url,
+                "official_site",
+                "FETCHED",
+                "LIVE_FETCHED",
+                "HIGH",
+                "NONE",
+                text,
+                text,
+                "test evidence"
+        );
+        source.setSourceAuthority("FIRST_PARTY_OFFICIAL");
+        return source;
+    }
+
     private LlmClient unavailableLlm() {
         return new LlmClient() {
             @Override
@@ -904,13 +859,5 @@ class AnalystNodeTest {
                 throw new IllegalStateException("LLM is not configured");
             }
         };
-    }
-
-    private String latestArtifact(AnalysisRun run, ArtifactType type) {
-        return run.getArtifacts().stream()
-                .filter(artifact -> artifact.getType() == type)
-                .reduce((first, second) -> second)
-                .orElseThrow()
-                .getContent();
     }
 }

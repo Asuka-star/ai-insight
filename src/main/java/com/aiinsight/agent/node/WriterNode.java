@@ -7,6 +7,7 @@ import com.aiinsight.model.enums.ConfidenceLevel;
 import com.aiinsight.model.enums.ArtifactType;
 import com.aiinsight.model.enums.ReviewAction;
 import com.aiinsight.model.review.ReviewDecision;
+import com.aiinsight.model.review.ReviewRepairTask;
 import com.aiinsight.model.run.EvidenceSource;
 import com.aiinsight.model.schema.AnalysisClaim;
 import com.aiinsight.model.schema.CompetitorProfile;
@@ -17,6 +18,7 @@ import com.aiinsight.llm.LlmClient;
 import com.aiinsight.agent.AgentNode;
 import com.aiinsight.observability.AgentTraceContext;
 import com.aiinsight.util.AgentUtils;
+import com.aiinsight.util.JsonResponseExtractor;
 import com.aiinsight.util.TermExtractor;
 import com.aiinsight.util.TermExtractor.TermOptions;
 import static com.aiinsight.util.AgentUtils.CITATION_PATTERN;
@@ -25,13 +27,19 @@ import static com.aiinsight.util.AgentUtils.containsAny;
 import static com.aiinsight.util.AgentUtils.hasText;
 import static com.aiinsight.util.AgentUtils.knownCitationKeys;
 import static com.aiinsight.util.AgentUtils.latestArtifact;
+import static com.aiinsight.util.AgentUtils.nullToEmpty;
 import static com.aiinsight.util.AgentUtils.sanitizeCitationText;
 import static com.aiinsight.util.AgentUtils.textOrDefault;
 import com.aiinsight.service.fallback.FallbackReportDraftFactory;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
+import org.springframework.util.StringUtils;
 
+import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
@@ -67,34 +75,51 @@ public class WriterNode implements AgentNode {
     public AnalysisRun execute(AnalysisRun run) {
         // 未配置 LLM 时走 fallback，保证演示环境和单测不依赖外部模型。
         String content;
-        if (llmClient.isAvailable()) {
+        if (llmClient.isAvailable() && shouldDoIncrementalRevision(run)) {
+            // 增量修订模式：有上一版报告和 Reviewer 修复任务时，只修改被标记的段落，
+            // 保留未被 Reviewer 点名的段落原样不动，从根本上消除"修一个问题引入新问题"的震荡。
             try {
-                content = generateWithLlm(run);
+                content = reviseIncrementally(run);
+                log.info("Writer incremental revision used: runId={}", run.getId());
             } catch (RuntimeException ex) {
-                log.warn("Writer fallback activated: runId={}, reason=llm_exception, exceptionType={}, message={}, competitors={}, evidenceSources={}, claims={}, artifacts={}",
+                log.warn("Writer incremental revision failed, falling back to full generation: runId={}, reason={}",
+                        run.getId(), ex.getMessage());
+                content = null;
+            }
+        } else {
+            content = null;
+        }
+        if (content == null) {
+            if (llmClient.isAvailable()) {
+                try {
+                    content = generateWithLlm(run);
+                } catch (RuntimeException ex) {
+                    log.warn("Writer fallback activated: runId={}, reason=llm_exception, exceptionType={}, message={}, competitors={}, evidenceSources={}, claims={}, artifacts={}",
+                            run.getId(),
+                            ex.getClass().getName(),
+                            ex.getMessage(),
+                            run.getRequirement().getCompetitors(),
+                            run.getEvidenceSources().size(),
+                            run.getClaims().size(),
+                            run.getArtifacts().size());
+                    run.getRecommendedActions().add("LLM 报告生成失败，已使用规则报告兜底：" + ex.getMessage());
+                    content = fallbackReportDraftFactory.build(run);
+                    AgentTraceContext.recordFallback("deterministic-writer-fallback", content);
+                }
+            } else {
+                log.warn("Writer fallback activated: runId={}, reason=llm_unavailable, competitors={}, evidenceSources={}, claims={}, artifacts={}",
                         run.getId(),
-                        ex.getClass().getName(),
-                        ex.getMessage(),
                         run.getRequirement().getCompetitors(),
                         run.getEvidenceSources().size(),
                         run.getClaims().size(),
                         run.getArtifacts().size());
-                run.getRecommendedActions().add("LLM 报告生成失败，已使用规则报告兜底：" + ex.getMessage());
                 content = fallbackReportDraftFactory.build(run);
                 AgentTraceContext.recordFallback("deterministic-writer-fallback", content);
             }
-        } else {
-            log.warn("Writer fallback activated: runId={}, reason=llm_unavailable, competitors={}, evidenceSources={}, claims={}, artifacts={}",
-                    run.getId(),
-                    run.getRequirement().getCompetitors(),
-                    run.getEvidenceSources().size(),
-                    run.getClaims().size(),
-                    run.getArtifacts().size());
-            content = fallbackReportDraftFactory.build(run);
-            AgentTraceContext.recordFallback("deterministic-writer-fallback", content);
         }
         // Writer 是最终 Markdown 的入口，必须在 artifact 落库前清理未知 citation；
         // 否则 Reviewer 会发现不存在的来源，且前端 citation 定位也会失效。
+        reconcileClaimEvidenceIds(run);
         content = sanitizeReportText(run, content);
         List<String> citations = extractKnownCitationKeys(run, content);
         AnalysisArtifact artifact = new AnalysisArtifact(ArtifactType.REPORT_DRAFT, "竞品分析报告草稿", content, citations);
@@ -134,6 +159,9 @@ public class WriterNode implements AgentNode {
                 23. supportStatus=PARTIAL 或 confidence=MEDIUM 的结论只能写成“可参考、可进一步评估、公开资料显示”，不要写成“优势、表现突出、明确优先借鉴”。
                 24. 只有 supportStatus=SUPPORTED、confidence=HIGH 且证据索引显示 authority=FIRST_PARTY_* 的结论，才可以进入“一句话结论”和“建议优先级”的强建议。
                 25. 第三方、社区、镜像或 UNKNOWN authority 来源只能用于提出线索和补证方向，不能单独支撑竞品优势判断。
+                26. 结构化结论区块顶部的"验证概况"行汇总了 SUPPORTED 和 UNVERIFIED 的总数。当 UNVERIFIED 数量 > SUPPORTED 数量时，"一句话结论"和"建议优先级"必须明确注明整体证据置信度受限（如"基于当前有限证据…"），不能给出高置信度的排名或推荐。
+                27. 如果竞品画像中某竞品定位标记为"待验证"，报告中所有关于该竞品的比较性结论必须附加证据局限性说明（如"该竞品定位基于有限公开资料，待官方证据确认"），不能将其作为确定性结论呈现。
+                28. 报告正文结束后，必须追加"竞品横向矩阵"和"SWOT 分析"两个独立章节（使用 ## 级标题）。矩阵和 SWOT 由你根据结构化结论、竞品画像和证据直接生成，不再由 Analyst 预处理。矩阵必须包含三个子部分：竞品判断表、用户指定维度覆盖表、待验证结论表。SWOT 必须覆盖优势、短板、机会、威胁四个维度。所有内容只能使用证据索引中的 [S] 编号，不要编造引用。confidence 为 LOW 或 status 为 UNVERIFIED 的结论只能放入"待验证结论"表，不能进入主判断。
 
                 用户需求:
                 %s
@@ -153,12 +181,6 @@ public class WriterNode implements AgentNode {
                 竞品画像摘要:
                 %s
 
-                竞品矩阵:
-                %s
-
-                SWOT 分析:
-                %s
-
                 采集包缺口与一手洞察:
                 %s
 
@@ -174,8 +196,6 @@ public class WriterNode implements AgentNode {
                 String.join(", ", run.getRequirement().getDimensions()),
                 claimsBlock(run),
                 competitorProfileBlock(run),
-                latestArtifactContent(run, ArtifactType.COMPETITIVE_MATRIX),
-                latestArtifactContent(run, ArtifactType.SWOT_ANALYSIS),
                 researchPackageBlock(run),
                 evidenceIndexBlock(run),
                 repairPlanBlock(run)
@@ -187,6 +207,181 @@ public class WriterNode implements AgentNode {
                 ),
                 ChatOptions.writer()
         ).tagged(name().name(), "report-draft"));
+    }
+
+    /**
+     * 判断是否应使用增量修订模式：有上一版报告且 Reviewer 下发了针对 Writer 的修复任务。
+     * 首次生成时没有 REPORT_DRAFT artifact，走全量生成；重跑时满足条件则只改标记段落。
+     */
+    private boolean shouldDoIncrementalRevision(AnalysisRun run) {
+        AnalysisArtifact previousDraft = latestArtifact(run.getArtifacts(), ArtifactType.REPORT_DRAFT).orElse(null);
+        if (previousDraft == null || !hasText(previousDraft.getContent())) {
+            return false;
+        }
+        ReviewDecision decision = getWriterRepairDecision(run);
+        if (decision == null || decision.getAction() == ReviewAction.PASS) {
+            return false;
+        }
+        List<ReviewRepairTask> writerTasks = getWriterRepairTasks(decision);
+        return !writerTasks.isEmpty();
+    }
+
+    /**
+     * 增量修订：基于上一版报告，只让 LLM 修改 Reviewer 标记的段落。
+     * 未被标记的段落保持原样不动，从根本上消除 Writer 侧的质检震荡。
+     */
+    private String reviseIncrementally(AnalysisRun run) {
+        AnalysisArtifact previousDraft = latestArtifact(run.getArtifacts(), ArtifactType.REPORT_DRAFT)
+                .orElseThrow(() -> new IllegalStateException("No previous report draft for incremental revision"));
+        String previousContent = previousDraft.getContent();
+        ReviewDecision decision = getWriterRepairDecision(run);
+        List<ReviewRepairTask> writerTasks = getWriterRepairTasks(decision);
+        if (writerTasks.isEmpty()) {
+            return previousContent;
+        }
+
+        String[] paragraphs = previousContent.split("\n\\s*\n");
+        String prompt = generateIncrementalRevisionPrompt(run, paragraphs, writerTasks);
+        String raw = llmClient.complete(new ChatRequest(
+                List.of(
+                        ChatMessage.system("你是严谨的竞品分析报告修订 Agent。你的职责是定向修复 Reviewer 指出的问题，而不是重写整份报告。未指名的段落必须原样保留。"),
+                        ChatMessage.user(prompt)
+                ),
+                ChatOptions.writer()
+        ).tagged(name().name(), "incremental-revision"));
+
+        return applyIncrementalRevisions(raw, paragraphs);
+    }
+
+    private String generateIncrementalRevisionPrompt(AnalysisRun run, String[] paragraphs, List<ReviewRepairTask> tasks) {
+        StringBuilder paragraphsBlock = new StringBuilder();
+        for (int i = 0; i < paragraphs.length; i++) {
+            paragraphsBlock.append("【段落%d】\n%s\n\n".formatted(i, paragraphs[i].trim()));
+        }
+
+        StringBuilder tasksBlock = new StringBuilder();
+        for (int i = 0; i < tasks.size(); i++) {
+            ReviewRepairTask task = tasks.get(i);
+            tasksBlock.append("修复任务%d:\n".formatted(i + 1));
+            tasksBlock.append("- 目标段落索引: %s\n".formatted(task.getParagraphIndex() == null ? "未指定" : task.getParagraphIndex()));
+            tasksBlock.append("- 目标段落文本: %s\n".formatted(hasText(task.getExcerpt()) ? abbreviate(task.getExcerpt(), 200) : (hasText(task.getCurrentText()) ? abbreviate(task.getCurrentText(), 200) : "未提供")));
+            tasksBlock.append("- 修复指令: %s\n".formatted(hasText(task.getInstruction()) ? task.getInstruction() : "修复 Reviewer 指出的问题"));
+            tasksBlock.append("- 期望修复: %s\n".formatted(hasText(task.getExpectedFix()) ? task.getExpectedFix() : "补 citation、降级措辞或删除无证据表述"));
+            tasksBlock.append("- 验收标准: %s\n".formatted(hasText(task.getAcceptanceCriteria()) ? task.getAcceptanceCriteria() : "Reviewer 不再报告同一问题"));
+            if (hasText(task.getClaimId())) {
+                tasksBlock.append("- 关联 Claim: %s\n".formatted(task.getClaimId()));
+            }
+            tasksBlock.append("\n");
+        }
+
+        return """
+                请对以下竞品分析报告进行定向修订。
+
+                重要约束:
+                1. 只修改修复任务中明确指出的段落。
+                2. 未被任何修复任务指名的段落必须完全保持原样，不要改动任何文字、顺序或格式。
+                3. 输出 JSON 格式（不要 Markdown 代码块包裹）：
+                   {"revisions":[{"paragraphIndex":段落索引,"revisedText":"修订后的段落文本"}]}
+                4. 每个需要修改的段落单独一条 revision。
+                5. 如果需要删除整个段落，revisedText 设为空字符串。
+                6. 不要输出未修改的段落。
+                7. revisedText 中必须保留原有的 Markdown 格式（标题、表格、列表等）。
+                8. 补 citation 时使用 [S1]、[S2] 等已有证据编号；找不到可用证据时删除该强结论或改成"待验证"。
+                9. 过度推断应降级为"公开资料显示/待验证"。
+                10. 不要添加报告编号、生成日期、免责声明等元信息。
+
+                证据索引:
+                %s
+
+                当前报告段落:
+                %s
+
+                修复任务:
+                %s
+                """.formatted(
+                evidenceIndexBlock(run),
+                paragraphsBlock.toString(),
+                tasksBlock.toString()
+        );
+    }
+
+    /**
+     * 解析 LLM 的增量修订输出并应用到原文段落上。
+     * 只有 LLM 明确输出的段落会被替换，其余段落保持原样。
+     */
+    private String applyIncrementalRevisions(String llmOutput, String[] paragraphs) {
+        ObjectMapper mapper = new ObjectMapper();
+        try {
+            JsonNode root = mapper.readTree(JsonResponseExtractor.extractJsonValue(llmOutput));
+            JsonNode revisions = root.has("revisions") ? root.get("revisions") : root;
+            List<String> result = new ArrayList<>(Arrays.asList(paragraphs));
+            int applied = 0;
+            if (revisions.isArray()) {
+                for (JsonNode revision : revisions) {
+                    if (!revision.has("paragraphIndex") || !revision.has("revisedText")) {
+                        continue;
+                    }
+                    int index = revision.get("paragraphIndex").asInt(-1);
+                    String revisedText = revision.get("revisedText").asText("");
+                    if (index >= 0 && index < result.size()) {
+                        result.set(index, revisedText);
+                        applied++;
+                    }
+                }
+            }
+            if (applied == 0) {
+                log.warn("Incremental revision produced no applicable changes; returning previous report unchanged");
+                return String.join("\n\n", paragraphs);
+            }
+            // 移除被删除的空段落（revisedText 为空字符串）
+            result.removeIf(String::isEmpty);
+            log.info("Incremental revision applied: {} paragraph(s) revised out of {}", applied, paragraphs.length);
+            return String.join("\n\n", result);
+        } catch (Exception ex) {
+            log.warn("Failed to parse incremental revision output, returning previous report: {}", ex.getMessage());
+            return String.join("\n\n", paragraphs);
+        }
+    }
+
+    private ReviewDecision getWriterRepairDecision(AnalysisRun run) {
+        // 手动重跑时 manualRerunDecision 携带上一轮 Reviewer 的问题
+        ReviewDecision manualDecision = run.getManualRerunDecision();
+        if (manualDecision != null && manualDecision.getAction() != ReviewAction.PASS
+                && manualDecision.getTargetAgent() == AgentName.WRITER) {
+            return manualDecision;
+        }
+        // 自动返工时 reviewDecision 携带当前轮 Reviewer 的决策
+        ReviewDecision decision = run.getReviewDecision();
+        if (decision != null && decision.getAction() != ReviewAction.PASS) {
+            return decision;
+        }
+        return null;
+    }
+
+    private List<ReviewRepairTask> getWriterRepairTasks(ReviewDecision decision) {
+        if (decision == null || decision.getRepairTasks() == null) {
+            return List.of();
+        }
+        return decision.getRepairTasks().stream()
+                .filter(task -> task.getTargetAgent() == AgentName.WRITER)
+                .toList();
+    }
+
+    // 清理 claim.evidenceIds 中指向已不存在证据源的悬空引用。
+    // 证据采集可能在多轮修订间变化，但 claim 的 evidenceIds 不会自动同步，
+    // 导致 Reviewer 检测到 claim 引用了不存在的来源（如 S21）。
+    private void reconcileClaimEvidenceIds(AnalysisRun run) {
+        Set<String> known = knownCitationKeys(run);
+        for (AnalysisClaim claim : run.getClaims()) {
+            if (claim.getEvidenceIds() != null && !claim.getEvidenceIds().isEmpty()) {
+                List<String> valid = claim.getEvidenceIds().stream()
+                        .filter(known::contains)
+                        .toList();
+                if (valid.size() != claim.getEvidenceIds().size()) {
+                    claim.setEvidenceIds(new ArrayList<>(valid));
+                }
+            }
+        }
     }
 
     private String sanitizeReportText(AnalysisRun run, String text) {
@@ -350,9 +545,31 @@ public class WriterNode implements AgentNode {
                 .filter(claim -> claimMatchesLine(claim, lineTerms))
                 .flatMap(claim -> claim.getEvidenceIds().stream())
                 .filter(knownCitationKeys(run)::contains)
+                .filter(citationKey -> isEvidenceRelevantToLine(run, citationKey, lineTerms))
                 .distinct()
                 .limit(3)
                 .toList();
+    }
+
+    // 检查证据源内容是否与当前行话题相关，防止定价页引用被绑定到工作流对比行等跨话题误引。
+    private boolean isEvidenceRelevantToLine(AnalysisRun run, String citationKey, Set<String> lineTerms) {
+        if (lineTerms.isEmpty()) {
+            return true;
+        }
+        EvidenceSource source = run.getEvidenceSources().stream()
+                .filter(s -> citationKey.equals(s.getCitationKey()))
+                .findFirst()
+                .orElse(null);
+        if (source == null) {
+            return true;
+        }
+        String sourceText = (nullToEmpty(source.getTitle()) + " " + nullToEmpty(source.getSnippet())).trim();
+        if (sourceText.length() < 5) {
+            return true;
+        }
+        Set<String> sourceTerms = supportTerms(sourceText);
+        long overlap = lineTerms.stream().filter(sourceTerms::contains).count();
+        return overlap >= 1;
     }
 
     private boolean claimMatchesLine(AnalysisClaim claim, Set<String> lineTerms) {
@@ -426,6 +643,19 @@ public class WriterNode implements AgentNode {
         if (run.getClaims().isEmpty()) {
             return "暂无结构化结论。";
         }
+        long total = run.getClaims().size();
+        long supported = run.getClaims().stream()
+                .filter(c -> "SUPPORTED".equalsIgnoreCase(textOrDefault(c.getSupportStatus(), "")))
+                .count();
+        long unverified = run.getClaims().stream()
+                .filter(c -> "UNVERIFIED".equalsIgnoreCase(textOrDefault(c.getSupportStatus(), "")))
+                .count();
+        long mainCount = run.getClaims().stream().filter(this::mainReportClaim).count();
+        String verificationSummary = "验证概况: 共 %d 条结论，SUPPORTED=%d，UNVERIFIED=%d，主报告可用=%d，待验证/弱支撑=%d。%s"
+                .formatted(total, supported, unverified, mainCount, total - mainCount,
+                        unverified > supported
+                                ? "⚠ 多数结论尚未验证，报告结论和一句话总结必须明确注明证据置信度受限。"
+                                : "");
         String mainClaims = run.getClaims().stream()
                 .filter(this::mainReportClaim)
                 .map(claim -> claimLine(run, claim))
@@ -435,12 +665,15 @@ public class WriterNode implements AgentNode {
                 .map(claim -> claimLine(run, claim))
                 .collect(Collectors.joining("\n"));
         return """
+                %s
+
                 主报告可用结论（只能从这里写主结论、建议优先级和正向判断）:
                 %s
 
                 待验证或弱支撑结论（只能写入风险与证据缺口/下一步补证，不得改写成确定判断）:
                 %s
                 """.formatted(
+                verificationSummary,
                 mainClaims.isBlank() ? "- 暂无主报告可用结论。" : mainClaims,
                 backlogClaims.isBlank() ? "- 暂无待验证结论。" : backlogClaims
         );
@@ -663,18 +896,8 @@ public class WriterNode implements AgentNode {
                 keys.addAll(profile.getPricingModel().getEvidenceIds());
             }
         });
-        latestArtifact(run.getArtifacts(), ArtifactType.COMPETITIVE_MATRIX).ifPresent(artifact -> keys.addAll(artifact.getCitationKeys()));
-        latestArtifact(run.getArtifacts(), ArtifactType.SWOT_ANALYSIS).ifPresent(artifact -> keys.addAll(artifact.getCitationKeys()));
         keys.retainAll(knownCitationKeys(run));
         return keys;
-    }
-
-    private String latestArtifactContent(AnalysisRun run, ArtifactType type) {
-        return latestArtifact(run.getArtifacts(), type)
-                .map(artifact -> artifact.getContent() == null || artifact.getContent().isBlank()
-                        ? "暂无 " + type + " 产物。"
-                        : abbreviate(artifact.getContent(), MAX_UPSTREAM_ARTIFACT_CHARS_FOR_PROMPT))
-                .orElse("暂无 " + type + " 产物。");
     }
 
 }

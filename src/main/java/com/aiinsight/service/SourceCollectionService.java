@@ -378,8 +378,8 @@ public class SourceCollectionService {
                         officialSeed.internalLinks(),
                         candidateGroup.paths()
                 )) {
-                    if (shouldSkipOfficialCandidateUrl(candidateUrl)) {
-                        log.debug("Official reference candidate skipped: url={}, section={}, reason=known_bad_locale_or_region_path",
+                    if (shouldSkipOfficialCandidateUrl(candidateUrl) || isUrlExcluded(candidateUrl, run)) {
+                        log.debug("Official reference candidate skipped: url={}, section={}, reason=known_bad_locale_or_region_path_or_excluded",
                                 candidateUrl,
                                 candidateGroup.name());
                         continue;
@@ -422,6 +422,13 @@ public class SourceCollectionService {
                 continue;
             }
             source.setCitationKey("S" + index);
+            // Tag official reference candidates with dimension inferred from their section name.
+            // Competitor is not available here (derived from user URLs, not competitor-specific searches),
+            // so text matching fallback in ResearchCoverageService handles competitor matching.
+            String officialDim = inferSubtaskDimension(List.of(candidate.section()));
+            if (StringUtils.hasText(officialDim) && !"public_search".equals(officialDim)) {
+                source.setCoveredDimensions(new ArrayList<>(List.of(officialDim)));
+            }
             sources.add(source);
             log.info("Official reference candidate promoted to evidence: citationKey={}, url={}, section={}, sourceType={}, sourceQuality={}",
                     source.getCitationKey(),
@@ -562,6 +569,32 @@ public class SourceCollectionService {
             return true;
         }
         return path.contains("app-unavailable-in-region");
+    }
+
+    // 检查 URL 是否在 Reviewer 标记的低质量源排除列表中。
+    // 忽略大小写和尾部斜杠差异，保证 verdent.ai/foo 和 VERDENT.AI/foo/ 都能命中。
+    private boolean isUrlExcluded(String url, AnalysisRun run) {
+        if (run == null || !StringUtils.hasText(url)) {
+            return false;
+        }
+        List<String> excluded = run.getExcludedSourceUrls();
+        if (excluded == null || excluded.isEmpty()) {
+            return false;
+        }
+        String normalized = url.trim().toLowerCase(Locale.ROOT);
+        if (normalized.endsWith("/")) {
+            normalized = normalized.substring(0, normalized.length() - 1);
+        }
+        for (String excludedUrl : excluded) {
+            String excludedNorm = excludedUrl.trim().toLowerCase(Locale.ROOT);
+            if (excludedNorm.endsWith("/")) {
+                excludedNorm = excludedNorm.substring(0, excludedNorm.length() - 1);
+            }
+            if (normalized.equals(excludedNorm)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private boolean matchesOfficialGroupPath(String url, List<String> paths) {
@@ -986,23 +1019,43 @@ public class SourceCollectionService {
 
     private String inferSubtaskDimension(List<String> queries) {
         String text = normalizeText(String.join(" ", queries == null ? List.of() : queries));
-        if (containsAny(text, "pricing", "price", "plan", "\u5b9a\u4ef7", "\u4ef7\u683c")) {
+        if (containsAny(text, "pricing", "price", "plan", "定价", "价格", "商业模式")) {
             return "pricing";
         }
-        if (containsAny(text, "review", "feedback", "\u8bc4\u4ef7", "\u53cd\u9988", "\u53e3\u7891")) {
+        if (containsAny(text, "review", "feedback", "评价", "反馈", "口碑")) {
             return "reviews";
         }
-        if (containsAny(text, "security", "compliance", "permission", "\u5b89\u5168", "\u5408\u89c4", "\u6743\u9650")) {
+        if (containsAny(text, "security", "compliance", "permission", "安全", "合规", "权限")) {
             return "security";
         }
-        if (containsAny(text, "customer", "case", "\u5ba2\u6237", "\u6848\u4f8b")) {
+        if (containsAny(text, "customer", "case", "客户", "案例")) {
             return "customers";
         }
-        if (containsAny(text, "docs", "documentation", "\u6587\u6863")) {
+        if (containsAny(text, "docs", "documentation", "文档")) {
             return "docs";
         }
-        if (containsAny(text, "release", "changelog", "\u66f4\u65b0", "\u53d1\u5e03")) {
+        if (containsAny(text, "release", "changelog", "更新", "发布")) {
             return "release";
+        }
+        // Extended dimensions: Chinese dimension names used by users map to canonical English names,
+        // matching ResearchCoverageService.inferDimension() for consistency.
+        if (containsAny(text, "代码", "生成", "编程", "编码", "补全", "code", "generation", "coding", "completion")) {
+            return "code_generation";
+        }
+        if (containsAny(text, "工作流", "agent", "智能体", "workflow", "multi-agent")) {
+            return "agent_workflow";
+        }
+        if (containsAny(text, "ide", "终端", "terminal", "编辑器", "editor", "集成开发")) {
+            return "ide_integration";
+        }
+        if (containsAny(text, "上下文", "context", "memory", "记忆", "窗口", "window")) {
+            return "context_management";
+        }
+        if (containsAny(text, "团队", "协作", "collaboration", "team", "协同", "多人")) {
+            return "team_collaboration";
+        }
+        if (containsAny(text, "功能", "feature", "特性")) {
+            return "features";
         }
         return "public_search";
     }
@@ -1348,7 +1401,7 @@ public class SourceCollectionService {
                 if (competitorAdded >= Math.max(1, acceptedSourceBudget(run, candidate))) {
                     continue;
                 }
-                if (shouldSkipSearchCandidate(candidate)) {
+                if (shouldSkipSearchCandidate(candidate, run)) {
                     log.debug("Search candidate skipped before fetch: candidateId={}, url={}, sourceType={}, reason=low_value_or_unfetchable_candidate",
                             candidate.id(),
                             candidate.url(),
@@ -1378,16 +1431,29 @@ public class SourceCollectionService {
                 }
                 String citationKey = "S" + nextIndex;
                 source.setCitationKey(citationKey);
+                // Tag evidence source with competitor and dimension from search candidate context.
+                // This replaces fragile text matching in ResearchCoverageService with structured
+                // metadata captured at collection time, so coverage gap computation works correctly
+                // regardless of the language used in dimension names or evidence content.
+                if (StringUtils.hasText(candidate.competitor())) {
+                    source.setCoveredCompetitors(new ArrayList<>(List.of(candidate.competitor())));
+                }
+                String inferredDim = inferSubtaskDimension(List.of(
+                        candidate.query() != null ? candidate.query() : ""));
+                if (StringUtils.hasText(inferredDim)) {
+                    source.setCoveredDimensions(new ArrayList<>(List.of(inferredDim)));
+                }
                 sources.add(source);
                 nextIndex++;
                 added++;
                 addedByCompetitor.put(competitorKey, competitorAdded + 1);
                 acceptedByCompetitor.merge(competitorKey, 1, Integer::sum);
-                log.info("Search candidate promoted to fetched evidence: citationKey={}, candidateId={}, url={}, competitor={}, selectionMode={}",
+                log.info("Search candidate promoted to fetched evidence: citationKey={}, candidateId={}, url={}, competitor={}, dimension={}, selectionMode={}",
                         citationKey,
                         candidate.id(),
                         source.getUrl(),
                         candidate.competitor(),
+                        inferredDim,
                         selectionMode);
             }
         }
@@ -1488,7 +1554,7 @@ public class SourceCollectionService {
         return false;
     }
 
-    private boolean shouldSkipSearchCandidate(SearchCandidate candidate) {
+    private boolean shouldSkipSearchCandidate(SearchCandidate candidate, AnalysisRun run) {
         if (candidate == null) {
             return true;
         }
@@ -1496,7 +1562,8 @@ public class SourceCollectionService {
         String searchable = normalizeText(candidate.title() + " " + candidate.url() + " " + candidate.snippet());
         return SEARCH_DERIVED_REJECTED_TYPES.contains(sourceType)
                 || isUnavailableRegionText(searchable)
-                || shouldSkipOfficialCandidateUrl(candidate.url());
+                || shouldSkipOfficialCandidateUrl(candidate.url())
+                || isUrlExcluded(candidate.url(), run);
     }
 
     private EvidenceSource fromSearchResult(String citationKey, SearchResult result) {

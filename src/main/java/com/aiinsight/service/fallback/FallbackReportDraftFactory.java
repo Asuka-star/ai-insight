@@ -1,8 +1,6 @@
 package com.aiinsight.service.fallback;
 
-import com.aiinsight.model.enums.ArtifactType;
 import com.aiinsight.model.enums.ConfidenceLevel;
-import com.aiinsight.model.run.AnalysisArtifact;
 import com.aiinsight.model.run.AnalysisRun;
 import com.aiinsight.model.schema.AnalysisClaim;
 import org.springframework.stereotype.Component;
@@ -69,8 +67,8 @@ public class FallbackReportDraftFactory {
                 firstCitation,
                 priorityTable,
                 claimSummary,
-                latestArtifact(run, ArtifactType.COMPETITIVE_MATRIX),
-                latestArtifact(run, ArtifactType.SWOT_ANALYSIS),
+                matrixFallback(run),
+                swotFallback(run),
                 evidenceGap
         );
     }
@@ -126,14 +124,29 @@ public class FallbackReportDraftFactory {
         return value.substring(0, maxChars) + "...";
     }
 
-    private String latestArtifact(AnalysisRun run, ArtifactType type) {
-        List<AnalysisArtifact> artifacts = run.getArtifacts();
-        for (int i = artifacts.size() - 1; i >= 0; i--) {
-            AnalysisArtifact artifact = artifacts.get(i);
-            if (artifact.getType() == type) {
-                return artifact.getContent();
-            }
+    // 矩阵和 SWOT 不再由 Analyst 预生成，fallback 时从 claims 中简单提取摘要。
+    private String matrixFallback(AnalysisRun run) {
+        if (run.getClaims().isEmpty()) {
+            return "暂无竞品矩阵数据，需 LLM 生成完整报告。";
         }
-        return "暂无 " + type + " 产物。";
+        return run.getClaims().stream()
+                .filter(c -> c.getDimension() != null && !c.getDimension().isBlank())
+                .limit(5)
+                .map(c -> "- %s: %s [%s]".formatted(
+                        c.getDimension(),
+                        abbreviate(c.getContent(), 60),
+                        c.getEvidenceIds().isEmpty() ? "待补证" : c.getEvidenceIds().get(0)))
+                .collect(Collectors.joining("\n"));
+    }
+
+    private String swotFallback(AnalysisRun run) {
+        if (run.getClaims().isEmpty()) {
+            return "暂无 SWOT 数据，需 LLM 生成完整报告。";
+        }
+        return run.getClaims().stream()
+                .filter(c -> c.getType() != null)
+                .limit(4)
+                .map(c -> "- [%s] %s".formatted(c.getType(), abbreviate(c.getContent(), 60)))
+                .collect(Collectors.joining("\n"));
     }
 }

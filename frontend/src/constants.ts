@@ -33,8 +33,6 @@ export const ARTIFACT_LABELS: Record<ArtifactType, string> = {
   RESEARCH_PLAN: "调研计划",
   FACT_EXTRACTION: "事实抽取",
   COMPETITOR_PROFILE: "竞品 结构化信息",
-  COMPETITIVE_MATRIX: "横向矩阵",
-  SWOT_ANALYSIS: "SWOT 分析",
   REPORT_DRAFT: "报告草稿",
   REVIEW_FINDINGS: "复核结果",
   FINALIZATION_NOTE: "封版说明",

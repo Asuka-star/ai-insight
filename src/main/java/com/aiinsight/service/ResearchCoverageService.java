@@ -13,6 +13,7 @@ import com.aiinsight.model.schema.ResearchRepairTarget;
 import com.aiinsight.model.schema.ResearchSubtask;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
+import lombok.extern.slf4j.Slf4j;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -25,6 +26,7 @@ import java.util.UUID;
 import java.util.stream.Collectors;
 
 @Service
+@Slf4j
 public class ResearchCoverageService {
 
     public void refreshCoverage(AnalysisRun run) {
@@ -89,8 +91,19 @@ public class ResearchCoverageService {
 
     private List<ResearchCoverageGap> coverageGaps(AnalysisRun run, ResearchCollectionPlan plan) {
         List<ResearchCoverageGap> gaps = new ArrayList<>();
-        for (String competitor : competitors(run, plan)) {
-            for (String dimension : dimensions(run, plan)) {
+        List<String> competitorList = competitors(run, plan);
+        List<String> dimensionList = dimensions(run, plan);
+        int totalSources = run.getEvidenceSources().size();
+        long taggedCompetitorCount = run.getEvidenceSources().stream()
+                .filter(s -> s.getCoveredCompetitors() != null && !s.getCoveredCompetitors().isEmpty())
+                .count();
+        long taggedDimensionCount = run.getEvidenceSources().stream()
+                .filter(s -> s.getCoveredDimensions() != null && !s.getCoveredDimensions().isEmpty())
+                .count();
+        log.info("Coverage gap computation: runId={}, totalEvidenceSources={}, taggedWithCompetitor={}, taggedWithDimension={}, competitors={}, dimensions={}",
+                run.getId(), totalSources, taggedCompetitorCount, taggedDimensionCount, competitorList, dimensionList);
+        for (String competitor : competitorList) {
+            for (String dimension : dimensionList) {
                 int required = requiredEvidenceCount(run, plan, competitor, dimension);
                 int existing = acceptedEvidenceCount(run, competitor, dimension);
                 Set<String> missingSourceTypes = missingSourceTypes(run, competitor, dimension);
@@ -98,7 +111,15 @@ public class ResearchCoverageService {
                 if (subtask != null && subtask.getAcceptedEvidenceCount() > 0) {
                     existing = Math.max(existing, subtask.getAcceptedEvidenceCount());
                 }
-                if (existing >= required && missingSourceTypes.isEmpty()) {
+                log.debug("Coverage gap detail: runId={}, competitor={}, dimension={}, required={}, existing={}, " +
+                                "missingSourceTypes={}, subtaskAccepted={}",
+                        run.getId(), competitor, dimension, required, existing,
+                        missingSourceTypes, subtask != null ? subtask.getAcceptedEvidenceCount() : 0);
+                // A gap exists only when evidence count is insufficient. Missing source types
+                // are supplementary diagnostic info — they should NOT independently trigger a gap,
+                // because sourcePreferences() returns nice-to-have types (e.g., "official_site")
+                // that are not strict requirements when sufficient evidence already exists.
+                if (existing >= required) {
                     continue;
                 }
                 ResearchCoverageGap gap = new ResearchCoverageGap();
@@ -108,11 +129,13 @@ public class ResearchCoverageService {
                 gap.setExistingEvidenceCount(existing);
                 gap.setRequiredEvidenceCount(required);
                 gap.setMissingSourceTypes(new ArrayList<>(missingSourceTypes));
-                gap.setRepairRecommended(existing < required || !missingSourceTypes.isEmpty());
+                gap.setRepairRecommended(true);
                 gap.setReason(gapReason(existing, required, missingSourceTypes));
                 gaps.add(gap);
             }
         }
+        log.info("Coverage gap result: runId={}, totalGaps={}, pairsChecked={}",
+                run.getId(), gaps.size(), competitorList.size() * dimensionList.size());
         return gaps;
     }
 
@@ -236,15 +259,14 @@ public class ResearchCoverageService {
     }
 
     private Set<String> missingSourceTypes(AnalysisRun run, String competitor, String dimension) {
-        Set<String> expected = new LinkedHashSet<>();
-        AnalysisRequirement requirement = run.getRequirement();
-        if (requirement != null && !nullToEmpty(requirement.getSourcePreferences()).isEmpty()) {
-            expected.addAll(requirement.getSourcePreferences());
-        } else {
-            expected.addAll(sourcePreferences(dimension, List.of()));
-        }
+        // Always use dimension-specific source preferences. Previously, when the requirement
+        // specified sourcePreferences, they were applied uniformly to ALL dimensions — causing
+        // every (competitor × dimension) pair to report the same missingSourceTypes, which
+        // prevented coverage gaps from ever closing.
+        Set<String> expected = new LinkedHashSet<>(sourcePreferences(dimension, List.of()));
         Set<String> existing = run.getEvidenceSources().stream()
                 .filter(source -> sourceMatchesCompetitor(source, competitor))
+                .filter(source -> sourceMatchesDimension(source, dimension))
                 .map(EvidenceSource::getSourceType)
                 .filter(StringUtils::hasText)
                 .map(this::normalizeSourceType)
@@ -265,6 +287,12 @@ public class ResearchCoverageService {
         if (!StringUtils.hasText(competitor)) {
             return true;
         }
+        // Tag-first: if source was tagged with competitor metadata at collection time, use it.
+        List<String> tags = source.getCoveredCompetitors();
+        if (tags != null && !tags.isEmpty()) {
+            return tags.stream().anyMatch(tag -> same(tag, competitor));
+        }
+        // Fallback: text matching for untagged sources (user-provided evidence, legacy data).
         String text = "%s %s %s %s".formatted(source.getTitle(), source.getUrl(), source.getSnippet(), source.getRawText());
         return contains(text, competitor);
     }
@@ -273,6 +301,12 @@ public class ResearchCoverageService {
         if (!StringUtils.hasText(dimension) || "public_search".equals(normalize(dimension))) {
             return true;
         }
+        // Tag-first: if source was tagged with dimension metadata at collection time, use it.
+        List<String> tags = source.getCoveredDimensions();
+        if (tags != null && !tags.isEmpty()) {
+            return tags.stream().anyMatch(tag -> same(tag, dimension));
+        }
+        // Fallback: text matching for untagged sources (user-provided evidence, legacy data).
         String normalized = normalize(dimension);
         String sourceType = normalizeSourceType(source.getSourceType());
         if (sourceType.contains(normalized) || normalized.contains(sourceType)) {
@@ -303,7 +337,7 @@ public class ResearchCoverageService {
         if (containsAny(normalized, "pricing", "price", "plans", "价格", "定价", "商业模式")) {
             return "pricing";
         }
-        if (containsAny(normalized, "review", "feedback", "评价", "反馈", "用户")) {
+        if (containsAny(normalized, "review", "feedback", "评价", "反馈", "用户", "口碑")) {
             return "reviews";
         }
         if (containsAny(normalized, "security", "permission", "compliance", "安全", "权限", "合规")) {
@@ -317,6 +351,27 @@ public class ResearchCoverageService {
         }
         if (containsAny(normalized, "release", "changelog", "更新", "发布")) {
             return "release";
+        }
+        // 扩展维度归一化：用户指定的中文维度名必须映射为英文规范名，
+        // 否则 sourceMatchesDimension / sourcePreferences / dimensionTerms 全部失效，
+        // 导致 coverageGaps 永远等于 competitors × dimensions 的笛卡尔积。
+        if (containsAny(normalized, "代码", "生成", "编程", "编码", "补全", "code", "generation", "coding", "completion")) {
+            return "code_generation";
+        }
+        if (containsAny(normalized, "工作流", "agent", "智能体", "workflow", "multi-agent")) {
+            return "agent_workflow";
+        }
+        if (containsAny(normalized, "ide", "终端", "terminal", "编辑器", "editor", "集成")) {
+            return "ide_integration";
+        }
+        if (containsAny(normalized, "上下文", "context", "memory", "记忆", "窗口", "window")) {
+            return "context_management";
+        }
+        if (containsAny(normalized, "团队", "协作", "collaboration", "team", "协同", "多人")) {
+            return "team_collaboration";
+        }
+        if (containsAny(normalized, "功能", "feature", "特性", "能力", "capability")) {
+            return "features";
         }
         return StringUtils.hasText(text) ? text.trim() : "public_search";
     }
@@ -342,6 +397,11 @@ public class ResearchCoverageService {
         } else if (containsAny(normalized, "release", "changelog", "发布", "更新")) {
             preferences.add("release_notes");
             preferences.add("official_site");
+        } else if (containsAny(normalized, "code_generation", "agent_workflow", "ide_integration",
+                "context_management", "team_collaboration", "features")) {
+            // 产品功能/技术维度：优先官方站点和产品文档
+            preferences.add("official_site");
+            preferences.add("product_docs");
         } else {
             preferences.add("official_site");
             preferences.add("product_docs");
@@ -406,6 +466,24 @@ public class ResearchCoverageService {
         }
         if (containsAny(normalized, "security", "permission")) {
             return List.of("security", "permission", "compliance", "安全", "权限");
+        }
+        if (containsAny(normalized, "code_generation")) {
+            return List.of("code", "generation", "coding", "completion", "programming", "AI coding", "代码");
+        }
+        if (containsAny(normalized, "agent_workflow")) {
+            return List.of("agent", "workflow", "multi-agent", "autonomous", "工作流");
+        }
+        if (containsAny(normalized, "ide_integration")) {
+            return List.of("IDE", "terminal", "editor", "VS Code", "integration", "终端", "编辑器");
+        }
+        if (containsAny(normalized, "context_management")) {
+            return List.of("context", "memory", "conversation", "window", "上下文");
+        }
+        if (containsAny(normalized, "team_collaboration")) {
+            return List.of("team", "collaboration", "multiplayer", "shared", "协作", "团队");
+        }
+        if (containsAny(normalized, "features")) {
+            return List.of("feature", "capability", "function", "功能", "特性");
         }
         return List.of(dimension);
     }

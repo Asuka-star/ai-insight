@@ -16,6 +16,7 @@ import static com.aiinsight.util.AgentUtils.CITATION_PATTERN;
 import static com.aiinsight.util.AgentUtils.nullToEmpty;
 
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
@@ -26,6 +27,27 @@ import java.util.stream.Collectors;
 
 @Component
 public class CitationCoverageEvaluator {
+
+    // 维度名 → 同义词/关键词别名：用于确定性维度覆盖校验。
+    // 每个条目包含英文规范名、中文别名和功能关键词，保证报告文本至少命中其中一个。
+    private static final Map<String, List<String>> DIMENSION_ALIASES = new LinkedHashMap<>();
+    static {
+        DIMENSION_ALIASES.put("pricing", List.of("pricing", "price", "plans", "价格", "定价", "商业模式", "付费", "套餐"));
+        DIMENSION_ALIASES.put("reviews", List.of("review", "feedback", "评价", "反馈", "用户口碑", "用户体验"));
+        DIMENSION_ALIASES.put("security", List.of("security", "permission", "compliance", "安全", "权限", "合规"));
+        DIMENSION_ALIASES.put("customers", List.of("customer", "case", "客户", "案例"));
+        DIMENSION_ALIASES.put("code_generation", List.of("代码", "生成", "编程", "编码", "补全", "code generation", "coding", "completion"));
+        DIMENSION_ALIASES.put("agent_workflow", List.of("工作流", "agent", "智能体", "workflow", "multi-agent"));
+        DIMENSION_ALIASES.put("ide_integration", List.of("ide", "终端", "terminal", "编辑器", "editor", "集成开发"));
+        DIMENSION_ALIASES.put("context_management", List.of("上下文", "context", "memory", "记忆", "窗口", "window", "上下文管理"));
+        DIMENSION_ALIASES.put("team_collaboration", List.of("团队", "协作", "collaboration", "team", "协同", "多人"));
+        DIMENSION_ALIASES.put("features", List.of("功能", "feature", "特性", "能力", "capability"));
+        // 通用分析维度：产品定位、优劣势、机会点、风险提示等常见中文分析维度
+        DIMENSION_ALIASES.put("positioning", List.of("定位", "positioning", "产品定位", "市场定位", "差异化"));
+        DIMENSION_ALIASES.put("strengths_weaknesses", List.of("优势", "劣势", "强项", "弱项", "优劣势", "strength", "weakness", "pros", "cons"));
+        DIMENSION_ALIASES.put("opportunities", List.of("机会", "机遇", "机会点", "opportunity", "增长点"));
+        DIMENSION_ALIASES.put("risks", List.of("风险", "威胁", "风险提示", "risk", "threat", "挑战", "隐患"));
+    }
 
     public List<ReviewFinding> evaluate(String reportContent) {
         return evaluate(reportContent, null);
@@ -52,6 +74,69 @@ public class CitationCoverageEvaluator {
             findings.addAll(validateStructuredClaims(run));
         }
         return findings;
+    }
+
+    // 确定性维度覆盖校验：对用户指定的每个分析维度，检查报告文本是否包含该维度的关键词。
+    // 替代纯 LLM 检测 report_dimension_coverage_gap 的非确定性方式。
+    public List<ReviewFinding> evaluateDimensionCoverage(String reportContent, AnalysisRun run) {
+        List<ReviewFinding> findings = new ArrayList<>();
+        if (run == null || run.getRequirement() == null || !StringUtils.hasText(reportContent)) {
+            return findings;
+        }
+        List<String> dimensions = run.getRequirement().getDimensions();
+        if (dimensions == null || dimensions.isEmpty()) {
+            return findings;
+        }
+        String reportLower = reportContent.toLowerCase(Locale.ROOT);
+        for (String dimension : dimensions) {
+            if (!StringUtils.hasText(dimension) || "public_search".equals(dimension.trim())) {
+                continue;
+            }
+            Set<String> keywords = keywordsForDimension(dimension);
+            boolean found = false;
+            for (String keyword : keywords) {
+                if (reportLower.contains(keyword.toLowerCase(Locale.ROOT))) {
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) {
+                findings.add(new ReviewFinding(
+                        ReviewSeverity.HIGH,
+                        "report_dimension_coverage_gap",
+                        "用户指定的'%s'维度在报告中未被明确覆盖，关键洞察、建议优先级或风险清单中均未讨论此维度。".formatted(dimension),
+                        "在报告中新增对'%s'维度的讨论，或在风险与证据缺口部分注明该维度证据不足。".formatted(dimension)
+                ));
+            }
+        }
+        return findings;
+    }
+
+    // 为给定维度收集所有匹配关键词：包括原始维度名和 DIMENSION_ALIASES 中的同义词组。
+    private Set<String> keywordsForDimension(String dimension) {
+        Set<String> keywords = new LinkedHashSet<>();
+        // 原始维度名始终作为关键词（保证直接匹配中文维度名如"上下文管理"）
+        keywords.add(dimension.trim());
+        String dimNorm = normalizeLower(dimension);
+        // 用规范名直接查找
+        List<String> direct = DIMENSION_ALIASES.get(dimNorm);
+        if (direct != null) {
+            keywords.addAll(direct);
+        }
+        // 反向查找：如果维度文本包含某组的任一关键词，则纳入该组全部关键词
+        for (Map.Entry<String, List<String>> entry : DIMENSION_ALIASES.entrySet()) {
+            if (entry.getKey().equals(dimNorm)) {
+                continue; // 已经直接添加过了
+            }
+            for (String alias : entry.getValue()) {
+                if (dimNorm.contains(alias.toLowerCase(Locale.ROOT))
+                        || alias.toLowerCase(Locale.ROOT).contains(dimNorm)) {
+                    keywords.addAll(entry.getValue());
+                    break;
+                }
+            }
+        }
+        return keywords;
     }
 
     private String sectionHeading(String paragraph) {

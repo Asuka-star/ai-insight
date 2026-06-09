@@ -107,17 +107,25 @@ public class ReviewerNode implements AgentNode {
     public AnalysisRun execute(AnalysisRun run) {
         AnalysisArtifact draft = latestArtifact(run.getArtifacts(), ArtifactType.REPORT_DRAFT).orElse(null);
         ReviewDecision previousDecision = run.getReviewDecision();
+        // 保存上一轮 findings 用于增量质检：解决 LLM Reviewer 注意力漂移导致的质检震荡问题。
+        // 上一轮 findings 会注入 LLM 子任务 Prompt，让模型不再重复报告已修复通过的问题。
+        List<ReviewFinding> previousFindings = previousDecision != null
+                && previousDecision.getAction() != ReviewAction.PASS
+                ? List.copyOf(run.getReviewFindings())
+                : List.of();
         run.getReviewFindings().clear();
         if (draft != null) {
             // 结构完整性结果进入 finding；证据是否真正支撑结论由 LLM 子任务判断。
             run.getReviewFindings().addAll(citationCoverageEvaluator.evaluate(draft.getContent(), run));
+            // 确定性维度覆盖校验：不依赖 LLM 判断用户指定维度是否在报告中被覆盖。
+            run.getReviewFindings().addAll(citationCoverageEvaluator.evaluateDimensionCoverage(draft.getContent(), run));
             enrichFindingLocations(run, draft);
         }
         String semanticReviewContent = "";
         boolean deterministicFallback = false;
         if (llmClient.isAvailable() && draft != null) {
             try {
-                semanticReviewContent = reviewWithLlm(run, draft);
+                semanticReviewContent = reviewWithLlm(run, draft, previousDecision, previousFindings);
                 enrichFindingLocations(run, draft);
             } catch (RuntimeException ex) {
                 log.warn("Reviewer fallback activated: runId={}, reason=llm_exception, exceptionType={}, message={}, draftId={}, evidenceSources={}, claims={}, ruleFindings={}",
@@ -143,6 +151,7 @@ public class ReviewerNode implements AgentNode {
         }
         applyRepairVerificationScope(run, previousDecision);
         assignFindingTargetAgents(run);
+        populateExcludedSourceUrls(run);
         run.setReviewDecision(buildDecision(run));
         researchCoverageService.enrichRepairTasks(run);
         researchCoverageService.refreshRepairTargets(run);
@@ -187,6 +196,33 @@ public class ReviewerNode implements AgentNode {
             if (finding.getTargetAgent() == null) {
                 finding.setTargetAgent(targetAgentForFinding(finding));
             }
+        }
+    }
+
+    // 将 low_quality_source finding 对应的证据源 URL 追加到排除列表，
+    // Researcher 下次重新采集时会跳过这些地址，避免同一低质量源反复出现。
+    private void populateExcludedSourceUrls(AnalysisRun run) {
+        int previousSize = run.getExcludedSourceUrls() != null ? run.getExcludedSourceUrls().size() : 0;
+        Set<String> excluded = new LinkedHashSet<>(
+                run.getExcludedSourceUrls() != null ? run.getExcludedSourceUrls() : List.of());
+        for (ReviewFinding finding : run.getReviewFindings()) {
+            String category = finding.getCategory() != null ? finding.getCategory() : "";
+            if (!category.contains("low_quality_source")) {
+                continue;
+            }
+            String citationKey = finding.getCitationKey();
+            if (!StringUtils.hasText(citationKey)) {
+                continue;
+            }
+            run.getEvidenceSources().stream()
+                    .filter(s -> citationKey.equals(s.getCitationKey()))
+                    .filter(s -> StringUtils.hasText(s.getUrl()))
+                    .forEach(s -> excluded.add(s.getUrl()));
+        }
+        run.setExcludedSourceUrls(new ArrayList<>(excluded));
+        if (!excluded.isEmpty()) {
+            log.info("populateExcludedSourceUrls: runId={}, totalExcluded={}, newThisRound={}",
+                    run.getId(), excluded.size(), excluded.size() - previousSize);
         }
     }
 
@@ -569,6 +605,18 @@ public class ReviewerNode implements AgentNode {
             decision.setRequiredEvidenceTypes(repairEvidenceTypesForEscalation(run));
             return;
         }
+        if (shouldEscalateToResearcherForPersistentGaps(run, blockingFindings)) {
+            List<String> missing = run.getResearchPackage().getMissingEvidenceTypes();
+            List<String> autoTypes = autoCollectableEvidenceTypes(missing);
+            int currentGaps = run.getResearchPackage().getResearchCollectionPlan().getCoverageGaps().size();
+            decision.setAction(ReviewAction.RECOLLECT_EVIDENCE);
+            decision.setTargetAgent(AgentName.RESEARCHER);
+            decision.setReason("多轮重跑后证据缺口（coverageGaps=%d）始终未缩小，证据池未变化；阻断问题的根因是证据不足而非分析或表达层，需要先重跑 Researcher 补采证据，否则 Analyst/Writer 的反复修订无法收敛。".formatted(
+                    currentGaps));
+            decision.setRequiredEvidenceTypes(autoTypes.isEmpty()
+                    ? repairEvidenceTypesForEscalation(run) : autoTypes);
+            return;
+        }
         if (shouldEscalateAnalystRepairToExtractor(run, blockingFindings)) {
             decision.setAction(ReviewAction.REWORK_ANALYSIS);
             decision.setTargetAgent(AgentName.EXTRACTOR);
@@ -650,6 +698,48 @@ public class ReviewerNode implements AgentNode {
                 && delta.findingsDidNotImprove(run.getReviewFindings().size())
                 && delta.evidenceUnchanged()
                 && blockingFindings.stream().anyMatch(this::needsExtractionRework);
+    }
+
+    /**
+     * 通用证据缺口升级：只要 coverageGaps 持续不缩小且有阻断问题，就升级到 Researcher。
+     *
+     * 为什么不再检查 evidenceUnchanged：
+     * 在级联重跑（Researcher→Extractor→Analyst→Writer→Reviewer）中，lastReviewRepairDelta
+     * 会被每个 Agent 依次覆盖。当 Reviewer 执行时，delta 属于 Writer，Writer 不修改证据，
+     * 所以 evidenceUnchanged 永远为 true。这导致即使 Researcher 实际刷新了证据，升级检查也可能
+     * 误判。改为直接依赖 coverageGaps 是否缩小来判断 Researcher 补采是否有效。
+     */
+    private boolean shouldEscalateToResearcherForPersistentGaps(AnalysisRun run, List<ReviewFinding> blockingFindings) {
+        ReviewRepairDelta delta = run.getLastReviewRepairDelta();
+        if (delta == null) {
+            log.debug("shouldEscalateToResearcherForPersistentGaps: no previous delta, skipping");
+            return false;
+        }
+        if (blockingFindings.isEmpty()) {
+            log.debug("shouldEscalateToResearcherForPersistentGaps: no blocking findings, skipping");
+            return false;
+        }
+        int gapsBefore = delta.getCoverageGapsBefore();
+        int gapsAfter = delta.getCoverageGapsAfter();
+        boolean gapsPersistent = gapsBefore > 0 && gapsAfter >= gapsBefore;
+        // 关键修正：即使历史 delta 显示 gap 持续，也要检查当前实际 gap 数。
+        // 在手动级联重跑中，delta 来自上一轮 Reviewer（旧数据），但 Researcher 可能
+        // 已经在本轮补采了证据，当前 coverage gaps 可能已经降为 0。
+        int currentGaps = 0;
+        if (run.getResearchPackage() != null
+                && run.getResearchPackage().getResearchCollectionPlan() != null
+                && run.getResearchPackage().getResearchCollectionPlan().getCoverageGaps() != null) {
+            currentGaps = run.getResearchPackage().getResearchCollectionPlan().getCoverageGaps().size();
+        }
+        boolean gapsStillPresent = currentGaps > 0;
+        boolean result = gapsPersistent && gapsStillPresent;
+        boolean evidenceChanged = !delta.evidenceUnchanged();
+        log.info("shouldEscalateToResearcherForPersistentGaps: runId={}, deltaAgent={}, gapsBefore={}, gapsAfter={}, " +
+                        "currentGaps={}, evidenceUnchanged={}, blockingFindings={}, gapsPersistent={}, gapsStillPresent={}, result={}",
+                run.getId(), delta.getAgentName(), gapsBefore, gapsAfter,
+                currentGaps, delta.evidenceUnchanged(), blockingFindings.size(),
+                gapsPersistent, gapsStillPresent, result);
+        return result;
     }
 
     private boolean allowsRepeatedRepairEscalation(AnalysisRun run, AgentName agentName) {
@@ -855,21 +945,23 @@ public class ReviewerNode implements AgentNode {
         return "质检问题";
     }
 
-    private String reviewWithLlm(AnalysisRun run, AnalysisArtifact draft) {
+    private String reviewWithLlm(AnalysisRun run, AnalysisArtifact draft,
+                                  ReviewDecision previousDecision, List<ReviewFinding> previousFindings) {
+        String previousContext = previousReviewContextBlock(previousDecision, previousFindings);
         CompletableFuture<LlmSubtaskResult<?>> claimEvidenceTask = CompletableFuture.supplyAsync(
-                AgentTraceContext.wrap(() -> LlmSubtaskSupport.runSubtask("Reviewer", "claim-evidence", () -> reviewClaimEvidenceWithLlm(run)))
+                AgentTraceContext.wrap(() -> LlmSubtaskSupport.runSubtask("Reviewer", "claim-evidence", () -> reviewClaimEvidenceWithLlm(run, previousContext)))
         );
         CompletableFuture<LlmSubtaskResult<?>> reportOverclaimTask = CompletableFuture.supplyAsync(
-                AgentTraceContext.wrap(() -> LlmSubtaskSupport.runSubtask("Reviewer", "report-overclaim", () -> reviewReportOverclaimWithLlm(run, draft)))
+                AgentTraceContext.wrap(() -> LlmSubtaskSupport.runSubtask("Reviewer", "report-overclaim", () -> reviewReportOverclaimWithLlm(run, draft, previousContext)))
         );
         CompletableFuture<LlmSubtaskResult<?>> schemaConsistencyTask = CompletableFuture.supplyAsync(
-                AgentTraceContext.wrap(() -> LlmSubtaskSupport.runSubtask("Reviewer", "schema-consistency", () -> reviewSchemaConsistencyWithLlm(run)))
+                AgentTraceContext.wrap(() -> LlmSubtaskSupport.runSubtask("Reviewer", "schema-consistency", () -> reviewSchemaConsistencyWithLlm(run, previousContext)))
         );
         CompletableFuture<LlmSubtaskResult<?>> sourceQualityTask = CompletableFuture.supplyAsync(
-                AgentTraceContext.wrap(() -> LlmSubtaskSupport.runSubtask("Reviewer", "source-quality", () -> reviewSourceQualityWithLlm(run)))
+                AgentTraceContext.wrap(() -> LlmSubtaskSupport.runSubtask("Reviewer", "source-quality", () -> reviewSourceQualityWithLlm(run, previousContext)))
         );
         CompletableFuture<LlmSubtaskResult<?>> reportActionabilityTask = CompletableFuture.supplyAsync(
-                AgentTraceContext.wrap(() -> LlmSubtaskSupport.runSubtask("Reviewer", "report-actionability", () -> reviewReportActionabilityWithLlm(run, draft)))
+                AgentTraceContext.wrap(() -> LlmSubtaskSupport.runSubtask("Reviewer", "report-actionability", () -> reviewReportActionabilityWithLlm(run, draft, previousContext)))
         );
         CompletableFuture.allOf(claimEvidenceTask, reportOverclaimTask, schemaConsistencyTask, sourceQualityTask, reportActionabilityTask).join();
 
@@ -923,7 +1015,7 @@ public class ReviewerNode implements AgentNode {
                 .anyMatch(category -> category.contains("source") || category.contains("citation") || category.contains("evidence"));
     }
 
-    private LlmReviewResult reviewClaimEvidenceWithLlm(AnalysisRun run) {
+    private LlmReviewResult reviewClaimEvidenceWithLlm(AnalysisRun run, String previousContext) {
         String prompt = """
                 你是竞品分析工作流中的 claim-evidence Reviewer。请只检查结构化 claim 是否被 evidenceIds 真正支撑。
 
@@ -942,14 +1034,17 @@ public class ReviewerNode implements AgentNode {
 
                 结构完整性检查摘要:
                 %s
+
+                %s
                 """.formatted(
                 claimEvidencePairs(run),
-                compactRuleFindings(run)
+                compactRuleFindings(run),
+                previousContext
         );
         return completeReviewSubtask("claim-evidence", prompt);
     }
 
-    private LlmReviewResult reviewReportOverclaimWithLlm(AnalysisRun run, AnalysisArtifact draft) {
+    private LlmReviewResult reviewReportOverclaimWithLlm(AnalysisRun run, AnalysisArtifact draft, String previousContext) {
         // 缺引用是否成立交给 LLM 做语义判断：规则只负责已有引用的支撑关系，避免把过渡句/导语误判成问题。
         String prompt = """
                 你是竞品分析工作流中的 report-overclaim Reviewer。请只检查报告是否把证据推断得过强、结论是否越过证据边界。
@@ -972,15 +1067,18 @@ public class ReviewerNode implements AgentNode {
 
                 结构化 Claims:
                 %s
+
+                %s
                 """.formatted(
                 reportParagraphReviewBlock(draft),
                 compactEvidenceBlock(run, draft),
-                compactClaimsBlock(run)
+                compactClaimsBlock(run),
+                previousContext
         );
         return completeReviewSubtask("report-overclaim", prompt);
     }
 
-    private LlmReviewResult reviewSchemaConsistencyWithLlm(AnalysisRun run) {
+    private LlmReviewResult reviewSchemaConsistencyWithLlm(AnalysisRun run, String previousContext) {
         String prompt = """
                 你是竞品分析工作流中的 schema-consistency Reviewer。请检查竞品画像、claims、矩阵和 SWOT 是否互相矛盾。
 
@@ -1001,15 +1099,18 @@ public class ReviewerNode implements AgentNode {
 
                 矩阵与 SWOT:
                 %s
+
+                %s
                 """.formatted(
                 compactProfileBlock(run),
                 compactClaimsBlock(run),
-                compactAnalysisArtifacts(run)
+                compactAnalysisArtifacts(run),
+                previousContext
         );
         return completeReviewSubtask("schema-consistency", prompt);
     }
 
-    private LlmReviewResult reviewSourceQualityWithLlm(AnalysisRun run) {
+    private LlmReviewResult reviewSourceQualityWithLlm(AnalysisRun run, String previousContext) {
         String prompt = """
                 你是竞品分析工作流中的 source-quality Reviewer。请检查来源质量是否足以支撑最终报告。
 
@@ -1028,14 +1129,17 @@ public class ReviewerNode implements AgentNode {
 
                 结构完整性检查摘要:
                 %s
+
+                %s
                 """.formatted(
                 sourceQualityBlock(run),
-                compactRuleFindings(run)
+                compactRuleFindings(run),
+                previousContext
         );
         return completeReviewSubtask("source-quality", prompt);
     }
 
-    private LlmReviewResult reviewReportActionabilityWithLlm(AnalysisRun run, AnalysisArtifact draft) {
+    private LlmReviewResult reviewReportActionabilityWithLlm(AnalysisRun run, AnalysisArtifact draft, String previousContext) {
         String prompt = """
                 你是竞品分析工作流中的 report-actionability Reviewer。请检查最终报告是否真正能支持用户做竞品判断，而不是只做事实摘录。
                 输出要求:
@@ -1062,11 +1166,14 @@ public class ReviewerNode implements AgentNode {
 
                 报告关键片段:
                 %s
+
+                %s
                 """.formatted(
                 requirementSummary(run),
                 compactProfileBlock(run),
                 compactClaimsBlock(run),
-                abbreviate(draft.getContent(), 1800)
+                abbreviate(draft.getContent(), 1800),
+                previousContext
         );
         return completeReviewSubtask("report-actionability", prompt);
     }
@@ -1074,7 +1181,7 @@ public class ReviewerNode implements AgentNode {
     private LlmReviewResult completeReviewSubtask(String subtaskName, String prompt) {
         String raw = llmClient.complete(new ChatRequest(
                 List.of(
-                        ChatMessage.system("You are a fact-checking and citation-coverage Reviewer Agent. Deterministic findings only cover structural integrity such as unknown IDs; make semantic judgments yourself from the report, claims, and evidence. Only report issues that affect factual reliability, evidence support, schema consistency, or decision quality. Do not flag report scaffolding, transition sentences, section introductions, or generic action-introduction lines as missing citations."),
+                        ChatMessage.system("You are a fact-checking and citation-coverage Reviewer Agent. Deterministic findings only cover structural integrity such as unknown IDs; make semantic judgments yourself from the report, claims, and evidence. Only report issues that affect factual reliability, evidence support, schema consistency, or decision quality. Do not flag report scaffolding, transition sentences, section introductions, or generic action-introduction lines as missing citations. IMPORTANT: When previous review context is provided, focus on incremental review — do not re-report issues that were already addressed in previous rounds unless there is clear evidence the fix was incorrect or insufficient. Prioritize finding genuinely NEW issues that were not covered before."),
                         ChatMessage.user(prompt)
                 ),
                 ChatOptions.reviewer()
@@ -1370,18 +1477,9 @@ public class ReviewerNode implements AgentNode {
     }
 
     private String compactAnalysisArtifacts(AnalysisRun run) {
-        AnalysisArtifact matrix = latestArtifact(run.getArtifacts(), ArtifactType.COMPETITIVE_MATRIX).orElse(null);
-        AnalysisArtifact swot = latestArtifact(run.getArtifacts(), ArtifactType.SWOT_ANALYSIS).orElse(null);
-        return """
-                竞品矩阵:
-                %s
-
-                SWOT:
-                %s
-                """.formatted(
-                matrix == null ? "暂无矩阵 artifact。" : abbreviate(matrix.getContent(), 1200),
-                swot == null ? "暂无 SWOT artifact。" : abbreviate(swot.getContent(), 1200)
-        );
+        // 矩阵和 SWOT 现在由 Writer 直接写入报告正文，不再作为独立 artifact 存在。
+        // 报告正文（含矩阵/SWOT 章节）由 report-overclaim 和 report-actionability 子任务审阅。
+        return "矩阵和 SWOT 已合并到报告正文中，请通过报告段落审阅。";
     }
 
     private String sourceQualityBlock(AnalysisRun run) {
@@ -1422,6 +1520,79 @@ public class ReviewerNode implements AgentNode {
                         abbreviate(finding.getMessage(), 120)
                 ))
                 .collect(Collectors.joining("\n"));
+    }
+
+    /**
+     * 构建上一轮质检上下文，注入 LLM 子任务 Prompt，解决 Reviewer 注意力漂移导致的质检震荡。
+     * 核心思想：让 LLM 知道哪些问题已经报过、哪些修复任务已经下发，避免重复报告已修复的同类问题。
+     */
+    private String previousReviewContextBlock(ReviewDecision previousDecision, List<ReviewFinding> previousFindings) {
+        if (previousDecision == null || previousDecision.getAction() == ReviewAction.PASS) {
+            return "";
+        }
+        if (previousFindings.isEmpty()
+                && (previousDecision.getRepairTasks() == null || previousDecision.getRepairTasks().isEmpty())) {
+            return "";
+        }
+
+        StringBuilder sb = new StringBuilder();
+        sb.append("## 上一轮质检上下文（增量审查参考）\n\n");
+
+        // 上一轮决策摘要
+        sb.append("上一轮质检决策：%s，目标 Agent：%s\n".formatted(
+                reviewActionLabel(previousDecision.getAction()),
+                previousDecision.getTargetAgent() == null ? "无" : previousDecision.getTargetAgent().name()
+        ));
+        if (StringUtils.hasText(previousDecision.getReason())) {
+            sb.append("决策原因：%s\n".formatted(abbreviate(previousDecision.getReason(), 200)));
+        }
+
+        // 上一轮 findings 摘要（限制条数避免 prompt 过长）
+        if (!previousFindings.isEmpty()) {
+            sb.append("\n上一轮发现的问题（共 %d 条）：\n".formatted(previousFindings.size()));
+            previousFindings.stream()
+                    .limit(8)
+                    .forEach(f -> sb.append("- [%s] %s | claim=%s | citation=%s | paragraph=%s | %s\n".formatted(
+                            f.getSeverity(),
+                            textOrDash(f.getCategory()),
+                            textOrDash(f.getClaimId()),
+                            textOrDash(f.getCitationKey()),
+                            f.getParagraphIndex() == null ? "-" : f.getParagraphIndex(),
+                            abbreviate(f.getMessage(), 100)
+                    )));
+        }
+
+        // 上一轮修复任务摘要
+        List<ReviewRepairTask> tasks = previousDecision.getRepairTasks();
+        if (tasks != null && !tasks.isEmpty()) {
+            sb.append("\n上一轮下发的修复任务（共 %d 个）：\n".formatted(tasks.size()));
+            tasks.stream()
+                    .limit(6)
+                    .forEach(t -> sb.append("- [%s] %s | claim=%s | %s\n".formatted(
+                            t.getTargetAgent() == null ? "-" : t.getTargetAgent().name(),
+                            textOrDash(t.getCategory()),
+                            textOrDash(t.getClaimId()),
+                            abbreviate(t.getInstruction(), 100)
+                    )));
+        }
+
+        sb.append("\n审查指引：\n");
+        sb.append("- 以上问题已在上一轮报告过，Agent 已收到修复指令并尝试修复。\n");
+        sb.append("- 如果当前报告中同一位置、同一类别的问题仍然存在，可以再次报告，但请在 message 中说明\"修复后仍存在\"。\n");
+        sb.append("- 不要在已被修复的段落中重新发现不同类别的新问题，除非该问题确实严重且未被之前的修复覆盖。\n");
+        sb.append("- 优先发现上一轮未覆盖的新问题，而不是重复报告已知的旧问题。\n");
+
+        return sb.toString();
+    }
+
+    private String reviewActionLabel(ReviewAction action) {
+        if (action == null) return "未知";
+        return switch (action) {
+            case PASS -> "通过";
+            case RECOLLECT_EVIDENCE -> "补采证据";
+            case REWORK_ANALYSIS -> "重做分析";
+            case REVISE_REPORT -> "修订报告";
+        };
     }
 
     private String reportParagraphReviewBlock(AnalysisArtifact draft) {

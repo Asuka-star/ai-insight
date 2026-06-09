@@ -6,6 +6,8 @@ import com.aiinsight.model.run.AnalysisRequirement;
 import com.aiinsight.model.run.AnalysisRun;
 import com.aiinsight.model.run.EvidenceSource;
 import com.aiinsight.model.schema.AnalysisClaim;
+import com.aiinsight.model.schema.CompetitorProfile;
+import com.aiinsight.model.schema.PricingModel;
 import com.aiinsight.util.AgentUtils;
 
 import java.util.ArrayList;
@@ -19,6 +21,7 @@ import static com.aiinsight.agent.node.AnalysisClaimRules.PLACEMENT_NONE;
 import static com.aiinsight.agent.node.AnalysisClaimRules.PLACEMENT_VALIDATION_BACKLOG;
 import static com.aiinsight.agent.node.AnalysisClaimRules.SUPPORT_STATUS_UNVERIFIED;
 import static com.aiinsight.agent.node.AnalysisClaimRules.displayableClaim;
+import static com.aiinsight.agent.node.AnalysisClaimRules.displayableSwotClaim;
 import static com.aiinsight.agent.node.AnalysisClaimRules.matrixClaim;
 import static com.aiinsight.agent.node.AnalysisClaimRules.normalizeRecommendedPlacement;
 import static com.aiinsight.agent.node.AnalysisClaimRules.normalizeSupportStatus;
@@ -64,6 +67,10 @@ final class AnalysisProductRenderer {
     }
 
     String renderSwot(List<AnalysisClaim> claims) {
+        return renderSwot(claims, List.of());
+    }
+
+    String renderSwot(List<AnalysisClaim> claims, List<CompetitorProfile> profiles) {
         return """
                 | 维度 | 基于结构化结论的判断 | 证据 |
                 | --- | --- | --- |
@@ -72,15 +79,15 @@ final class AnalysisProductRenderer {
                 | 机会 | %s | %s |
                 | 威胁 | %s | %s |
 
-                说明：SWOT 仅由结构化结论渲染；证据不足的想法应留在证据缺口中，不作为新的 SWOT 结论。
+                说明：SWOT 优先使用结构化结论；当 claim 被过滤后降级使用画像数据。
                 """.formatted(
-                swotText(claims, ClaimType.STRENGTH, ClaimType.COMPARISON),
+                swotTextWithFallback(claims, profiles, ClaimType.STRENGTH, ClaimType.COMPARISON),
                 citationText(evidenceIdsForClaimType(claims, ClaimType.STRENGTH, ClaimType.COMPARISON)),
-                swotText(claims, ClaimType.WEAKNESS),
+                swotTextWithFallback(claims, profiles, ClaimType.WEAKNESS),
                 citationText(evidenceIdsForClaimType(claims, ClaimType.WEAKNESS)),
-                swotText(claims, ClaimType.OPPORTUNITY, ClaimType.RECOMMENDATION),
+                swotTextWithFallback(claims, profiles, ClaimType.OPPORTUNITY, ClaimType.RECOMMENDATION),
                 citationText(evidenceIdsForClaimType(claims, ClaimType.OPPORTUNITY, ClaimType.RECOMMENDATION)),
-                swotText(claims, ClaimType.RISK),
+                swotTextWithFallback(claims, profiles, ClaimType.RISK),
                 citationText(evidenceIdsForClaimType(claims, ClaimType.RISK))
         );
     }
@@ -95,6 +102,12 @@ final class AnalysisProductRenderer {
                 .limit(3)
                 .toList();
         if (relatedClaims.isEmpty()) {
+            // 没有通过 matrixClaim 过滤的 claim，尝试用画像数据做降级展示。
+            String profileFallback = competitorProfileFallback(competitor, run.getCompetitorProfiles());
+            if (hasText(profileFallback)) {
+                return "| %s | %s | 待验证 | 画像推断 |".formatted(
+                        escapeCell(competitor), escapeCell(profileFallback));
+            }
             return "| %s | 暂无可归属的结构化结论。 | LOW | 证据不足 |".formatted(escapeCell(competitor));
         }
         String summary = relatedClaims.stream()
@@ -116,6 +129,34 @@ final class AnalysisProductRenderer {
         );
     }
 
+    // 当某个竞品没有通过 matrixClaim 过滤的 claim 时，从 Extractor 画像中提取降级摘要。
+    private String competitorProfileFallback(String competitor, List<CompetitorProfile> profiles) {
+        if (profiles == null || profiles.isEmpty()) {
+            return "";
+        }
+        CompetitorProfile profile = profiles.stream()
+                .filter(p -> competitor.equalsIgnoreCase(textOrDash(p.getProductName())))
+                .findFirst()
+                .orElse(null);
+        if (profile == null) {
+            return "";
+        }
+        List<String> parts = new ArrayList<>();
+        if (hasText(profile.getPositioning())) {
+            parts.add("定位: " + profile.getPositioning());
+        }
+        if (profile.getStrengths() != null && !profile.getStrengths().isEmpty()) {
+            parts.add("优势: " + String.join("、", profile.getStrengths()));
+        }
+        if (profile.getWeaknesses() != null && !profile.getWeaknesses().isEmpty()) {
+            parts.add("弱势: " + String.join("、", profile.getWeaknesses()));
+        }
+        if (parts.isEmpty()) {
+            return "";
+        }
+        return String.join("；", parts) + "（基于画像推断，待证据确认）";
+    }
+
     private String dimensionCoverageRows(AnalysisRun run, List<AnalysisClaim> claims) {
         List<String> dimensions = run.getRequirement() == null
                 ? List.of()
@@ -125,18 +166,27 @@ final class AnalysisProductRenderer {
         if (dimensions.isEmpty()) {
             dimensions = List.of("综合判断");
         }
+        List<CompetitorProfile> profiles = run.getCompetitorProfiles() != null
+                ? run.getCompetitorProfiles() : List.of();
         return dimensions.stream()
-                .map(dimension -> dimensionCoverageRow(dimension, claims))
+                .map(dimension -> dimensionCoverageRow(dimension, claims, profiles))
                 .collect(Collectors.joining("\n"));
     }
 
-    private String dimensionCoverageRow(String dimension, List<AnalysisClaim> claims) {
+    private String dimensionCoverageRow(String dimension, List<AnalysisClaim> claims, List<CompetitorProfile> profiles) {
         List<AnalysisClaim> relatedClaims = claims.stream()
                 .filter(AnalysisClaimRules::matrixClaim)
                 .filter(claim -> claimMatchesDimension(claim, dimension))
                 .limit(2)
                 .toList();
         if (relatedClaims.isEmpty()) {
+            // 没有通过筛选的 claim，检查画像中是否有该维度的数据可做降级参考。
+            String profileSummary = dimensionProfileSummary(dimension, profiles);
+            if (hasText(profileSummary)) {
+                return "| %s | %s | 待验证 | 画像推断 |".formatted(
+                        escapeCell(dimension),
+                        escapeCell(profileSummary));
+            }
             return "| %s | 证据不足，待验证。 | LOW | 证据不足 |".formatted(escapeCell(dimension));
         }
         String summary = relatedClaims.stream()
@@ -156,6 +206,37 @@ final class AnalysisProductRenderer {
                 confidence,
                 citationText(evidenceIds)
         );
+    }
+
+    // 从 Extractor 画像中提取维度相关的降级信息，当 Analyst claim 不足以支撑矩阵行时使用。
+    // 返回非空字符串表示画像中有可参考内容，返回空字符串表示画像也没有数据。
+    private String dimensionProfileSummary(String dimension, List<CompetitorProfile> profiles) {
+        if (profiles == null || profiles.isEmpty()) {
+            return "";
+        }
+        String dimNorm = normalizeDimensionLabel(dimension).toLowerCase();
+        boolean isPricing = dimNorm.contains("pricing") || dimNorm.contains("price")
+                || dimNorm.contains("定价") || dimNorm.contains("价格");
+        boolean isTargetUsers = dimNorm.contains("target") || dimNorm.contains("user")
+                || dimNorm.contains("用户") || dimNorm.contains("客户");
+        List<String> summaries = new ArrayList<>();
+        for (CompetitorProfile profile : profiles) {
+            String product = textOrDash(profile.getProductName());
+            if (isPricing) {
+                PricingModel pricing = profile.getPricingModel();
+                if (pricing != null && hasText(pricing.getStrategySummary())) {
+                    summaries.add("%s: %s".formatted(product, pricing.getStrategySummary()));
+                } else if (pricing != null && !pricing.getPlans().isEmpty()) {
+                    summaries.add("%s: %d 个定价方案".formatted(product, pricing.getPlans().size()));
+                }
+            } else if (isTargetUsers && !profile.getTargetUsers().isEmpty()) {
+                summaries.add("%s: %s".formatted(product, String.join("、", profile.getTargetUsers())));
+            }
+        }
+        if (summaries.isEmpty()) {
+            return "";
+        }
+        return String.join("；", summaries) + "（基于画像推断，待证据确认）";
     }
 
     private boolean claimMatchesDimension(AnalysisClaim claim, String dimension) {
@@ -230,6 +311,71 @@ final class AnalysisProductRenderer {
                 .limit(2)
                 .collect(Collectors.joining("<br>"));
         return text.isBlank() ? "暂无结构化结论。" : escapeCell(text);
+    }
+
+    // 三级降级 SWOT 渲染：严格 swotClaim → 宽松 displayableSwotClaim → 画像 fallback。
+    // 解决 Analyst 把大部分 claim 降级到 VALIDATION_BACKLOG 导致 SWOT 全空的问题。
+    private String swotTextWithFallback(List<AnalysisClaim> claims, List<CompetitorProfile> profiles, ClaimType... types) {
+        Set<ClaimType> accepted = Set.of(types);
+        // 第一级：严格过滤（recommendedPlacement=SWOT 的 displayable claim）
+        String strict = claims.stream()
+                .filter(AnalysisClaimRules::swotClaim)
+                .filter(claim -> accepted.contains(claim.getType()))
+                .map(AnalysisClaim::getContent)
+                .filter(AgentUtils::hasText)
+                .limit(2)
+                .collect(Collectors.joining("<br>"));
+        if (!strict.isBlank()) {
+            return escapeCell(strict);
+        }
+        // 第二级：宽松过滤（任何 displayable claim，不限 recommendedPlacement）
+        String relaxed = claims.stream()
+                .filter(AnalysisClaimRules::displayableSwotClaim)
+                .filter(claim -> accepted.contains(claim.getType()))
+                .map(AnalysisClaim::getContent)
+                .filter(AgentUtils::hasText)
+                .limit(2)
+                .collect(Collectors.joining("<br>"));
+        if (!relaxed.isBlank()) {
+            return escapeCell(relaxed + "（待验证）");
+        }
+        // 第三级：画像 fallback
+        String profileText = profileSwotFallback(profiles, accepted);
+        if (hasText(profileText)) {
+            return escapeCell(profileText);
+        }
+        return "暂无结构化结论。";
+    }
+
+    // 从画像中提取 SWOT 降级内容。
+    private String profileSwotFallback(List<CompetitorProfile> profiles, Set<ClaimType> acceptedTypes) {
+        if (profiles == null || profiles.isEmpty()) {
+            return "";
+        }
+        boolean wantStrength = acceptedTypes.contains(ClaimType.STRENGTH) || acceptedTypes.contains(ClaimType.COMPARISON);
+        boolean wantWeakness = acceptedTypes.contains(ClaimType.WEAKNESS);
+        boolean wantOpportunity = acceptedTypes.contains(ClaimType.OPPORTUNITY) || acceptedTypes.contains(ClaimType.RECOMMENDATION);
+        boolean wantRisk = acceptedTypes.contains(ClaimType.RISK);
+        List<String> parts = new ArrayList<>();
+        for (CompetitorProfile profile : profiles) {
+            String product = textOrDash(profile.getProductName());
+            if (wantStrength && !profile.getStrengths().isEmpty()) {
+                parts.add("%s 优势: %s".formatted(product, String.join("、", profile.getStrengths())));
+            }
+            if (wantWeakness && !profile.getWeaknesses().isEmpty()) {
+                parts.add("%s 弱势: %s".formatted(product, String.join("、", profile.getWeaknesses())));
+            }
+            if (wantOpportunity && hasText(profile.getPositioning())) {
+                parts.add("%s 定位: %s".formatted(product, profile.getPositioning()));
+            }
+            if (wantRisk && profile.getPricingModel() != null && hasText(profile.getPricingModel().getStrategySummary())) {
+                parts.add("%s 定价风险: %s".formatted(product, profile.getPricingModel().getStrategySummary()));
+            }
+        }
+        if (parts.isEmpty()) {
+            return "";
+        }
+        return String.join("；", parts) + "（基于画像推断，待证据确认）";
     }
 
     private List<String> matrixCompetitors(AnalysisRun run, List<AnalysisClaim> claims) {

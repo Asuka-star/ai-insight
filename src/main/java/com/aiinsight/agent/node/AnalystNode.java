@@ -6,13 +6,11 @@ import com.aiinsight.llm.ChatOptions;
 import com.aiinsight.llm.ChatRequest;
 import com.aiinsight.llm.LlmClient;
 import com.aiinsight.model.enums.AgentName;
-import com.aiinsight.model.enums.ArtifactType;
 import com.aiinsight.model.enums.ClaimType;
 import com.aiinsight.model.enums.ConfidenceLevel;
 import com.aiinsight.model.enums.ReviewAction;
 import com.aiinsight.model.review.ReviewDecision;
 import com.aiinsight.model.review.ReviewRepairTask;
-import com.aiinsight.model.run.AnalysisArtifact;
 import com.aiinsight.model.run.AnalysisRequirement;
 import com.aiinsight.model.run.AnalysisRun;
 import com.aiinsight.model.run.EvidenceChunk;
@@ -43,7 +41,6 @@ import static com.aiinsight.agent.node.AnalysisClaimRules.defaultPlacementFor;
 import static com.aiinsight.agent.node.AnalysisClaimRules.displayableClaim;
 import static com.aiinsight.agent.node.AnalysisClaimRules.normalizeRecommendedPlacement;
 import static com.aiinsight.agent.node.AnalysisClaimRules.normalizeSupportStatus;
-import static com.aiinsight.util.AgentUtils.CITATION_PATTERN;
 import static com.aiinsight.util.AgentUtils.abbreviate;
 import static com.aiinsight.util.AgentUtils.containsAny;
 import static com.aiinsight.util.AgentUtils.containsIgnoreCase;
@@ -66,6 +63,7 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Comparator;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -73,15 +71,13 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 @Component
 @RequiredArgsConstructor
 @Slf4j
-// Analyst 是竞品分析层：把 Extractor 沉淀的竞品画像和证据索引转化为可复核 Claims，
-// 再基于这些 Claims 生成矩阵和 SWOT，避免 Writer 在报告阶段重新承担分析判断。
+// Analyst 是竞品分析层：把 Extractor 沉淀的竞品画像和证据索引转化为可复核 Claims。
+// 矩阵和 SWOT 由 Writer 在报告正文中统一生成，Analyst 只负责产出结构化结论。
 public class AnalystNode implements AgentNode {
 
     private final LlmClient llmClient;
@@ -106,7 +102,23 @@ public class AnalystNode implements AgentNode {
     @Override
     public AnalysisRun execute(AnalysisRun run) {
         boolean llmAvailable = llmClient.isAvailable();
-        AnalysisDraft draft = llmAvailable ? analysisDraftWithLlm(run) : null;
+        List<AnalysisClaim> previousClaims = List.copyOf(run.getClaims());
+        List<ReviewRepairTask> analystRepairTasks = llmAvailable ? getAnalystRepairTasks(run) : List.of();
+        AnalysisDraft draft;
+        if (llmAvailable && !previousClaims.isEmpty() && !analystRepairTasks.isEmpty()) {
+            try {
+                List<AnalysisClaim> revisedClaims = reviseClaimsIncrementally(run, previousClaims, analystRepairTasks);
+                draft = new AnalysisDraft(revisedClaims, null, null);
+                log.info("Analyst incremental claim revision used: runId={}, originalClaims={}, revisedClaims={}",
+                        run.getId(), previousClaims.size(), revisedClaims.size());
+            } catch (RuntimeException ex) {
+                log.warn("Analyst incremental revision failed, falling back to full generation: runId={}, reason={}",
+                        run.getId(), ex.getMessage());
+                draft = analysisDraftWithLlm(run);
+            }
+        } else {
+            draft = llmAvailable ? analysisDraftWithLlm(run) : null;
+        }
         if (draft == null || draft.claims().isEmpty()) {
             log.warn("Analyst fallback activated: runId={}, reason={}, competitors={}, evidenceSources={}, profiles={}, existingClaims={}",
                     run.getId(),
@@ -119,7 +131,6 @@ public class AnalystNode implements AgentNode {
             AgentTraceContext.recordFallback("deterministic-analyst-fallback", draft.traceOutput());
         }
         draft = sanitizeDraft(run, draft);
-        List<AnalysisClaim> previousClaims = new ArrayList<>(run.getClaims());
 
         run.getClaims().clear();
         // prompt 约束最多 8 条，代码层兜底截断，防止 LLM 超量输出
@@ -128,24 +139,159 @@ public class AnalystNode implements AgentNode {
                 : draft.claims().subList(0, MAX_CLAIMS);
         boundedClaims = stabilizeClaimIds(previousClaims, boundedClaims);
         boundedClaims = applyAnalystRepairGuard(run, boundedClaims);
-        AnalysisDraft finalDraft = llmAvailable && llmProductRenderingEnabled
-                ? renderDraftFromClaimsWithLlm(run, boundedClaims)
-                : renderDraftFromClaims(run, boundedClaims);
-        List<String> citationKeys = artifactCitationKeys(run, finalDraft);
+        // 矩阵和 SWOT 不再由 Analyst 生成，改为 Writer 在报告正文中统一生成，避免过滤管线不同导致的不一致。
         run.getClaims().addAll(boundedClaims);
-        run.addArtifact(new AnalysisArtifact(
-                ArtifactType.COMPETITIVE_MATRIX,
-                "竞品横向矩阵",
-                finalDraft.matrixMarkdown(),
-                citationKeys
-        ));
-        run.addArtifact(new AnalysisArtifact(
-                ArtifactType.SWOT_ANALYSIS,
-                "SWOT 分析",
-                finalDraft.swotMarkdown(),
-                citationKeys
-        ));
         return run;
+    }
+
+    /**
+     * 判断是否有针对 Analyst 的修复任务，用于决定是否进入增量修订模式。
+     */
+    private List<ReviewRepairTask> getAnalystRepairTasks(AnalysisRun run) {
+        ReviewDecision decision = run.getRepairDecisionFor(AgentName.ANALYST);
+        if (decision == null || decision.getAction() == ReviewAction.PASS) {
+            return List.of();
+        }
+        return decision.getRepairTasks().stream()
+                .filter(task -> task.getTargetAgent() == AgentName.ANALYST)
+                .toList();
+    }
+
+    /**
+     * 增量修订 claims：只让 LLM 修改 Reviewer 标记的 claims，保留未被标记的 claims 原样不动。
+     * 从根本上消除"修一个 claim 引入新 claim"的震荡。
+     */
+    private List<AnalysisClaim> reviseClaimsIncrementally(AnalysisRun run,
+                                                          List<AnalysisClaim> previousClaims,
+                                                          List<ReviewRepairTask> repairTasks) {
+        AnalystContext context = analystContext(run);
+        String existingClaims = previousClaims.stream()
+                .map(claim -> "【Claim%d】id=%s type=%s confidence=%s status=%s placement=%s content=%s".formatted(
+                        previousClaims.indexOf(claim),
+                        claim.getId(), claim.getType(), claim.getConfidence(),
+                        textOrDash(claim.getSupportStatus()),
+                        textOrDash(claim.getRecommendedPlacement()),
+                        claim.getContent()
+                ))
+                .collect(Collectors.joining("\n"));
+
+        String repairTasksBlock = repairTasks.stream()
+                .map(task -> "- action=%s claimId=%s citation=%s currentText=%s instruction=%s expectedFix=%s".formatted(
+                        task.getAction(),
+                        nullToEmpty(task.getClaimId()),
+                        nullToEmpty(task.getCitationKey()),
+                        abbreviate(nullToEmpty(task.getCurrentText()), 120),
+                        nullToEmpty(task.getInstruction()),
+                        nullToEmpty(task.getExpectedFix())
+                ))
+                .collect(Collectors.joining("\n"));
+
+        String prompt = """
+                你是竞品分析增量修订 Agent。请基于现有 Claims 和 Reviewer 修复任务，对 Claims 进行定向修订。
+
+                重要约束:
+                1. 只修改修复任务中明确指出的 Claim（通过 claimId、currentText 或 citation 匹配）。
+                2. 未被任何修复任务指名的 Claim 必须完全保持原样（type、content、confidence、evidenceIds 等所有字段不变）。
+                3. 输出 JSON 格式（不要 Markdown 代码块包裹）：
+                   {"claims": [完整的 claims 列表，包含未修改的原样 Claim 和已修改的 Claim]}
+                4. 修改 Claim 时按修复指令调整 content、confidence、evidenceIds、supportStatus 等。
+                5. 如果修复指令要求删除某个 Claim，从列表中移除。
+                6. 不要新增不在原列表中的 Claim。
+                7. 保留原有的 Claim ID 格式。
+                8. 每条 Claim 的 JSON 字段: type, content, confidence, dimension, supportStatus, recommendedPlacement, supportReason, evidenceQuotes, missingEvidenceTypes, rewriteSuggestion, competitorNames, factIds, evidenceIds, chunkKeys。
+
+                现有 Claims:
+                %s
+
+                Reviewer 修复任务:
+                %s
+
+                分析需求:
+                %s
+
+                证据索引:
+                %s
+                """.formatted(
+                existingClaims,
+                repairTasksBlock,
+                context.requirementSummary(),
+                context.evidenceIndex()
+        );
+
+        String raw = llmClient.complete(new ChatRequest(
+                List.of(
+                        ChatMessage.system("你是严谨的竞品分析增量修订 Agent。只修改 Reviewer 指出的问题 Claim，其余 Claim 必须原样保留。输出可解析 JSON。"),
+                        ChatMessage.user(prompt)
+                ),
+                ChatOptions.analyst()
+        ).tagged(name().name(), "incremental-claims-revision"));
+
+        AnalysisDraft parsed = parseAnalysisDraft(raw, context.run());
+        if (parsed == null || parsed.claims().isEmpty()) {
+            throw new IllegalStateException("增量修订未返回可用 claims");
+        }
+        return applyIncrementalClaimRevisions(parsed.claims(), previousClaims, repairTasks);
+    }
+
+    /**
+     * 将 LLM 增量修订结果应用到原始 claims 上：只有被 repair tasks 标记的 claim 会被替换，
+     * 未被标记的 claim 保留原始版本，防止 LLM 非确定性导致未标记 claim 震荡。
+     */
+    private List<AnalysisClaim> applyIncrementalClaimRevisions(List<AnalysisClaim> revisedClaims,
+                                                                List<AnalysisClaim> originalClaims,
+                                                                List<ReviewRepairTask> repairTasks) {
+        List<AnalysisClaim> result = new ArrayList<>();
+        Set<Integer> usedRevisionIndexes = new LinkedHashSet<>();
+        for (AnalysisClaim original : originalClaims) {
+            boolean targetedByRepair = repairTasks.stream().anyMatch(task -> matchesRepairTask(original, task));
+            if (targetedByRepair) {
+                findRevisedClaimForOriginal(original, revisedClaims, usedRevisionIndexes)
+                        .ifPresentOrElse(result::add, () -> result.add(original));
+            } else {
+                result.add(original);
+            }
+        }
+        return result;
+    }
+
+    private java.util.Optional<AnalysisClaim> findRevisedClaimForOriginal(AnalysisClaim original,
+                                                                          List<AnalysisClaim> revisedClaims,
+                                                                          Set<Integer> usedRevisionIndexes) {
+        int bestIndex = -1;
+        int bestScore = -1;
+        for (int i = 0; i < revisedClaims.size(); i++) {
+            if (usedRevisionIndexes.contains(i)) {
+                continue;
+            }
+            int score = revisionMatchScore(original, revisedClaims.get(i));
+            if (score > bestScore) {
+                bestIndex = i;
+                bestScore = score;
+            }
+        }
+        if (bestIndex < 0 || bestScore <= 0) {
+            return java.util.Optional.empty();
+        }
+        usedRevisionIndexes.add(bestIndex);
+        return java.util.Optional.of(revisedClaims.get(bestIndex));
+    }
+
+    private int revisionMatchScore(AnalysisClaim original, AnalysisClaim revised) {
+        if (original == null || revised == null) {
+            return 0;
+        }
+        if (hasText(original.getId()) && original.getId().equals(revised.getId())) {
+            return 100;
+        }
+        String originalKey = claimContentKey(original.getContent());
+        String revisedKey = claimContentKey(revised.getContent());
+        if (hasText(originalKey) && originalKey.equals(revisedKey)) {
+            return 80;
+        }
+        if (likelySameClaim(original, revised)) {
+            return 60;
+        }
+        return 0;
     }
 
     private AnalysisDraft analysisDraftWithLlm(AnalysisRun run) {
@@ -302,14 +448,46 @@ public class AnalystNode implements AgentNode {
         String prompt = """
                 你是竞品分析工作流中的矩阵生成子任务。请基于已给出的结构化 claims 生成最终矩阵 Markdown。
                 只允许使用下方 claims、画像摘要和证据索引中的信息，不要引入新的事实、竞品、引用或判断。
-                输出约束：
+
+                ── 输出约束（严格遵守，违反会导致下游解析失败） ──
+
+                【格式】
                 1. 只输出 JSON，不要输出 Markdown 代码块。
                 2. JSON 结构必须为 {"matrixMarkdown":"..."}。
                 3. matrixMarkdown 必须是 Markdown，保留内联引用 [S1] 形式。
-                4. 优先使用 MEDIUM/HIGH、已绑定 evidenceIds 的 claims；证据不足内容只能进入“待验证结论”区域。
-                5. 主矩阵优先总结 placement=MATRIX 的 claims，并保持输出聚焦，不要附加“结构化结论明细”分区。
-                6. 不要编造新的 citationKey；引用只能来自 claims 中已有 evidenceIds。
-                7. 结构建议保留三部分：主矩阵、用户指定维度覆盖、待验证结论。
+
+                【结构 — 必须且只允许以下三个 section，标题文字不可改动】
+                A. "## 基于结构化结论的竞品矩阵"
+                B. "## 用户指定维度覆盖"
+                C. "## 待验证结论"
+                不要添加任何额外 section（如“总结”“结论明细”等）。
+
+                【Section A — 主矩阵表格】
+                - 表头固定为：| 竞品 | 基于结论的判断 | 置信度 | 证据 |
+                - 竞品行顺序：按照下方“竞品画像摘要”中出现的顺序排列，不要自行重排。
+                - 每行最多归纳 3 条 placement=MATRIX 且置信度 MEDIUM/HIGH 的 claims；按置信度从高到低选取。
+                - 单元格内多条 claim 用 <br> 分隔，格式为 "TYPE: claim内容"。
+                - 若某竞品无可归属的合格 claim，该行写：| 竞品名 | 暂无结构化结论。 | LOW | 证据不足 |
+                - 置信度列：取所引用 claims 的去重置信度，用 "/" 连接（如 "HIGH/MEDIUM"）。
+                - 证据列：使用 claims 中已有的 evidenceIds，格式为 [S1] [S2]；无证据则写“证据不足”。
+
+                【Section B — 用户指定维度覆盖表格】
+                - 表头固定为：| 维度 | 判断 | 置信度 | 证据 |
+                - 维度列表：使用分析需求中指定的维度，保持原顺序；若无指定维度则写一行“综合判断”。
+                - 每行最多归纳 2 条与该维度相关的 claims。
+                - 无相关 claim 的维度写：| 维度名 | 证据不足，待验证。 | LOW | 证据不足 |
+
+                【Section C — 待验证结论表格】
+                - 表头固定为：| 维度 | 结论 | 原因 |
+                - 只收录 LOW 置信度、UNVERIFIED、无 evidenceIds 或 recommendedPlacement=VALIDATION_BACKLOG 的 claims。
+                - 最多列 6 条；按 claims 原始顺序选取。
+                - 若没有待验证内容，写一行：| - | 暂无待验证结论。 | - |
+
+                【内容纪律】
+                - 优先使用 MEDIUM/HIGH、已绑定 evidenceIds 的 claims 进入主矩阵。
+                - 不要编造新的 citationKey；引用只能来自 claims 中已有 evidenceIds。
+                - claim 文本直接使用原始内容，不要改写、缩写或添加个人解读。
+                - 表格末尾不要附加“说明”段落。
 
                 分析需求：
                 %s
@@ -354,15 +532,44 @@ public class AnalystNode implements AgentNode {
         String prompt = """
                 你是竞品分析工作流中的 SWOT 生成子任务。请基于已给出的结构化 claims 生成最终 SWOT Markdown。
                 只允许使用下方 claims、画像摘要和证据索引中的信息，不要引入新的事实、竞品、引用或判断。
-                输出约束：
+
+                ── 输出约束（严格遵守，违反会导致下游解析失败） ──
+
+                【格式】
                 1. 只输出 JSON，不要输出 Markdown 代码块。
                 2. JSON 结构必须为 {"swotMarkdown":"..."}。
                 3. swotMarkdown 必须是 Markdown 表格，保留内联引用 [S1] 形式。
-                4. 必须尝试填充 Strengths、Weaknesses、Opportunities、Threats 四个象限；若某象限确无足够 claims，再写“暂无结构化结论”。
-                5. 可以基于 claims 的类型、内容和证据强度做保守归类，不要求机械遵循 recommendedPlacement。
-                6. 当 STRENGTH/WEAKNESS/COMPARISON/FACT 等高置信度 claims 明确表达优势或短板时，可用于 SWOT 对应象限。
-                7. LOW、UNVERIFIED 或无 evidenceIds 的内容不能写成确定性 SWOT 判断。
-                8. 不要编造新的 citationKey；引用只能来自 claims 中已有 evidenceIds。
+
+                【表格结构 — 固定格式，不可调整】
+                必须输出且仅输出一个表格，表头和行顺序固定如下：
+
+                | 维度 | 基于结构化结论的判断 | 证据 |
+                | --- | --- | --- |
+                | 优势 | ...内容... | ...引用... |
+                | 短板 | ...内容... | ...引用... |
+                | 机会 | ...内容... | ...引用... |
+                | 威胁 | ...内容... | ...引用... |
+
+                - 行顺序固定为：优势、短板、机会、威胁，不可调换。
+                - 不要添加任何额外行或 section（如“总结”“说明”等）。
+
+                【填充规则】
+                - 优势：使用 ClaimType=STRENGTH 或 COMPARISON 且置信度 MEDIUM/HIGH 的 claims，最多 2 条。
+                - 短板：使用 ClaimType=WEAKNESS 且置信度 MEDIUM/HIGH 的 claims，最多 2 条。
+                - 机会：使用 ClaimType=OPPORTUNITY 或 RECOMMENDATION 的 claims，最多 2 条。
+                - 威胁：使用 ClaimType=RISK 的 claims，最多 2 条。
+                - 若某象限确无足够 claims，内容列写“暂无结构化结论。”，证据列写“证据不足”。
+
+                【单元格格式】
+                - 内容列：多条 claim 用 <br> 分隔，每条直接使用原始 claim 文本，不要改写。
+                - 证据列：使用对应 claims 的 evidenceIds，格式为 [S1] [S2]；无证据则写“证据不足”。
+                - 单元格内的竖线 "|" 用 "\\|" 转义，换行用 <br> 代替。
+
+                【内容纪律】
+                - 不要编造新的 citationKey；引用只能来自 claims 中已有 evidenceIds。
+                - LOW、UNVERIFIED 或无 evidenceIds 的内容不能写成确定性 SWOT 判断。
+                - claim 文本直接使用原始内容，不要改写、缩写或添加个人解读。
+                - 表格末尾不要附加“说明”段落。
 
                 分析需求：
                 %s
@@ -477,18 +684,22 @@ public class AnalystNode implements AgentNode {
         List<AnalysisClaim> claims = draft.claims().stream()
                 .map(claim -> sanitizeClaim(run, claim))
                 .toList();
+        List<CompetitorProfile> profiles = run.getCompetitorProfiles() != null
+                ? run.getCompetitorProfiles() : List.of();
         return new AnalysisDraft(
                 claims,
                 sanitizeCitationText(run, analysisProductRenderer.renderMatrix(run, claims)),
-                sanitizeCitationText(run, analysisProductRenderer.renderSwot(claims))
+                sanitizeCitationText(run, analysisProductRenderer.renderSwot(claims, profiles))
         );
     }
 
     private AnalysisDraft renderDraftFromClaims(AnalysisRun run, List<AnalysisClaim> claims) {
+        List<CompetitorProfile> profiles = run.getCompetitorProfiles() != null
+                ? run.getCompetitorProfiles() : List.of();
         return new AnalysisDraft(
                 claims,
                 sanitizeCitationText(run, analysisProductRenderer.renderMatrix(run, claims)),
-                sanitizeCitationText(run, analysisProductRenderer.renderSwot(claims))
+                sanitizeCitationText(run, analysisProductRenderer.renderSwot(claims, profiles))
         );
     }
 
@@ -671,28 +882,6 @@ public class AnalystNode implements AgentNode {
         }
     }
 
-    private List<String> artifactCitationKeys(AnalysisRun run, AnalysisDraft draft) {
-        Set<String> keys = new LinkedHashSet<>();
-        draft.claims().stream()
-                .flatMap(claim -> claim.getEvidenceIds().stream())
-                .forEach(keys::add);
-        extractCitationKeys(draft.matrixMarkdown()).forEach(keys::add);
-        extractCitationKeys(draft.swotMarkdown()).forEach(keys::add);
-        Set<String> known = knownCitationKeys(run);
-        return keys.stream().filter(known::contains).toList();
-    }
-
-    private List<String> extractCitationKeys(String text) {
-        if (!hasText(text)) {
-            return List.of();
-        }
-        List<String> keys = new ArrayList<>();
-        Matcher matcher = CITATION_PATTERN.matcher(text);
-        while (matcher.find()) {
-            keys.add(matcher.group(1));
-        }
-        return keys;
-    }
     private List<String> distinctKnownFactIds(AnalysisRun run, List<String> factIds) {
         Set<String> known = run.getCompetitorFactSets().stream()
                 .flatMap(factSet -> factSet.getFacts().stream())
