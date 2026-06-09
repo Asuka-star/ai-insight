@@ -401,6 +401,7 @@ public class AnalysisWorkflowService {
         }
         applyRequirementUpdate(requirement, request);
         applyRunOptions(run, request);
+        syncOriginalPromptFromCurrentScope(requirement);
 
         ClarificationDraft draft = buildClarificationDraft(requirement);
         draft.setConfirmed(true);
@@ -423,6 +424,7 @@ public class AnalysisWorkflowService {
         }
         applyRequirementUpdate(requirement, request);
         applyRunOptions(run, request);
+        syncOriginalPromptFromCurrentScope(requirement);
 
         run.setClarificationDraft(buildClarificationDraft(requirement));
         run.setStatus(AnalysisStatus.AWAITING_CONFIRMATION);
@@ -960,6 +962,40 @@ public class AnalysisWorkflowService {
         if (request.outputGoalProvided()) {
             requirement.setOutputGoal(request.getOutputGoal());
         }
+    }
+
+    private void syncOriginalPromptFromCurrentScope(AnalysisRequirement requirement) {
+        if (requirement == null) {
+            return;
+        }
+        requirement.setOriginalPrompt("""
+                行业方向：%s
+                报告用途：%s
+                竞品列表：%s
+                分析维度：%s
+                公开来源：%s
+                """.formatted(
+                textOrUnspecified(requirement.getIndustry()),
+                textOrUnspecified(requirement.getOutputGoal()),
+                listOrUnspecified(requirement.getCompetitors()),
+                listOrUnspecified(requirement.getDimensions()),
+                listOrUnspecified(requirement.getSourceUrls())
+        ).trim());
+    }
+
+    private String textOrUnspecified(String value) {
+        return StringUtils.hasText(value) ? value.trim() : "未填写";
+    }
+
+    private String listOrUnspecified(List<String> values) {
+        if (values == null || values.isEmpty()) {
+            return "未填写";
+        }
+        String joined = values.stream()
+                .filter(StringUtils::hasText)
+                .map(String::trim)
+                .collect(java.util.stream.Collectors.joining("、"));
+        return StringUtils.hasText(joined) ? joined : "未填写";
     }
 
     private void applyRunOptions(AnalysisRun run, UpdateAnalysisRequirementRequest request) {

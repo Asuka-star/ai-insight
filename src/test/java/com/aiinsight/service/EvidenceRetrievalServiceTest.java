@@ -160,6 +160,13 @@ class EvidenceRetrievalServiceTest {
         assertThat(results.get(0).getChunkKey()).isEqualTo("S1-C1");
         assertThat(run.getEvidenceSources()).hasSize(1);
         assertThat(run.getEvidenceSources().get(0).getUrl()).isEqualTo("global-document://workspace-note");
+        assertThat(run.getEvidenceSources().get(0).isGlobalResource()).isTrue();
+        assertThat(run.getEvidenceSources().get(0).getCollectionStatus()).isEqualTo("USER_PROVIDED");
+        assertThat(run.getEvidenceSources().get(0).getFreshness()).isEqualTo("USER_PROVIDED");
+        assertThat(run.getEvidenceSources().get(0).getPublisherName()).isEqualTo("用户资源包");
+        assertThat(run.getEvidenceSources().get(0).getComplianceNote())
+                .contains("用户资源包", "用户上传文档")
+                .doesNotContain("全局 RAG");
         assertThat(run.getResearchPackage().getSources()).hasSize(1);
     }
 

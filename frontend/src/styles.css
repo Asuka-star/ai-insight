@@ -1999,6 +1999,11 @@ h3 {
   color: var(--muted);
 }
 
+.evidence-badges small.quality-user_provided {
+  background: #edf7f6;
+  color: var(--teal);
+}
+
 .evidence-badges small.cache-hit {
   gap: 4px;
   background: #edf7f6;

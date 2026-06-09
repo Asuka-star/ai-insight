@@ -254,17 +254,17 @@ public class EvidenceRetrievalService {
                 StringUtils.hasText(chunk.getTitle()) ? chunk.getTitle() : "全局用户资源",
                 chunk.getUrl(),
                 StringUtils.hasText(chunk.getSourceType()) ? chunk.getSourceType() : "global_user_document",
-                "READY",
-                "GLOBAL_RAG",
+                "USER_PROVIDED",
+                "USER_PROVIDED",
                 StringUtils.hasText(chunk.getSourceQuality()) ? chunk.getSourceQuality() : "USER_PROVIDED",
                 "NONE",
                 abbreviate(chunk.getText(), 220),
                 chunk.getText(),
-                "来自全局 RAG 资源库，已挂载到当前分析任务用于证据引用。"
+                "来自用户资源包/用户上传文档，已挂载到当前分析任务用于证据引用；不可描述为公开采集来源。"
         );
         source.setSourceAuthority(StringUtils.hasText(chunk.getSourceAuthority()) ? chunk.getSourceAuthority() : "USER_PROVIDED");
         source.setCanonicalHost("global-document");
-        source.setPublisherName("全局用户资源");
+        source.setPublisherName("用户资源包");
         source.setGlobalResource(true);
         run.getEvidenceSources().add(source);
         return source;

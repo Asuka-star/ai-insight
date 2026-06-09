@@ -164,7 +164,17 @@ export function App() {
       outputGoal: scope.outputGoal ?? "",
       sourceUrls: scope.sourceUrls ?? [],
       maxReviewReworkAttempts: run.maxReviewReworkAttempts ?? 1,
-      confirmed: Boolean(run.clarificationDraft?.confirmed)
+      confirmed: Boolean(run.clarificationDraft?.confirmed),
+      clarificationQuestions: run.clarificationDraft?.clarificationQuestions ?? [],
+      clarificationItems: (run.clarificationDraft?.clarificationItems ?? []).map((item) => ({
+        field: item.field,
+        question: item.question,
+        options: item.options?.map((option) => ({
+          label: option.label,
+          values: option.values ?? [],
+          recommended: Boolean(option.recommended)
+        })) ?? []
+      }))
     });
   }, [run]);
 
@@ -381,7 +391,13 @@ export function App() {
         if (type === "clarification_ready" || type === "run_failed" || type === "run_cancelled") {
           setPendingClarificationRunId(undefined);
         }
-        requestRunRefresh(activeRunId, type === "agent_started" ? 0 : 500);
+        // agent_started 使用延迟刷新，避免在 Clarifier 等 Agent 执行期间立即拉取到过时的中间态数据
+        // （例如 clarifyRequirement 先写入空草稿再跑 Clarifier，即时刷新会把空草稿覆盖到前端）。
+        // clarification_ready 说明 Clarifier 已完成，使用较短延迟确保 API 响应先到达。
+        const refreshDelay = type === "agent_started" ? 800
+          : type === "clarification_ready" ? 200
+          : 500;
+        requestRunRefresh(activeRunId, refreshDelay);
       });
     });
     events.onerror = () => setEventMessage("SSE 暂不可用，使用轮询刷新");
@@ -669,7 +685,7 @@ export function App() {
     setArtifactPinned(false);
     setSelectedCitationKey(undefined);
     setSelectedAgent(null);
-    setTraceDrawerAgent("CLARIFIER");
+    setTraceDrawerAgent(null);
     setPendingClarificationRunId(undefined);
     try {
       const competitorList = splitList(competitors);
@@ -779,7 +795,7 @@ export function App() {
     const requestToken = ++workspaceRequestTokenRef.current;
     setIsScopeBusy(true);
     setSelectedAgent(null);
-    setTraceDrawerAgent("CLARIFIER");
+    setTraceDrawerAgent(null);
     setRun((current) => current ? withOptimisticClarifierStep(current, buildClarifierScopeInputSummary(
       industry,
       outputGoal,
@@ -788,6 +804,10 @@ export function App() {
       splitLines(sourceUrls)
     )) : current);
     setPendingClarificationRunId(run.id);
+    // 必须在 await 之前清除 requiresReclarify，否则 ScopeConfirmationPanel 的渲染链
+    // 会在整个 Clarifier 执行期间命中 "请先重新澄清范围" 分支，同时把新的澄清项过滤成空数组。
+    // 清除后配合 pendingClarification=true，面板会正确显示 "正在生成范围确认" 加载态。
+    setScopeNeedsReclarify(false);
     setEventMessage("正在重新澄清范围");
     try {
       const nextRun = await clarifyRequirement(run.id, {
@@ -799,13 +819,19 @@ export function App() {
         maxReviewReworkAttempts
       });
       if (requestToken !== workspaceRequestTokenRef.current) return;
+      // 取消 agent_started 等 SSE 事件可能已排期的过时刷新，防止空草稿覆盖 API 返回的最新澄清结果。
+      clearPendingRunRefresh();
       setRun(nextRun);
       setScopeEditMode(true);
-      setScopeNeedsReclarify(false);
-      setLocalScopeConfirmed(Boolean(nextRun.clarificationDraft?.confirmed));
+      // 重新澄清后一定需要用户重新确认，不信任后端可能泄漏的旧 confirmed 状态。
+      setLocalScopeConfirmed(false);
+      // 用延迟刷新兜底，确保 Clarifier 异步完成时前端能拿到最终数据。
+      requestRunRefresh(nextRun.id, 500);
       setEventMessage("范围已重新澄清");
     } catch (error) {
       if (requestToken !== workspaceRequestTokenRef.current) return;
+      // 失败时恢复 reclarify 标记，让用户可以重试。
+      setScopeNeedsReclarify(true);
       setEventMessage(error instanceof Error ? `重新澄清失败：${error.message}` : "重新澄清失败");
     } finally {
       if (requestToken === workspaceRequestTokenRef.current) {
@@ -1905,10 +1931,12 @@ function isClarificationSettled(run: AnalysisRun) {
   if (run.status === "FAILED" || run.status === "CANCELLED") {
     return true;
   }
-  return run.steps.some((step) => (
-    step.agentName === "CLARIFIER"
-    && (step.status === "SUCCEEDED" || step.status === "FAILED" || step.status === "CANCELLED")
-  ));
+  // 只看最后一个 CLARIFIER 步骤的状态：重新澄清时会产生新的 RUNNING 步骤，
+  // 旧的 SUCCEEDED 步骤不应让系统误判为"澄清已完成"。
+  const clarifierSteps = run.steps.filter((step) => step.agentName === "CLARIFIER");
+  if (clarifierSteps.length === 0) return false;
+  const latest = clarifierSteps[clarifierSteps.length - 1];
+  return latest.status === "SUCCEEDED" || latest.status === "FAILED" || latest.status === "CANCELLED";
 }
 
 function splitLines(value: string) {

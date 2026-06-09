@@ -26,7 +26,6 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 import org.springframework.util.StringUtils;
 
-import java.time.Instant;
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -57,10 +56,12 @@ public class ClarifierNode implements AgentNode {
 
     @Override
     public AnalysisRun execute(AnalysisRun run) {
-        ClarificationDraft previous = run.getClarificationDraft();
         var result = clarifyScope(run.getRequirement());
         ClarificationDraft draft = result.draft();
-        preserveConfirmationState(draft, previous);
+        // 每次澄清都产出全新的未确认草稿，不继承历史 confirmed 状态。
+        // 用户必须在看到新的澄清结果后手动确认范围。
+        draft.setConfirmed(false);
+        draft.setConfirmedAt(null);
         run.setClarificationDraft(draft);
         applyDraftToRequirement(run.getRequirement(), draft);
 
@@ -87,7 +88,17 @@ public class ClarifierNode implements AgentNode {
         }
         try {
             ClarificationDraft fallback = fallbackClarificationDraftFactory.build(requirement);
-            ClarificationDraft llmDraft = parseLlmDraft(completeWithLlm(requirement));
+            String raw = completeWithLlm(requirement);
+            ClarificationDraft llmDraft;
+            try {
+                llmDraft = parseLlmDraft(raw);
+            } catch (RuntimeException parseEx) {
+                // 把模型原始输出打到日志，方便排查 JSON 格式问题（之前只记录了异常信息，看不到模型到底返回了什么）。
+                log.warn("Clarifier JSON parse failed, raw LLM output (first 2000 chars): {}",
+                        raw.length() > 2000 ? raw.substring(0, 2000) + "...(truncated)" : raw,
+                        parseEx);
+                throw parseEx;
+            }
             return ClarificationDraftResult.llm(mergeDraft(requirement, llmDraft, fallback));
         } catch (RuntimeException ex) {
             log.warn("Clarifier fallback activated: reason=llm_exception, exceptionType={}, message={}, prompt={}",
@@ -135,14 +146,14 @@ public class ClarifierNode implements AgentNode {
                 6. 如果竞品过少或用户表达“同类产品/标杆产品”等模糊范围，可以在 clarificationItems 中给出补充竞品选项，values 放补充后的完整竞品列表。
                 7. 输出要短，确保 JSON 完整闭合。
 
-                原始需求：%s
+                当前编辑后的结构化范围是唯一权威输入；如果它和历史原始需求不一致，以当前范围为准，不要恢复历史值。
+                当前范围：
                 industry=%s
                 competitors=%s
                 dimensions=%s
-                urls=%s
-                goal=%s
+                sourceUrls=%s
+                outputGoal=%s
                 """.formatted(
-                nullToEmpty(requirement.getOriginalPrompt()),
                 nullToEmpty(requirement.getIndustry()),
                 requirement.getCompetitors(),
                 requirement.getDimensions(),
@@ -160,7 +171,8 @@ public class ClarifierNode implements AgentNode {
 
     private ClarificationDraft parseLlmDraft(String raw) {
         try {
-            JsonNode root = objectMapper.readTree(JsonResponseExtractor.extractJsonObject(raw));
+            String json = JsonResponseExtractor.extractJsonObject(raw);
+            JsonNode root = safeReadTree(json);
             ClarificationDraft draft = new ClarificationDraft();
             draft.setIndustry(text(root, "industry"));
             draft.setCompetitors(textList(root, "competitors"));
@@ -170,8 +182,24 @@ public class ClarifierNode implements AgentNode {
             draft.setClarificationQuestions(textList(root, "clarificationQuestions"));
             draft.setClarificationItems(clarificationItems(root));
             return draft;
-        } catch (JsonProcessingException ex) {
-            throw new IllegalArgumentException("LLM 范围确认内容 JSON 解析失败", ex);
+        } catch (RuntimeException ex) {
+            throw new IllegalArgumentException("LLM 范围确认内容 JSON 解析失败: " + ex.getMessage(), ex);
+        }
+    }
+
+    // 部分小模型会在 JSON 中留下尾逗号或字面换行，先尝试原样解析，失败后做一次轻量修复。
+    private JsonNode safeReadTree(String json) {
+        try {
+            return objectMapper.readTree(json);
+        } catch (JsonProcessingException firstAttempt) {
+            String repaired = json
+                    .replaceAll(",\\s*([}\\]])", "$1")   // 删除 } 或 ] 前的尾逗号
+                    .replaceAll("(?<=\")\\n", "\\\\n");  // 字符串内的字面换行转义为 \\n
+            try {
+                return objectMapper.readTree(repaired);
+            } catch (JsonProcessingException secondAttempt) {
+                throw new IllegalArgumentException("JSON 解析失败（已尝试修复尾逗号和字面换行）: " + firstAttempt.getMessage(), firstAttempt);
+            }
         }
     }
 
@@ -374,15 +402,6 @@ public class ClarifierNode implements AgentNode {
                 .filter(StringUtils::hasText)
                 .map(String::trim)
                 .forEach(target::add);
-    }
-
-    private void preserveConfirmationState(ClarificationDraft draft, ClarificationDraft previous) {
-        if (previous == null) {
-            return;
-        }
-        draft.setConfirmed(previous.isConfirmed());
-        draft.setConfirmedAt(previous.getConfirmedAt());
-        draft.setCreatedAt(previous.getCreatedAt() == null ? Instant.now() : previous.getCreatedAt());
     }
 
     private void applyDraftToRequirement(AnalysisRequirement requirement, ClarificationDraft draft) {

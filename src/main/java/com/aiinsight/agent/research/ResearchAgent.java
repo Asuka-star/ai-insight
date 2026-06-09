@@ -239,17 +239,18 @@ public class ResearchAgent {
                 StringUtils.hasText(first.getTitle()) ? first.getTitle() : "全局用户资源",
                 url,
                 StringUtils.hasText(first.getSourceType()) ? first.getSourceType() : "global_user_document",
-                "READY",
-                "GLOBAL_RAG",
+                "USER_PROVIDED",
+                "USER_PROVIDED",
                 StringUtils.hasText(first.getSourceQuality()) ? first.getSourceQuality() : "USER_PROVIDED",
                 "NONE",
                 abbreviate(rawText, 220),
                 rawText,
-                "来自全局 RAG 资源库，已挂载到当前分析任务用于证据引用。"
+                "来自用户资源包/用户上传文档，已挂载到当前分析任务用于证据引用；不可描述为公开采集来源。"
         );
         source.setSourceAuthority(StringUtils.hasText(first.getSourceAuthority()) ? first.getSourceAuthority() : "USER_PROVIDED");
         source.setCanonicalHost("global-document");
-        source.setPublisherName("全局用户资源");
+        source.setPublisherName("用户资源包");
+        source.setGlobalResource(true);
         return source;
     }
 

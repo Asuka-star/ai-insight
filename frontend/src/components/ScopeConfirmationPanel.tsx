@@ -72,12 +72,16 @@ export function ScopeConfirmationPanel({
   const draft = run?.clarificationDraft;
   const questions = draft?.clarificationQuestions ?? [];
   const clarificationItems = draft?.clarificationItems ?? [];
-  const isConfirmed = Boolean(localConfirmed);
+  const visibleClarificationItems = clarificationItems.filter((item) => item.field !== "sourcePreferences");
+  const hasDraftClarificationRequests = questions.length > 0 || visibleClarificationItems.length > 0;
+  // 重新澄清会生成新的未确认草稿；如果本地 confirmed 状态被刷新链路短暂带偏，
+  // 仍要优先展示当前 draft 中的待确认项，避免误落到“无需额外澄清”。
+  const isConfirmed = Boolean(localConfirmed && (draft?.confirmed || !hasDraftClarificationRequests));
   const waitingForClarification = creating && !isConfirmed;
   const pendingQuestions = isConfirmed || waitingForClarification || requiresReclarify ? [] : questions;
   const pendingClarificationItems = isConfirmed || waitingForClarification || requiresReclarify
     ? []
-    : clarificationItems.filter((item) => item.field !== "sourcePreferences");
+    : visibleClarificationItems;
   const phaseText = String(phase);
   const hasDraft = Boolean(run && draft);
   const hasClarificationRequests = pendingQuestions.length > 0 || pendingClarificationItems.length > 0;

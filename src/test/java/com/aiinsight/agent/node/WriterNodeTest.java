@@ -75,6 +75,60 @@ class WriterNodeTest {
     }
 
     @Test
+    void writerPromptLabelsGlobalUserResourcesAsUserProvided() {
+        AtomicReference<String> promptCapture = new AtomicReference<>();
+        LlmClient llmClient = new LlmClient() {
+            @Override
+            public boolean isAvailable() {
+                return true;
+            }
+
+            @Override
+            public String complete(ChatRequest request) {
+                promptCapture.set(request.getMessages().get(1).getContent());
+                return "# Report\n\n用户资源包显示企业买家关注权限治理 [S1].";
+            }
+        };
+        WriterNode writer = new WriterNode(llmClient, new FallbackReportDraftFactory());
+        AnalysisRun run = new AnalysisRun(new AnalysisRequirement(
+                "Analyze AI coding tools",
+                "developer tools",
+                List.of("Cursor"),
+                List.of("permission governance"),
+                List.of("user_document"),
+                List.of()
+        ));
+        EvidenceSource source = new EvidenceSource(
+                "S1",
+                "Workspace note",
+                "global-document://workspace-note",
+                "user_document_markdown",
+                "USER_PROVIDED",
+                "USER_PROVIDED",
+                "MEDIUM",
+                "NONE",
+                "Enterprise buyers care about permission governance.",
+                "Enterprise buyers care about permission governance.",
+                "来自用户资源包/用户上传文档。"
+        );
+        source.setSourceAuthority("USER_PROVIDED");
+        source.setGlobalResource(true);
+        run.getEvidenceSources().add(source);
+        AnalysisClaim claim = new AnalysisClaim();
+        claim.setType(ClaimType.OPPORTUNITY);
+        claim.setContent("Enterprise buyers care about permission governance.");
+        claim.setConfidence(ConfidenceLevel.MEDIUM);
+        claim.setEvidenceIds(List.of("S1"));
+        run.getClaims().add(claim);
+
+        writer.execute(run);
+
+        assertThat(promptCapture.get())
+                .contains("type=user_document_markdown | authority=USER_PROVIDED | quality=MEDIUM | status=USER_PROVIDED")
+                .contains("如果证据 authority/quality 为 USER_PROVIDED 或 INTERNAL_ONLY");
+    }
+
+    @Test
     void writerRemovesLeakedSupportStatusCountsFromReport() {
         LlmClient llmClient = new LlmClient() {
             @Override

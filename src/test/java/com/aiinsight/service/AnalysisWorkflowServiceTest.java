@@ -177,6 +177,187 @@ class AnalysisWorkflowServiceTest {
     }
 
     @Test
+    void reclarifyUsesCurrentEditedScopeInsteadOfStaleOriginalPrompt() {
+        AtomicInteger calls = new AtomicInteger();
+        AtomicReference<String> latestClarifierPrompt = new AtomicReference<>();
+        LlmClient clarifierLlm = new LlmClient() {
+            @Override
+            public boolean isAvailable() {
+                return true;
+            }
+
+            @Override
+            public String complete(com.aiinsight.llm.ChatRequest request) {
+                latestClarifierPrompt.set(request.getMessages().get(1).getContent());
+                if (calls.incrementAndGet() == 1) {
+                    return """
+                            {
+                              "industry": "AI 编程助手与研发协作工具",
+                              "competitors": ["Cursor", "Claude Code"],
+                              "dimensions": ["代码理解与生成能力"],
+                              "sourceUrls": ["https://cursor.com", "https://www.anthropic.com/claude-code"],
+                              "outputGoal": "企业内部选型",
+                              "clarificationQuestions": [],
+                              "clarificationItems": []
+                            }
+                            """;
+                }
+                return """
+                        {
+                          "industry": "AI 编程助手与研发协作工具",
+                          "competitors": ["Cursor", "Claude Code", "code"],
+                          "dimensions": ["代码理解与生成能力"],
+                          "sourceUrls": ["https://cursor.com", "https://www.anthropic.com/claude-code"],
+                          "outputGoal": "企业内部选型",
+                          "clarificationQuestions": [],
+                          "clarificationItems": []
+                        }
+                        """;
+            }
+        };
+        AnalysisWorkflowService service = newService(
+                new TestAnalysisRunRepository(),
+                new AnalysisEventBroker(),
+                new TaskExecutorAdapter(Runnable::run),
+                null,
+                clarifierLlm
+        );
+        CreateAnalysisRunRequest request = new CreateAnalysisRunRequest();
+        request.setPrompt("""
+                行业方向：AI 编程助手与研发协作工具
+                竞品列表：Cursor、Claude Code
+                """);
+        request.setIndustry("AI 编程助手与研发协作工具");
+        request.setCompetitors(List.of("Cursor", "Claude Code"));
+        request.setDimensions(List.of("代码理解与生成能力"));
+        request.setSourceUrls(List.of("https://cursor.com", "https://www.anthropic.com/claude-code"));
+        request.setOutputGoal("企业内部选型");
+        AnalysisRun draft = service.createDraft(request);
+
+        UpdateAnalysisRequirementRequest update = new UpdateAnalysisRequirementRequest();
+        update.setIndustry("AI 编程助手与研发协作工具");
+        update.setCompetitors(List.of("Cursor", "Claude Code", "code"));
+        update.setDimensions(List.of("代码理解与生成能力"));
+        update.setSourceUrls(List.of("https://cursor.com", "https://www.anthropic.com/claude-code"));
+        update.setOutputGoal("企业内部选型");
+        AnalysisRun clarified = service.clarifyRequirement(draft.getId(), update);
+
+        assertThat(calls).hasValue(2);
+        assertThat(latestClarifierPrompt.get())
+                .contains("当前编辑后的结构化范围是唯一权威输入")
+                .contains("competitors=[Cursor, Claude Code, code]")
+                .doesNotContain("原始需求：")
+                .doesNotContain("竞品列表：Cursor、Claude Code\n");
+        assertThat(clarified.getRequirement().getOriginalPrompt())
+                .contains("竞品列表：Cursor、Claude Code、code")
+                .doesNotContain("竞品列表：Cursor、Claude Code\n");
+    }
+
+    @Test
+    void reclarifyPersistsClarificationItemsAfterMainWorkflowProgress() {
+        AtomicInteger calls = new AtomicInteger();
+        LlmClient clarifierLlm = new LlmClient() {
+            @Override
+            public boolean isAvailable() {
+                return true;
+            }
+
+            @Override
+            public String complete(com.aiinsight.llm.ChatRequest request) {
+                if (calls.incrementAndGet() == 1) {
+                    return """
+                            {
+                              "industry": "AI 编程助手与研发协作工具",
+                              "competitors": ["Cursor", "Claude Code"],
+                              "dimensions": ["代码理解与生成能力"],
+                              "sourceUrls": ["https://cursor.com"],
+                              "outputGoal": "企业内部选型",
+                              "clarificationQuestions": [],
+                              "clarificationItems": []
+                            }
+                            """;
+                }
+                return """
+                        {
+                          "industry": "AI 编程助手与研发协作工具",
+                          "competitors": ["Cursor", "Claude Code", "b"],
+                          "dimensions": ["代码理解与生成能力"],
+                          "sourceUrls": ["https://cursor.com"],
+                          "outputGoal": "企业内部选型",
+                          "clarificationQuestions": ["请确认竞品列表中模糊项「b」的具体产品名称"],
+                          "clarificationItems": [
+                            {
+                              "field": "competitors",
+                              "question": "请确认模糊竞品「b」具体指哪个产品？",
+                              "reason": "竞品名称不明确会影响采集和分析范围",
+                              "required": true,
+                              "options": [
+                                {
+                                  "label": "确认 b 为豆包 MarsCode",
+                                  "description": "把模糊项替换为明确竞品",
+                                  "values": ["Cursor", "Claude Code", "豆包 MarsCode"],
+                                  "recommended": true
+                                }
+                              ]
+                            }
+                          ]
+                        }
+                        """;
+            }
+        };
+        AnalysisRunRepository repository = new CopyingTestAnalysisRunRepository();
+        AnalysisWorkflowService service = newService(
+                repository,
+                new AnalysisEventBroker(),
+                new TaskExecutorAdapter(Runnable::run),
+                null,
+                clarifierLlm
+        );
+        CreateAnalysisRunRequest request = new CreateAnalysisRunRequest();
+        request.setPrompt("Analyze Cursor and Claude Code.");
+        request.setIndustry("AI 编程助手与研发协作工具");
+        request.setCompetitors(List.of("Cursor", "Claude Code"));
+        request.setDimensions(List.of("代码理解与生成能力"));
+        request.setSourceUrls(List.of("https://cursor.com"));
+        request.setOutputGoal("企业内部选型");
+        AnalysisRun draft = service.createDraft(request);
+        draft.setStatus(AnalysisStatus.SUCCEEDED);
+        draft.getEvidenceSources().add(new EvidenceSource("S1", "Cursor", "https://cursor.com", "Cursor evidence"));
+        AgentStep researcherStep = new AgentStep(AgentName.RESEARCHER, "Researcher completed");
+        researcherStep.start("existing main workflow progress");
+        researcherStep.succeed("research done");
+        draft.getSteps().add(researcherStep);
+        repository.save(draft);
+
+        UpdateAnalysisRequirementRequest update = new UpdateAnalysisRequirementRequest();
+        update.setIndustry("AI 编程助手与研发协作工具");
+        update.setCompetitors(List.of("Cursor", "Claude Code", "b"));
+        update.setDimensions(List.of("代码理解与生成能力"));
+        update.setSourceUrls(List.of("https://cursor.com"));
+        update.setOutputGoal("企业内部选型");
+        AnalysisRun clarified = service.clarifyRequirement(draft.getId(), update);
+
+        assertThat(calls).hasValue(2);
+        assertThat(clarified.getStatus()).isEqualTo(AnalysisStatus.AWAITING_CONFIRMATION);
+        assertThat(clarified.getClarificationDraft().isConfirmed()).isFalse();
+        assertThat(clarified.getClarificationDraft().getClarificationQuestions())
+                .containsExactly("请确认竞品列表中模糊项「b」的具体产品名称");
+        assertThat(clarified.getClarificationDraft().getClarificationItems())
+                .singleElement()
+                .satisfies(item -> {
+                    assertThat(item.getField()).isEqualTo("competitors");
+                    assertThat(item.getQuestion()).contains("b");
+                    assertThat(item.getOptions())
+                            .singleElement()
+                            .satisfies(option -> assertThat(option.getValues())
+                                    .containsExactly("Cursor", "Claude Code", "豆包 MarsCode"));
+                });
+        assertThat(clarified.getRequirement().getCompetitors()).containsExactly("Cursor", "Claude Code", "b");
+        assertThat(repository.findById(draft.getId()).orElseThrow().getClarificationDraft().getClarificationItems())
+                .hasSize(1);
+    }
+
+    @Test
     void rejectsContextWithoutIntent() {
         AnalysisWorkflowService service = newService();
         CreateAnalysisRunRequest request = new CreateAnalysisRunRequest();
@@ -2171,6 +2352,73 @@ class AnalysisWorkflowServiceTest {
         assertThat(result.evidenceSources()).isEmpty();
         assertThat(result.decision().action()).isEqualTo("ASK_USER");
         assertThat(result.decision().reason()).contains("No usable source");
+    }
+
+    @Test
+    void researcherAttachesGlobalUserResourceAsCitableUserProvidedSource() {
+        TestAnalysisRunRepository repository = new TestAnalysisRunRepository();
+        EvidenceChunk globalChunk = new EvidenceChunk(
+                "S9-C1",
+                "S9",
+                1,
+                "Workspace resource note",
+                "global-document://workspace-resource",
+                "User uploaded workspace resource says enterprise buyers require SAML SSO and audit logs."
+        );
+        globalChunk.setSourceType("user_document_markdown");
+        globalChunk.setSourceAuthority("USER_PROVIDED");
+        globalChunk.setSourceQuality("MEDIUM");
+        repository.saveGlobalEvidence(
+                new EvidenceSource(
+                        "S9",
+                        "Workspace resource note",
+                        "global-document://workspace-resource",
+                        "user_document_markdown",
+                        "USER_PROVIDED",
+                        "USER_PROVIDED",
+                        "MEDIUM",
+                        "NONE",
+                        "User uploaded workspace resource says enterprise buyers require SAML SSO and audit logs.",
+                        "User uploaded workspace resource says enterprise buyers require SAML SSO and audit logs.",
+                        "来自用户资源包/用户上传文档。"
+                ),
+                List.of(globalChunk)
+        );
+        SourceCollectionService sourceCollectionService = new SourceCollectionService(fetchAlwaysFails(), new NoopSearchProvider());
+        ResearchAgent researchAgent = new ResearchAgent(
+                sourceCollectionService,
+                new EvidenceChunkService(),
+                EvidenceEmbeddingService.disabled(),
+                new LlmSearchQueryPlanner(noopLlmClient(), new ObjectMapper()),
+                new LlmSearchCandidateSelector(noopLlmClient(), new ObjectMapper()),
+                new EvidenceSourceLifecycleService()
+        );
+        researchAgent.setRepository(repository);
+        AnalysisRun run = new AnalysisRun(new AnalysisRequirement(
+                "Analyze Cursor for enterprise adoption.",
+                "AI coding tools",
+                List.of("Cursor"),
+                List.of("enterprise security"),
+                List.of("user_document"),
+                List.of()
+        ));
+
+        var result = researchAgent.run(run);
+
+        assertThat(result.evidenceSources())
+                .anySatisfy(source -> {
+                    assertThat(source.getUrl()).isEqualTo("global-document://workspace-resource");
+                    assertThat(source.isGlobalResource()).isTrue();
+                    assertThat(source.getCollectionStatus()).isEqualTo("USER_PROVIDED");
+                    assertThat(source.getFreshness()).isEqualTo("USER_PROVIDED");
+                    assertThat(source.getSourceAuthority()).isEqualTo("USER_PROVIDED");
+                    assertThat(source.getPublisherName()).isEqualTo("用户资源包");
+                    assertThat(source.getComplianceNote()).contains("用户资源包", "用户上传文档");
+                });
+        assertThat(run.getEvidenceSources())
+                .extracting(EvidenceSource::getUrl)
+                .contains("global-document://workspace-resource");
+        assertThat(result.decision().action()).isNotEqualTo("ASK_USER");
     }
 
     @Test
@@ -4625,6 +4873,14 @@ class AnalysisWorkflowServiceTest {
                                                AnalysisEventBroker eventBroker,
                                                TaskExecutorAdapter taskExecutor,
                                                DocumentIngestionService documentIngestionService) {
+        return newService(repository, eventBroker, taskExecutor, documentIngestionService, null);
+    }
+
+    private AnalysisWorkflowService newService(AnalysisRunRepository repository,
+                                               AnalysisEventBroker eventBroker,
+                                               TaskExecutorAdapter taskExecutor,
+                                               DocumentIngestionService documentIngestionService,
+                                               LlmClient clarifierLlmClient) {
         LlmClient noopLlmClient = new LlmClient() {
             @Override
             public boolean isAvailable() {
@@ -4639,7 +4895,8 @@ class AnalysisWorkflowServiceTest {
         WorkflowNodeExecutor nodeExecutor = new WorkflowNodeExecutor(repository, eventBroker);
         SourceCollectionService sourceCollectionService = new SourceCollectionService(fetchUsefulPages(), fakeSearchProvider());
         FallbackClarificationDraftFactory fallbackClarificationDraftFactory = new FallbackClarificationDraftFactory();
-        ClarifierNode clarifierNode = new ClarifierNode(noopLlmClient, new ObjectMapper(), fallbackClarificationDraftFactory);
+        LlmClient effectiveClarifierLlmClient = clarifierLlmClient == null ? noopLlmClient : clarifierLlmClient;
+        ClarifierNode clarifierNode = new ClarifierNode(effectiveClarifierLlmClient, new ObjectMapper(), fallbackClarificationDraftFactory);
         AnalysisLangGraphWorkflow graphWorkflow = new AnalysisLangGraphWorkflow(
                 List.of(
                         clarifierNode,

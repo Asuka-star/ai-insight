@@ -1011,11 +1011,25 @@ public class WriterNode implements AgentNode {
         }
         String quality = textOrDefault(source.getSourceQuality(), "UNKNOWN").toUpperCase(Locale.ROOT);
         String status = textOrDefault(source.getCollectionStatus(), "UNKNOWN").toUpperCase(Locale.ROOT);
-        String authority = textOrDefault(source.getSourceAuthority(), "UNKNOWN");
-        if ("INTERNAL_ONLY".equals(quality) || "USER_PROVIDED".equals(status)) {
-            return "UNKNOWN".equalsIgnoreCase(authority) || "USER_PROVIDED".equalsIgnoreCase(authority)
-                    ? quality
-                    : authority;
+        String freshness = textOrDefault(source.getFreshness(), "UNKNOWN").toUpperCase(Locale.ROOT);
+        String authority = textOrDefault(source.getSourceAuthority(), "UNKNOWN").toUpperCase(Locale.ROOT);
+        String sourceType = normalizeText(source.getSourceType());
+        String url = textOrDefault(source.getUrl(), "").toLowerCase(Locale.ROOT);
+        if ("INTERNAL_ONLY".equals(quality)
+                || "INTERNAL_ONLY".equals(freshness)
+                || "INTERNAL_ONLY".equals(authority)) {
+            return "INTERNAL_ONLY";
+        }
+        if (source.isGlobalResource()
+                || "USER_PROVIDED".equals(status)
+                || "USER_PROVIDED".equals(freshness)
+                || "USER_PROVIDED".equals(authority)
+                || sourceType.startsWith("user_")
+                || url.startsWith("user-document://")
+                || url.startsWith("user-evidence://")
+                || url.startsWith("survey-import://")
+                || url.startsWith("global-document://")) {
+            return "USER_PROVIDED";
         }
         if (writerThirdPartyLikeSource(source)) {
             return "THIRD_PARTY_GENERAL";

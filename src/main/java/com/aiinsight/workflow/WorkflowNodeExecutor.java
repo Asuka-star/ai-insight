@@ -86,7 +86,7 @@ public class WorkflowNodeExecutor {
             step.succeed(buildOutputSummary(run, node));
             completeTrace(trace, step, run, "SUCCEEDED", startedAt);
             addTraceIfAbsent(run, trace);
-            run = mergeClarifierResultIfUserMovedOn(runId, node, run, step, trace);
+            run = mergeClarifierResultIfUserMovedOn(runId, node, run, step, trace, inputSummary);
             repository.save(run);
             eventBroker.publish(run, "agent_succeeded", node.name() + " succeeded");
             publishResearchCollectionEvent(run, node);
@@ -322,8 +322,12 @@ public class WorkflowNodeExecutor {
                                                           AgentNode node,
                                                           AnalysisRun completedRun,
                                                           AgentStep step,
-                                                          AgentTrace trace) {
+                                                          AgentTrace trace,
+                                                          String routeSummary) {
         if (node.name() != AgentName.CLARIFIER) {
+            return completedRun;
+        }
+        if (isExplicitClarifierRerun(routeSummary)) {
             return completedRun;
         }
         AnalysisRun latest = repository.findById(runId).orElse(completedRun);
@@ -347,6 +351,10 @@ public class WorkflowNodeExecutor {
                 latest.getEvidenceSources().size(),
                 latest.getSteps().size());
         return latest;
+    }
+
+    private boolean isExplicitClarifierRerun(String routeSummary) {
+        return routeSummary != null && routeSummary.contains("preflight clarification rerun");
     }
 
     private boolean hasUserProgressAfterClarifierStarted(AnalysisRun latest) {

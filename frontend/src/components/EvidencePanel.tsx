@@ -182,6 +182,7 @@ function EvidenceItem({
       <p>{source.snippet}</p>
       <div className="evidence-badges">
         <small className="evidence-source-type">{sourceTypeLabel(source.sourceType)}</small>
+        {source.globalResource ? <small className="quality-user_provided">用户资源包</small> : null}
         {source.sourceQuality ? <small className={`quality-${source.sourceQuality.toLowerCase()}`}>{sourceQualityLabel(source.sourceQuality)}</small> : null}
         {internalOnly(source) ? <small className="quality-internal_only">内部资料</small> : null}
         {source.collectionStatus ? <small>{collectionStatusLabel(source.collectionStatus)}</small> : null}
@@ -280,6 +281,9 @@ function internalOnly(source: EvidenceSource) {
 function sourceTypeLabel(value?: string) {
   const normalized = value?.replace(/^user_/, "") ?? "";
   switch (normalized) {
+    case "global_document":
+    case "global_user_document":
+      return "用户资源包";
     case "interview":
       return "访谈记录";
     case "survey":
@@ -327,6 +331,8 @@ function sourceQualityLabel(value: string) {
       return "不可用";
     case "INTERNAL_ONLY":
       return "内部可用";
+    case "USER_PROVIDED":
+      return "用户提供";
     default:
       return value;
   }
@@ -338,6 +344,10 @@ function collectionStatusLabel(value: string) {
       return "已采集";
     case "USER_PROVIDED":
       return "用户提供";
+    case "READY":
+      return "已就绪";
+    case "GLOBAL_RAG":
+      return "用户资源包";
     case "FETCH_FAILED":
       return "采集失败";
     case "BLOCKED_BY_ROBOTS":
@@ -353,6 +363,8 @@ function freshnessLabel(value: string) {
       return "实时采集";
     case "USER_PROVIDED":
       return "用户提供";
+    case "GLOBAL_RAG":
+      return "用户资源包";
     case "INTERNAL_ONLY":
       return "内部资料";
     case "SEARCH_RESULT_SNIPPET":
