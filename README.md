@@ -1,20 +1,34 @@
 # AI Insight
 
-AI Insight 是面向字节跳动 AI 全栈挑战赛 AI-3 课题的后端原型项目，目标是实现一个**可溯源、可复核、可观测、可重跑**的竞品分析 Agent 协作系统。
+项目目标不是只生成一篇竞0品报告，而是把竞品分析拆成一个**可确认范围、可追踪证据、可复核质量、可回放过程、可局部重跑**的工作流。
 
-项目采用 Spring Boot + React Workbench 推进，已经打通 LangGraph4j 多 Agent 工作流、结构化 Schema、Reviewer 反馈闭环、SSE 运行态、PostgreSQL JSONB 持久化、历史会话和前端演示工作台。后续增强重点是更细粒度的指标评测、语义检索和更丰富的数据源。
+项目采用 Spring Boot + React Workbench 实现，已经打通 LangGraph4j 多 Agent 编排、结构化知识 Schema、Reviewer 反馈闭环、RAG 证据链、SSE 运行态、PostgreSQL JSONB + pgvector 持久化、历史会话、问卷访谈调研和前端演示工作台。未配置外部 LLM / 搜索 / embedding 时，系统会使用 deterministic fallback，保证本地测试不中断。
+
+## 要求对齐
+
+课题关注的是“数字调研小组”式的 Agent 协作能力：能够围绕用户给出的竞品分析目标，规划采集、沉淀证据、抽取结构化知识、生成分析报告，并通过复核机制提升输出可信度。AI Insight 当前按以下评分点落地：
+
+| 课题 / 评分关注点  | 项目实现                                                                                              | 可演示证据                                          |
+| ------------------ | ----------------------------------------------------------------------------------------------------- | --------------------------------------------------- |
+| 多 Agent 分工协作  | Clarifier、Researcher、Extractor、Analyst、Writer、Reviewer 六角色协作，主流程由 LangGraph4j DAG 编排 | Agent DAG、时间线、单 Agent Trace                   |
+| 输出可信度与证据链 | `EvidenceSource`、`EvidenceChunk`、`AnalysisClaim.evidenceIds`、报告 `[S1]` citation、citation hover  | EvidencePanel、报告 citation、Schema 中 evidenceIds |
+| Reviewer 反馈闭环  | `ReviewDecision` 驱动 `REVIEW_GATE`，可打回 Researcher / Extractor / Analyst / Writer 并级联重跑      | ReviewPanel、WorkflowTransition、报告版本变化       |
+| 工程完整度         | Spring Boot API、SSE、PostgreSQL JSONB 权威快照、明细投影表、pgvector 语义召回、测试覆盖              | REST API、TraceDrawer、`mvn test`、数据库表         |
+| 业务工作台体验     | 范围确认、上下文补充、用户资料包、问卷访谈、报告/Schema/指标三栏工作台                                | React Workbench、历史任务、运行指标                 |
+| 合规与可降级       | robots 检查、PII 脱敏、API Key 本地 `.env`、无 key fallback                                           | `complianceNote`、`.gitignore`、fallback Trace      |
 
 ## 项目定位
 
-- 可溯源：资料片段、竞品画像、分析结论和报告引用都绑定 citationId。
-- 可复核：Reviewer Agent 会检查引用缺失、结论风险和证据覆盖不足。
-- 可观测：每个 Agent 的执行步骤、输入输出摘要、Prompt、模型输出、耗时、fallback 状态和 Trace 都挂在 `analysis_run` 上。
-- 可重跑：支持单个 Agent 手动重跑，也支持 Reviewer 基于结构化决策触发一次自动补采与下游重跑。
-- 结构化协作：Agent 之间通过 `ResearchPackage`、`CompetitorProfile`、`AnalysisClaim`、`ReviewDecision` 等强类型对象传递状态，而不是只依赖自然语言文本。
+- 可溯源：公开网页、用户资料、问卷/访谈结果都会沉淀为 citation，资料片段、竞品画像、分析结论和报告引用都能回到来源。
+- 可复核：Reviewer Agent 同时做规则质检和语义质检，检查引用缺失、事实一致性、过度推断、来源质量和证据覆盖不足。
+- 可观测：每个 Agent 的执行步骤、输入输出摘要、Prompt、原始模型输出、耗时、token、fallback 状态和异常都挂在 `analysis_run` 上。
+- 可重跑：支持 Agent 手动重跑，也支持 Reviewer 基于结构化 `ReviewDecision` 触发自动补采、重抽取、重分析或修订报告。
+- 结构化协作：Agent 之间通过 `ResearchPackage`、`CompetitorProfile`、`AnalysisClaim`、`ReviewDecision`、`ReviewRepairTask` 等强类型对象传递状态，而不是只依赖自然语言文本。
+- 可降级：外部 LLM、搜索、embedding 或 pgvector 不可用时，系统保留确定性 fallback、关键词召回和 JSONB 权威快照。
 
 ## 当前能力
 
-已实现的原型链路：
+已实现的端到端链路：
 
 ```text
 用户输入竞品分析需求
@@ -40,34 +54,40 @@ AI Insight 是面向字节跳动 AI 全栈挑战赛 AI-3 课题的后端原型�
 
 说明：当前流程已经移除独立封版 Agent；历史运行中的最终报告类产物仍可读取，但新运行以 Writer 的最新报告草稿作为报告展示内容。
 
+核心能力清单：
+
+- 范围确认：Clarifier 将自然语言需求整理成行业、竞品、分析维度、来源偏好和报告目标，用户确认后再启动主流程。
+- 公开采集：Researcher 支持用户 URL、Tavily 搜索、网页抓取、JS 渲染兜底、robots 合规说明、来源去重和采集子任务。
+- RAG 证据：EvidenceChunk 切片支持关键词召回；配置 embedding 后写入 pgvector 并启用语义召回。
+- 结构化抽取：Extractor 生成 `CompetitorProfile`、功能树、定价模型、用户画像和事实集。
+- 分析产物：Analyst 生成带证据 ID 的 `AnalysisClaim`，并标注哪些结论适合进入矩阵 / SWOT / 补证清单。
+- 报告生成：Writer 基于 claims、竞品画像和证据索引编排 `REPORT_DRAFT`，在报告正文中统一写出竞品矩阵和 SWOT，同类 artifact 自动版本化。
+- 复核闭环：Reviewer 生成 `ReviewFinding`、`ReviewDecision`、`ReviewRepairTask`，并由 `REVIEW_GATE` 路由返工。
+- 主动调研：Researcher 生成问卷草案和访谈提纲，前端支持导出腾讯问卷 DSL、导入 CSV/XLSX 调研结果并转为证据和洞察。
+- 用户资料包：支持上传文档、补充 URL、访谈摘要、问卷结果和内部资料；敏感资料可标记 internal-only。
+- 运行指标：展示步骤数、证据数、质检问题、引用数、Claim 覆盖率、Schema 完整率、打回次数、token、耗时和最近一次重跑改善。
+- 可观测性：TraceDrawer 可回放 Prompt、输入快照、输出摘要、原始模型输出、模型名、token、耗时、fallback 和异常。
+
 ## 核心模块
 
 ```text
 src/main/java/com/aiinsight
-├── agent              # Agent 节点接口与各角色节点
-├── config             # 异步执行等 Spring 配置
+├── agent              # Agent 节点接口与各角色节点；Analyst 产出 claims，Writer 负责报告正文中的矩阵 / SWOT 编排
+├── config             # 异步执行、HTTP 客户端、代理、SSE 断连处理等 Spring 配置
 ├── controller         # REST 与 SSE 接口
 ├── dto                # 请求与事件 DTO
 ├── exception          # 业务异常
-├── llm                # 基于 Spring AI 的小米 LLM 适配器与 fallback
-├── model              # 运行态、Schema、质检和枚举模型
-│   ├── enums          # Agent、状态、产物、复核动作等枚举
-│   ├── review         # Reviewer 发现的问题与结构化决策
-│   ├── run            # analysis_run、步骤、Trace、证据、产物和工作流跳转
-│   └── schema         # 竞品画像、功能树、定价、用户画像和分析结论
-├── repository         # PostgreSQL JSONB 运行态仓储
-├── service            # 任务服务、事件推送、规则质检等服务
-└── workflow           # LangGraph4j 状态图、图状态和节点执行器
+├── llm                # 基于 Spring AI 的 OpenAI-compatible LLM 路由、配置与 fallback
+├── observability      # Agent Trace 上下文传播
+├── model              # 运行态聚合、Schema、Reviewer 质检模型和枚举
+│   ├── enums          # Agent、状态、artifact、复核动作等枚举
+│   ├── review         # Reviewer 的 finding、decision、repair task
+│   ├── run            # analysis_run、步骤、Trace、证据、artifact、上下文和工作流跳转
+│   └── schema         # ResearchPackage、CompetitorProfile、FeatureTree、PricingModel、AnalysisClaim 等结构化对象
+├── repository         # PostgreSQL JSONB 权威快照、明细投影表和 pgvector 相关仓储逻辑
+├── service            # 任务编排、资料采集、文档导入、证据切片 / 召回、搜索、embedding、指标与质检支撑服务
+└── workflow           # LangGraph4j DAG、REVIEW_GATE 路由、图状态和节点执行器
 ```
-
-## 项目文档
-
-- `docs/architecture.md`：系统架构、Agent 协议、DAG 和持久化说明。
-- `docs/development-guide.md`：开发维护入口、关键代码地图、清库和验证命令。
-- `docs/demo-script.md`：答辩演示脚本和讲解顺序。
-- `docs/scoring-map.md`：课题评分点与系统能力映射。
-- `docs/remaining-feature-roadmap.md`：剩余功能和优先级记录。
-- `docs/research-agent-roadmap.md`：信息采集 Agent、问卷访谈和调研能力后续路线。
 
 ## 竞品知识 Schema
 
@@ -92,25 +112,27 @@ src/main/java/com/aiinsight
 - Node.js 18+
 - Docker Desktop（用于本地 PostgreSQL/Redis）
 
-运行测试：
+### 方式一：开发模式启动
+
+启动依赖：
 
 ```bash
-mvn clean test
+docker compose up -d postgres
 ```
 
-启动后端：
+运行后端：
 
 ```bash
 mvn spring-boot:run
 ```
 
-默认端口：
+后端默认端口：
 
 ```text
 http://localhost:8080
 ```
 
-启动前端：
+运行前端：
 
 ```bash
 cd frontend
@@ -118,9 +140,52 @@ npm install
 npm run dev
 ```
 
+前端默认端口：
+
+```text
+http://localhost:5173
+```
+
+Vite 开发服务会把 `/api` 请求代理到 `http://localhost:8080`。
+
+### 方式二：Docker Compose 一体化启动
+
+当前 Dockerfile 会构建前端静态资源并注入 Spring Boot，`app` 容器通过 `8080` 对外提供前后端一体化服务：
+
+```bash
+docker compose up -d --build
+```
+
+访问：
+
+```text
+http://localhost:8080
+```
+
+说明：仓库根目录存在 `.env` 时，Compose 会读取其中的 LLM、搜索和 embedding 配置；不要提交真实 API Key。
+
+### 验证命令
+
+```bash
+mvn clean test
+```
+
+前端构建：
+
+```bash
+cd frontend
+npm run build
+```
+
+如果改动了包含中文的 `.java`、`.ts`、`.tsx`、`.css`、`.xml`、`.md` 或资源文本文件，请额外运行编码守卫：
+
+```bash
+mvn -Dtest=SourceEncodingGuardTest test
+```
+
 ## Spring AI 与 LLM 配置
 
-项目通过 Spring AI 的 OpenAI ChatModel 接入 OpenAI-compatible 接口，业务侧仍然只依赖 `LlmClient` 门面。默认主模型使用小米接口；如果配置了豆包接口，Clarifier 会单独路由到豆包小模型。不要提交真实 API Key。
+项目通过 Spring AI 的 OpenAI ChatModel 接入 OpenAI-compatible 接口，业务侧统一依赖 `LlmClient` 门面。默认主模型使用小米接口；如果配置了豆包接口，Clarifier 会单独路由到豆包小模型。不要提交真实 API Key。
 
 PowerShell 示例：
 
@@ -161,6 +226,8 @@ POSTGRES_PASSWORD=ai_insight
 
 未配置 `TAVILY_API_KEY` 时，Researcher 不会生成伪造搜索证据，只会抓取用户提供的 URL，并在调研计划中提示需要补充公开来源、问卷或访谈资料。
 
+Embedding 配置可选。未配置 `AI_INSIGHT_EMBEDDING_API_KEY` 时，证据召回使用关键词 fallback；配置后会把 evidence chunk embedding 缓存到 PostgreSQL，并在 pgvector 可用时启用语义召回。
+
 ## API 示例
 
 创建分析任务：
@@ -191,6 +258,12 @@ curl http://localhost:8080/api/analysis-runs/{runId}
 curl http://localhost:8080/api/analysis-runs/{runId}/traces
 ```
 
+查询运行指标：
+
+```bash
+curl http://localhost:8080/api/analysis-runs/{runId}/metrics
+```
+
 查询证据片段召回：
 
 ```bash
@@ -209,32 +282,27 @@ curl -N http://localhost:8080/api/analysis-runs/{runId}/events
 curl -X POST http://localhost:8080/api/analysis-runs/{runId}/agents/REVIEWER/rerun
 ```
 
-## Docker 依赖
-
-项目已经准备了 PostgreSQL + pgvector 和 Redis 的 Docker Compose 配置。后端默认使用 PostgreSQL 保存 `analysis_run`，启动应用前需要先启动 PostgreSQL。
-
-启动依赖：
+导出问卷 DSL：
 
 ```bash
-docker compose up -d
+curl http://localhost:8080/api/analysis-runs/{runId}/surveys/template
 ```
 
-仅启动 PostgreSQL：
+导入问卷结果或上传用户文档需要使用 `multipart/form-data`，建议直接通过前端工作台操作。
 
-```bash
-docker compose up -d postgres
+## 数据与部署说明
+
+项目使用 PostgreSQL + pgvector 保存运行态和证据向量，Redis 预留给任务锁与事件缓存。后端默认连接：
+
+```text
+jdbc:postgresql://localhost:5433/ai_insight
 ```
 
-如果使用仓库自带 `docker-compose.yml`，宿主机端口是 `5433`。启动后端：
+如果使用仓库自带 `docker-compose.yml` 一体化启动，Spring Boot 容器会通过 Docker 网络访问 `postgres:5432`，外部只需要访问 `http://localhost:8080`。
 
-```powershell
-$env:POSTGRES_URL="jdbc:postgresql://localhost:5433/ai_insight"
-$env:POSTGRES_USER="ai_insight"
-$env:POSTGRES_PASSWORD="ai_insight"
-mvn spring-boot:run
-```
+如果希望在宿主机用 `mvn spring-boot:run` 直连 Compose 中的 PostgreSQL，需要确保 compose 文件将 PostgreSQL 端口映射到宿主机，例如 `5433:5432`；或者自行启动一个本地 PostgreSQL/pgvector 实例并通过 `POSTGRES_URL` 指向它。
 
-当前 PostgreSQL 仓储会自动创建 `analysis_run` 表，并以 `jsonb` 保存完整运行态聚合，同时保留 `status`、`original_prompt`、`created_at`、`updated_at` 等查询字段。保存运行态时还会同步刷新 `analysis_artifact`、`agent_step`、`agent_trace`、`evidence_source`、`evidence_chunk`、`review_finding` 明细表，便于后续做分页查询、审计和指标看板。
+当前 PostgreSQL 仓储会自动创建 `analysis_run` 表，并以 `jsonb` 保存完整运行态聚合，同时保留 `status`、`original_prompt`、`created_at`、`updated_at` 等查询字段。保存运行态时还会同步刷新 `analysis_artifact`、`agent_step`、`agent_trace`、`evidence_source`、`evidence_chunk`、`review_finding` 明细表，便于后续做分页查询、审计和指标看板。配置 embedding 后，还会写入 `evidence_chunk_embedding` / `global_evidence_chunk_embedding` pgvector 投影；pgvector 不可用时 JSONB payload 仍是权威数据源。
 
 清理本地历史会话：
 
@@ -256,15 +324,15 @@ docker exec -it ai-insight-pg psql -U ai_insight -d ai_insight -c "truncate tabl
 
 可选后续增强：
 
-- PostgreSQL + pgvector：当前已支持 embedding 缓存和 evidence chunk 向量投影；后续可继续补分页、过滤和审计查询接口。
-- Redis：任务锁、短期事件广播、异步任务状态缓存。
+- PostgreSQL 明细表：继续补 artifact、trace、evidence 和 review finding 的分页、过滤和审计查询接口。
+- Redis：接入任务锁、短期事件广播和异步任务状态缓存。
 
 ## 后续增强方向
 
-- 扩展采集来源，继续增强搜索结果、问卷、访谈、更新日志和公开评价数据。
-- 强化问卷/访谈调研能力：补充访谈记录模板、多份访谈聚合、PII 脱敏和 LLM 精抽。
-- 继续增强来源质量评分和质量原因展示；补采/重跑前后改善指标已经接入运行指标面板。
-- 使用 Spring AI 继续优化文档切分、Embedding、向量召回和引用绑定链路。
+- 扩展采集来源，继续增强更新日志、公开评价、行业报告和更稳定的搜索结果筛选。
+- 强化访谈管理：补充访谈记录模板、多份访谈聚合和人工审批流。
+- 继续增强来源质量评分和质量原因展示，让官方/一手/第三方来源差异更直观。
+- 使用 Spring AI 继续优化文档切分、Embedding、向量召回、引用绑定和证据支撑匹配。
 - 将前端的 trace、artifact、evidence 查询逐步切到 PostgreSQL 明细表，并补充分页与过滤。
 - 继续优化前端 Workbench 的报告对比、历史任务筛选和大包体代码拆分。
 - 扩展评测指标：补采前后评分变化、更多质量规则和跨样例 benchmark。
