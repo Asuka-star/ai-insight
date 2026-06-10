@@ -1,0 +1,415 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 920" font-family="'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#f8fafc"/><stop offset="100%" stop-color="#eef2f7"/>
+    </linearGradient>
+    <linearGradient id="gFE" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#dbeafe"/><stop offset="100%" stop-color="#bfdbfe"/>
+    </linearGradient>
+    <linearGradient id="gAPI" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#d1fae5"/><stop offset="100%" stop-color="#a7f3d0"/>
+    </linearGradient>
+    <linearGradient id="gDAG" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#fffbeb"/><stop offset="100%" stop-color="#fef3c7"/>
+    </linearGradient>
+    <linearGradient id="gAgent" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#fef9c3"/><stop offset="100%" stop-color="#fde68a"/>
+    </linearGradient>
+    <linearGradient id="gSvc" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#e0e7ff"/><stop offset="100%" stop-color="#c7d2fe"/>
+    </linearGradient>
+    <linearGradient id="gRAG" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#ede9fe"/><stop offset="100%" stop-color="#ddd6fe"/>
+    </linearGradient>
+    <linearGradient id="gDB" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#fce7f3"/><stop offset="100%" stop-color="#fbcfe8"/>
+    </linearGradient>
+    <linearGradient id="gExt" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#f1f5f9"/><stop offset="100%" stop-color="#e2e8f0"/>
+    </linearGradient>
+    <filter id="sh" x="-2%" y="-2%" width="104%" height="106%">
+      <feDropShadow dx="0" dy="2" stdDeviation="3" flood-opacity="0.08"/>
+    </filter>
+    <marker id="arr" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+      <polygon points="0 0,8 3,0 6" fill="#64748b"/>
+    </marker>
+    <marker id="arrG" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+      <polygon points="0 0,8 3,0 6" fill="#22c55e"/>
+    </marker>
+    <marker id="arrR" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+      <polygon points="0 0,8 3,0 6" fill="#ef4444"/>
+    </marker>
+    <marker id="arrO" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+      <polygon points="0 0,8 3,0 6" fill="#f97316"/>
+    </marker>
+    <marker id="arrY" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+      <polygon points="0 0,8 3,0 6" fill="#ca8a04"/>
+    </marker>
+    <marker id="arrP" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+      <polygon points="0 0,8 3,0 6" fill="#8b5cf6"/>
+    </marker>
+  </defs>
+
+  <!-- Background -->
+  <rect width="1200" height="920" fill="url(#bg)" rx="10"/>
+
+  <!-- Title -->
+  <text x="600" y="34" text-anchor="middle" font-size="20" font-weight="700" fill="#0f172a">AI Insight 系统架构图</text>
+  <text x="600" y="52" text-anchor="middle" font-size="11" fill="#64748b" letter-spacing="0.5">Spring Boot 3.5 · LangGraph4j · React 18 · PostgreSQL + pgvector · Multi-Agent DAG with Feedback Loop</text>
+
+  <!-- ==================== Layer 1: Frontend ==================== -->
+  <rect x="30" y="66" width="1140" height="76" rx="8" fill="url(#gFE)" stroke="#93c5fd" stroke-width="1.2" filter="url(#sh)"/>
+  <text x="48" y="85" font-size="12" font-weight="600" fill="#1e40af">Frontend Workbench</text>
+  <text x="195" y="85" font-size="9" fill="#3b82f6">React 18 + TypeScript + Vite 5 + @xyflow/react</text>
+
+  <rect x="48" y="93" width="130" height="38" rx="5" fill="white" stroke="#93c5fd" stroke-width="0.8"/>
+  <text x="113" y="109" text-anchor="middle" font-size="9" font-weight="500" fill="#1e40af">ScopeConfirmation</text>
+  <text x="113" y="122" text-anchor="middle" font-size="8" fill="#64748b">范围确认 / 需求澄清</text>
+
+  <rect x="186" y="93" width="120" height="38" rx="5" fill="white" stroke="#93c5fd" stroke-width="0.8"/>
+  <text x="246" y="109" text-anchor="middle" font-size="9" font-weight="500" fill="#1e40af">WorkflowGraph</text>
+  <text x="246" y="122" text-anchor="middle" font-size="8" fill="#64748b">Agent DAG 可视化</text>
+
+  <rect x="314" y="93" width="120" height="38" rx="5" fill="white" stroke="#93c5fd" stroke-width="0.8"/>
+  <text x="374" y="109" text-anchor="middle" font-size="9" font-weight="500" fill="#1e40af">ArtifactViewer</text>
+  <text x="374" y="122" text-anchor="middle" font-size="8" fill="#64748b">报告 / Citation Hover</text>
+
+  <rect x="442" y="93" width="120" height="38" rx="5" fill="white" stroke="#93c5fd" stroke-width="0.8"/>
+  <text x="502" y="109" text-anchor="middle" font-size="9" font-weight="500" fill="#1e40af">EvidencePanel</text>
+  <text x="502" y="122" text-anchor="middle" font-size="8" fill="#64748b">证据来源 / 溯源</text>
+
+  <rect x="570" y="93" width="120" height="38" rx="5" fill="white" stroke="#93c5fd" stroke-width="0.8"/>
+  <text x="630" y="109" text-anchor="middle" font-size="9" font-weight="500" fill="#1e40af">ReviewPanel</text>
+  <text x="630" y="122" text-anchor="middle" font-size="8" fill="#64748b">质检 / 打回 / 改善</text>
+
+  <rect x="698" y="93" width="120" height="38" rx="5" fill="white" stroke="#93c5fd" stroke-width="0.8"/>
+  <text x="758" y="109" text-anchor="middle" font-size="9" font-weight="500" fill="#1e40af">TraceDrawer</text>
+  <text x="758" y="122" text-anchor="middle" font-size="8" fill="#64748b">Prompt / Token / 决策</text>
+
+  <rect x="826" y="93" width="120" height="38" rx="5" fill="white" stroke="#93c5fd" stroke-width="0.8"/>
+  <text x="886" y="109" text-anchor="middle" font-size="9" font-weight="500" fill="#1e40af">SchemaPanel</text>
+  <text x="886" y="122" text-anchor="middle" font-size="8" fill="#64748b">画像 / Claim / 版本</text>
+
+  <rect x="954" y="93" width="120" height="38" rx="5" fill="white" stroke="#93c5fd" stroke-width="0.8"/>
+  <text x="1014" y="109" text-anchor="middle" font-size="9" font-weight="500" fill="#1e40af">SurveyPanel</text>
+  <text x="1014" y="122" text-anchor="middle" font-size="8" fill="#64748b">问卷 / 访谈 / 导入</text>
+
+  <!-- Arrows: Frontend ↔ API -->
+  <line x1="350" y1="142" x2="350" y2="162" stroke="#64748b" stroke-width="1.5" marker-end="url(#arr)"/>
+  <text x="365" y="157" font-size="8" fill="#64748b">REST</text>
+  <line x1="600" y1="162" x2="600" y2="142" stroke="#3b82f6" stroke-width="1.5" stroke-dasharray="5,2"/>
+  <text x="612" y="157" font-size="8" fill="#3b82f6">SSE Events</text>
+  <line x1="850" y1="142" x2="850" y2="162" stroke="#64748b" stroke-width="1.5" marker-end="url(#arr)"/>
+  <text x="862" y="157" font-size="8" fill="#64748b">GET/POST</text>
+
+  <!-- ==================== Layer 2: API ==================== -->
+  <rect x="30" y="162" width="1140" height="52" rx="8" fill="url(#gAPI)" stroke="#86efac" stroke-width="1.2" filter="url(#sh)"/>
+  <text x="48" y="181" font-size="12" font-weight="600" fill="#166534">Spring Boot API</text>
+
+  <rect x="48" y="189" width="190" height="18" rx="4" fill="white" stroke="#86efac" stroke-width="0.8"/>
+  <text x="143" y="202" text-anchor="middle" font-size="9" fill="#166534">AnalysisRunController (20+ REST)</text>
+  <rect x="248" y="189" width="170" height="18" rx="4" fill="white" stroke="#86efac" stroke-width="0.8"/>
+  <text x="333" y="202" text-anchor="middle" font-size="9" fill="#166534">AnalysisEventBroker (SSE)</text>
+  <rect x="428" y="189" width="180" height="18" rx="4" fill="white" stroke="#86efac" stroke-width="0.8"/>
+  <text x="518" y="202" text-anchor="middle" font-size="9" fill="#166534">AnalysisWorkflowService</text>
+  <rect x="618" y="189" width="150" height="18" rx="4" fill="white" stroke="#86efac" stroke-width="0.8"/>
+  <text x="693" y="202" text-anchor="middle" font-size="9" fill="#166534">Agent Rerun Handler</text>
+  <rect x="778" y="189" width="150" height="18" rx="4" fill="white" stroke="#86efac" stroke-width="0.8"/>
+  <text x="853" y="202" text-anchor="middle" font-size="9" fill="#166534">Survey Import/Export</text>
+  <rect x="938" y="189" width="150" height="18" rx="4" fill="white" stroke="#86efac" stroke-width="0.8"/>
+  <text x="1013" y="202" text-anchor="middle" font-size="9" fill="#166534">Evidence Retrieval API</text>
+
+  <!-- Arrow: API → DAG -->
+  <line x1="600" y1="214" x2="600" y2="232" stroke="#64748b" stroke-width="1.5" marker-end="url(#arr)"/>
+
+  <!-- ==================== Layer 3: Agent DAG ==================== -->
+  <rect x="30" y="232" width="1140" height="242" rx="8" fill="url(#gDAG)" stroke="#fbbf24" stroke-width="1.2" filter="url(#sh)"/>
+  <text x="48" y="252" font-size="12" font-weight="600" fill="#92400e">Agent Orchestration — LangGraph4j DAG</text>
+  <text x="365" y="252" font-size="9" fill="#b45309">AnalysisLangGraphWorkflow · WorkflowNodeExecutor · REVIEW_GATE 条件边</text>
+
+  <!-- Clarifier (pre-stage) -->
+  <rect x="48" y="265" width="120" height="68" rx="7" fill="#f3e8ff" stroke="#c084fc" stroke-width="1.2"/>
+  <text x="108" y="284" text-anchor="middle" font-size="10" font-weight="600" fill="#7c3aed">CLARIFIER</text>
+  <text x="108" y="298" text-anchor="middle" font-size="8" fill="#6b21a8">需求澄清 / 范围确认</text>
+  <text x="108" y="312" text-anchor="middle" font-size="7.5" fill="#a78bfa">Doubao Seed-2.0-lite</text>
+  <text x="108" y="324" text-anchor="middle" font-size="7" fill="#a78bfa">(前置，非 DAG 节点)</text>
+
+  <!-- Dashed arrow from Clarifier -->
+  <path d="M 168 299 L 196 299" stroke="#c084fc" stroke-width="1.2" fill="none" stroke-dasharray="3,2" marker-end="url(#arrP)"/>
+
+  <!-- Researcher -->
+  <rect x="200" y="265" width="130" height="68" rx="7" fill="url(#gAgent)" stroke="#f59e0b" stroke-width="1.2"/>
+  <text x="265" y="284" text-anchor="middle" font-size="10" font-weight="600" fill="#92400e">RESEARCHER</text>
+  <text x="265" y="298" text-anchor="middle" font-size="8" fill="#b45309">多源证据采集</text>
+  <text x="265" y="312" text-anchor="middle" font-size="7.5" fill="#d97706">MiMo v2.5-pro · RAG</text>
+  <text x="265" y="324" text-anchor="middle" font-size="7" fill="#d97706">问卷 + 访谈管线</text>
+
+  <line x1="330" y1="299" x2="358" y2="299" stroke="#64748b" stroke-width="1.5" marker-end="url(#arr)"/>
+
+  <!-- Extractor -->
+  <rect x="362" y="265" width="130" height="68" rx="7" fill="url(#gAgent)" stroke="#f59e0b" stroke-width="1.2"/>
+  <text x="427" y="284" text-anchor="middle" font-size="10" font-weight="600" fill="#92400e">EXTRACTOR</text>
+  <text x="427" y="298" text-anchor="middle" font-size="8" fill="#b45309">结构化 Schema 抽取</text>
+  <text x="427" y="312" text-anchor="middle" font-size="7.5" fill="#d97706">MiMo v2.5-pro</text>
+  <text x="427" y="324" text-anchor="middle" font-size="7" fill="#d97706">增量修复 · JSON 重试</text>
+
+  <line x1="492" y1="299" x2="520" y2="299" stroke="#64748b" stroke-width="1.5" marker-end="url(#arr)"/>
+
+  <!-- Analyst -->
+  <rect x="524" y="265" width="130" height="68" rx="7" fill="url(#gAgent)" stroke="#f59e0b" stroke-width="1.2"/>
+  <text x="589" y="284" text-anchor="middle" font-size="10" font-weight="600" fill="#92400e">ANALYST</text>
+  <text x="589" y="298" text-anchor="middle" font-size="8" fill="#b45309">横向对比 / SWOT</text>
+  <text x="589" y="312" text-anchor="middle" font-size="7.5" fill="#d97706">MiMo v2.5-pro</text>
+  <text x="589" y="324" text-anchor="middle" font-size="7" fill="#d97706">Claim ID 稳定化</text>
+
+  <line x1="654" y1="299" x2="682" y2="299" stroke="#64748b" stroke-width="1.5" marker-end="url(#arr)"/>
+
+  <!-- Writer -->
+  <rect x="686" y="265" width="130" height="68" rx="7" fill="url(#gAgent)" stroke="#f59e0b" stroke-width="1.2"/>
+  <text x="751" y="284" text-anchor="middle" font-size="10" font-weight="600" fill="#92400e">WRITER</text>
+  <text x="751" y="298" text-anchor="middle" font-size="8" fill="#b45309">报告生成 / 段落修订</text>
+  <text x="751" y="312" text-anchor="middle" font-size="7.5" fill="#d97706">MiMo v2.5-pro</text>
+  <text x="751" y="324" text-anchor="middle" font-size="7" fill="#d97706">Citation 强制 · 降级</text>
+
+  <line x1="816" y1="299" x2="844" y2="299" stroke="#64748b" stroke-width="1.5" marker-end="url(#arr)"/>
+
+  <!-- Reviewer -->
+  <rect x="848" y="265" width="130" height="68" rx="7" fill="url(#gAgent)" stroke="#f59e0b" stroke-width="1.2"/>
+  <text x="913" y="284" text-anchor="middle" font-size="10" font-weight="600" fill="#92400e">REVIEWER</text>
+  <text x="913" y="298" text-anchor="middle" font-size="8" fill="#b45309">双层质检 · 升级逻辑</text>
+  <text x="913" y="312" text-anchor="middle" font-size="7.5" fill="#d97706">MiMo v2.5-pro</text>
+  <text x="913" y="324" text-anchor="middle" font-size="7" fill="#d97706">规则 + 5 并行 LLM 子任务</text>
+
+  <line x1="913" y1="333" x2="913" y2="355" stroke="#64748b" stroke-width="1.5" marker-end="url(#arr)"/>
+
+  <!-- REVIEW_GATE -->
+  <rect x="848" y="355" width="130" height="30" rx="15" fill="#fef2f2" stroke="#ef4444" stroke-width="1.5"/>
+  <text x="913" y="374" text-anchor="middle" font-size="10" font-weight="600" fill="#dc2626">REVIEW_GATE</text>
+
+  <!-- PASS → END -->
+  <line x1="978" y1="370" x2="1040" y2="370" stroke="#22c55e" stroke-width="1.5" marker-end="url(#arrG)"/>
+  <rect x="1044" y="358" width="50" height="24" rx="5" fill="#dcfce7" stroke="#22c55e" stroke-width="1"/>
+  <text x="1069" y="374" text-anchor="middle" font-size="9" font-weight="600" fill="#16a34a">END</text>
+  <text x="1005" y="364" font-size="7.5" fill="#22c55e" font-weight="500">PASS</text>
+
+  <!-- RECOLLECT → Researcher (red curved) -->
+  <path d="M 848 375 Q 500 430 265 333" stroke="#ef4444" stroke-width="1.5" fill="none" stroke-dasharray="5,3" marker-end="url(#arrR)"/>
+  <text x="505" y="418" font-size="8.5" fill="#ef4444" font-weight="600">RECOLLECT_EVIDENCE</text>
+
+  <!-- REWORK → Analyst (orange curved) -->
+  <path d="M 860 385 Q 730 420 589 333" stroke="#f97316" stroke-width="1.2" fill="none" stroke-dasharray="5,3" marker-end="url(#arrO)"/>
+  <text x="690" y="432" font-size="8" fill="#f97316" font-weight="500">REWORK_ANALYSIS</text>
+
+  <!-- REVISE → Writer (yellow curved) -->
+  <path d="M 875 385 Q 810 408 751 333" stroke="#ca8a04" stroke-width="1.2" fill="none" stroke-dasharray="5,3" marker-end="url(#arrY)"/>
+  <text x="830" y="422" font-size="8" fill="#ca8a04" font-weight="500">REVISE_REPORT</text>
+
+  <!-- Shared state bar -->
+  <rect x="48" y="446" width="1070" height="18" rx="4" fill="white" stroke="#fbbf24" stroke-width="0.8" opacity="0.85"/>
+  <text x="58" y="459" font-size="8.5" font-weight="500" fill="#92400e">共享状态 AnalysisRun (JSONB 聚合)：</text>
+  <text x="268" y="459" font-size="8" fill="#b45309">EvidenceSource · EvidenceChunk · CompetitorProfile · CompetitorFactSet · AnalysisClaim · ReviewFinding · ReviewDecision · WorkflowTransition · Artifact</text>
+
+  <!-- ==================== Layer 4: Services + RAG + LLM ==================== -->
+  <!-- Core Services -->
+  <rect x="30" y="488" width="420" height="108" rx="8" fill="url(#gSvc)" stroke="#818cf8" stroke-width="1.2" filter="url(#sh)"/>
+  <text x="48" y="508" font-size="12" font-weight="600" fill="#3730a3">Core Services</text>
+
+  <rect x="48" y="516" width="125" height="22" rx="4" fill="white" stroke="#818cf8" stroke-width="0.8"/>
+  <text x="110" y="531" text-anchor="middle" font-size="8.5" fill="#3730a3">SourceCollection</text>
+  <rect x="180" y="516" width="125" height="22" rx="4" fill="white" stroke="#818cf8" stroke-width="0.8"/>
+  <text x="242" y="531" text-anchor="middle" font-size="8.5" fill="#3730a3">WebPageFetch</text>
+  <rect x="312" y="516" width="125" height="22" rx="4" fill="white" stroke="#818cf8" stroke-width="0.8"/>
+  <text x="374" y="531" text-anchor="middle" font-size="8.5" fill="#3730a3">CitationCoverage</text>
+
+  <rect x="48" y="544" width="125" height="22" rx="4" fill="white" stroke="#818cf8" stroke-width="0.8"/>
+  <text x="110" y="559" text-anchor="middle" font-size="8.5" fill="#3730a3">EvidenceChunk</text>
+  <rect x="180" y="544" width="125" height="22" rx="4" fill="white" stroke="#818cf8" stroke-width="0.8"/>
+  <text x="242" y="559" text-anchor="middle" font-size="8.5" fill="#3730a3">EvidenceRetrieval</text>
+  <rect x="312" y="544" width="125" height="22" rx="4" fill="white" stroke="#818cf8" stroke-width="0.8"/>
+  <text x="374" y="559" text-anchor="middle" font-size="8.5" fill="#3730a3">DocumentIngestion</text>
+
+  <rect x="48" y="572" width="125" height="22" rx="4" fill="white" stroke="#818cf8" stroke-width="0.8"/>
+  <text x="110" y="587" text-anchor="middle" font-size="8.5" fill="#3730a3">PiiDesensitizer</text>
+  <rect x="180" y="572" width="125" height="22" rx="4" fill="white" stroke="#818cf8" stroke-width="0.8"/>
+  <text x="242" y="587" text-anchor="middle" font-size="8.5" fill="#3730a3">CoverageEvaluator</text>
+  <rect x="312" y="572" width="125" height="22" rx="4" fill="white" stroke="#818cf8" stroke-width="0.8"/>
+  <text x="374" y="587" text-anchor="middle" font-size="8.5" fill="#3730a3">RepairDeltaTracker</text>
+
+  <!-- RAG Pipeline (prominent) -->
+  <rect x="460" y="488" width="290" height="108" rx="8" fill="url(#gRAG)" stroke="#a78bfa" stroke-width="1.5" filter="url(#sh)"/>
+  <text x="478" y="508" font-size="12" font-weight="600" fill="#5b21b6">RAG Pipeline</text>
+  <rect x="498" y="503" width="42" height="14" rx="3" fill="#c084fc" opacity="0.25"/>
+  <text x="519" y="513" text-anchor="middle" font-size="7" font-weight="600" fill="#7c3aed">核心亮点</text>
+
+  <rect x="478" y="518" width="120" height="22" rx="4" fill="white" stroke="#a78bfa" stroke-width="0.8"/>
+  <text x="538" y="533" text-anchor="middle" font-size="8.5" fill="#5b21b6">EvidenceEmbedding</text>
+  <rect x="606" y="518" width="130" height="22" rx="4" fill="white" stroke="#a78bfa" stroke-width="0.8"/>
+  <text x="671" y="533" text-anchor="middle" font-size="8.5" fill="#5b21b6">EmbeddingCache (TTL)</text>
+
+  <!-- RAG flow diagram -->
+  <rect x="478" y="548" width="82" height="18" rx="3" fill="#ede9fe" stroke="#a78bfa" stroke-width="0.6"/>
+  <text x="519" y="560" text-anchor="middle" font-size="7.5" fill="#5b21b6">Documents</text>
+  <path d="M 560 557 L 575 557" stroke="#8b5cf6" stroke-width="1" marker-end="url(#arrP)"/>
+  <rect x="578" y="548" width="52" height="18" rx="3" fill="#ede9fe" stroke="#a78bfa" stroke-width="0.6"/>
+  <text x="604" y="560" text-anchor="middle" font-size="7.5" fill="#5b21b6">Chunk</text>
+  <path d="M 630 557 L 645 557" stroke="#8b5cf6" stroke-width="1" marker-end="url(#arrP)"/>
+  <rect x="648" y="548" width="56" height="18" rx="3" fill="#ede9fe" stroke="#a78bfa" stroke-width="0.6"/>
+  <text x="676" y="560" text-anchor="middle" font-size="7.5" fill="#5b21b6">Embed</text>
+  <path d="M 704 557 L 719 557" stroke="#8b5cf6" stroke-width="1" marker-end="url(#arrP)"/>
+  <rect x="722" y="548" width="16" height="18" rx="3" fill="#c084fc" stroke="#8b5cf6" stroke-width="0.6"/>
+  <text x="730" y="560" text-anchor="middle" font-size="7.5" font-weight="600" fill="white">V</text>
+
+  <text x="478" y="584" font-size="7.5" fill="#7c3aed">text-embedding-3-small · pgvector · 关键词 fallback · 全局跨 Run 复用</text>
+
+  <!-- LLM & Observability -->
+  <rect x="760" y="488" width="410" height="108" rx="8" fill="#f0fdf4" stroke="#4ade80" stroke-width="1.2" filter="url(#sh)"/>
+  <text x="778" y="508" font-size="12" font-weight="600" fill="#166534">LLM &amp; Observability</text>
+
+  <rect x="778" y="516" width="130" height="22" rx="4" fill="white" stroke="#4ade80" stroke-width="0.8"/>
+  <text x="843" y="531" text-anchor="middle" font-size="8.5" fill="#166534">AgentRoutingLlm</text>
+  <rect x="916" y="516" width="120" height="22" rx="4" fill="white" stroke="#4ade80" stroke-width="0.8"/>
+  <text x="976" y="531" text-anchor="middle" font-size="8.5" fill="#166534">SpringAiLlmClient</text>
+  <rect x="1044" y="516" width="112" height="22" rx="4" fill="white" stroke="#4ade80" stroke-width="0.8"/>
+  <text x="1100" y="531" text-anchor="middle" font-size="8.5" fill="#166534">Token Retry</text>
+
+  <rect x="778" y="544" width="130" height="22" rx="4" fill="white" stroke="#4ade80" stroke-width="0.8"/>
+  <text x="843" y="559" text-anchor="middle" font-size="8.5" fill="#166534">AgentTraceContext</text>
+  <rect x="916" y="544" width="120" height="22" rx="4" fill="white" stroke="#4ade80" stroke-width="0.8"/>
+  <text x="976" y="559" text-anchor="middle" font-size="8.5" fill="#166534">Fallback (6 工厂)</text>
+  <rect x="1044" y="544" width="112" height="22" rx="4" fill="white" stroke="#4ade80" stroke-width="0.8"/>
+  <text x="1100" y="559" text-anchor="middle" font-size="8.5" fill="#166534">ClaimStabilizer</text>
+
+  <rect x="778" y="572" width="130" height="22" rx="4" fill="white" stroke="#4ade80" stroke-width="0.8"/>
+  <text x="843" y="587" text-anchor="middle" font-size="8.5" fill="#166534">FindingSignature</text>
+  <rect x="916" y="572" width="120" height="22" rx="4" fill="white" stroke="#4ade80" stroke-width="0.8"/>
+  <text x="976" y="587" text-anchor="middle" font-size="8.5" fill="#166534">EscalationLogic</text>
+  <rect x="1044" y="572" width="112" height="22" rx="4" fill="white" stroke="#4ade80" stroke-width="0.8"/>
+  <text x="1100" y="587" text-anchor="middle" font-size="8.5" fill="#166534">IncrementalRepair</text>
+
+  <!-- Connections: Services → Storage -->
+  <line x1="240" y1="596" x2="240" y2="620" stroke="#f472b6" stroke-width="1.2" marker-end="url(#arr)"/>
+  <line x1="600" y1="596" x2="600" y2="620" stroke="#8b5cf6" stroke-width="1.2" marker-end="url(#arrP)"/>
+
+  <!-- ==================== Layer 5: Storage + External ==================== -->
+  <!-- PostgreSQL -->
+  <rect x="30" y="620" width="550" height="100" rx="8" fill="url(#gDB)" stroke="#f472b6" stroke-width="1.2" filter="url(#sh)"/>
+  <text x="48" y="640" font-size="12" font-weight="600" fill="#9d174d">Persistence — PostgreSQL 16 + pgvector</text>
+
+  <rect x="48" y="650" width="130" height="44" rx="5" fill="white" stroke="#f472b6" stroke-width="0.8"/>
+  <text x="113" y="669" text-anchor="middle" font-size="9" font-weight="500" fill="#9d174d">analysis_run</text>
+  <text x="113" y="683" text-anchor="middle" font-size="7.5" fill="#be185d">JSONB 聚合权威快照</text>
+
+  <rect x="186" y="650" width="90" height="44" rx="5" fill="white" stroke="#f472b6" stroke-width="0.8"/>
+  <text x="231" y="669" text-anchor="middle" font-size="9" font-weight="500" fill="#9d174d">agent_trace</text>
+  <text x="231" y="683" text-anchor="middle" font-size="7.5" fill="#be185d">Prompt / Token</text>
+
+  <rect x="284" y="650" width="90" height="44" rx="5" fill="white" stroke="#f472b6" stroke-width="0.8"/>
+  <text x="329" y="669" text-anchor="middle" font-size="9" font-weight="500" fill="#9d174d">evidence_source</text>
+  <text x="329" y="683" text-anchor="middle" font-size="7.5" fill="#be185d">证据 / Citation</text>
+
+  <rect x="382" y="650" width="90" height="44" rx="5" fill="white" stroke="#f472b6" stroke-width="0.8"/>
+  <text x="427" y="669" text-anchor="middle" font-size="9" font-weight="500" fill="#9d174d">evidence_chunk</text>
+  <text x="427" y="683" text-anchor="middle" font-size="7.5" fill="#be185d">检索切片</text>
+
+  <rect x="480" y="650" width="85" height="44" rx="5" fill="white" stroke="#f472b6" stroke-width="0.8"/>
+  <text x="522" y="669" text-anchor="middle" font-size="9" font-weight="500" fill="#9d174d">pgvector</text>
+  <text x="522" y="683" text-anchor="middle" font-size="7.5" fill="#be185d">语义向量</text>
+
+  <!-- External Services -->
+  <rect x="590" y="620" width="580" height="100" rx="8" fill="url(#gExt)" stroke="#94a3b8" stroke-width="1.2" filter="url(#sh)"/>
+  <text x="608" y="640" font-size="12" font-weight="600" fill="#475569">External Services</text>
+
+  <rect x="608" y="650" width="110" height="44" rx="5" fill="white" stroke="#94a3b8" stroke-width="0.8"/>
+  <text x="663" y="669" text-anchor="middle" font-size="9" font-weight="500" fill="#475569">Xiaomi MiMo</text>
+  <text x="663" y="683" text-anchor="middle" font-size="7.5" fill="#64748b">mimo-v2.5-pro</text>
+
+  <rect x="726" y="650" width="110" height="44" rx="5" fill="white" stroke="#94a3b8" stroke-width="0.8"/>
+  <text x="781" y="669" text-anchor="middle" font-size="9" font-weight="500" fill="#475569">Doubao</text>
+  <text x="781" y="683" text-anchor="middle" font-size="7.5" fill="#64748b">Seed-2.0-lite</text>
+
+  <rect x="844" y="650" width="110" height="44" rx="5" fill="white" stroke="#94a3b8" stroke-width="0.8"/>
+  <text x="899" y="669" text-anchor="middle" font-size="9" font-weight="500" fill="#475569">Tavily Search</text>
+  <text x="899" y="683" text-anchor="middle" font-size="7.5" fill="#64748b">Web 搜索 API</text>
+
+  <rect x="962" y="650" width="110" height="44" rx="5" fill="white" stroke="#94a3b8" stroke-width="0.8"/>
+  <text x="1017" y="669" text-anchor="middle" font-size="9" font-weight="500" fill="#475569">Embedding API</text>
+  <text x="1017" y="683" text-anchor="middle" font-size="7.5" fill="#64748b">text-embedding-3-small</text>
+
+  <!-- Jsoup / Playwright -->
+  <rect x="1080" y="650" width="76" height="44" rx="5" fill="white" stroke="#94a3b8" stroke-width="0.8"/>
+  <text x="1118" y="669" text-anchor="middle" font-size="9" font-weight="500" fill="#475569">Jsoup</text>
+  <text x="1118" y="683" text-anchor="middle" font-size="7.5" fill="#64748b">+ Playwright</text>
+
+  <!-- LLM connections to external -->
+  <line x1="843" y1="596" x2="663" y2="650" stroke="#94a3b8" stroke-width="1" stroke-dasharray="4,3"/>
+  <line x1="920" y1="596" x2="781" y2="650" stroke="#94a3b8" stroke-width="1" stroke-dasharray="4,3"/>
+
+  <!-- ==================== Layer 6: Footer ==================== -->
+  <rect x="30" y="735" width="1140" height="170" rx="8" fill="white" stroke="#e2e8f0" stroke-width="1" filter="url(#sh)"/>
+
+  <text x="48" y="758" font-size="13" font-weight="600" fill="#0f172a">关键技术特性与差异化优势</text>
+
+  <!-- Row 1: Core architecture -->
+  <text x="48" y="782" font-size="10" font-weight="600" fill="#3730a3">多 Agent 编排</text>
+  <rect x="138" y="770" width="155" height="18" rx="3" fill="#eef2ff" stroke="#c7d2fe" stroke-width="0.6"/>
+  <text x="215" y="783" text-anchor="middle" font-size="8.5" fill="#3730a3">LangGraph4j DAG + 条件边</text>
+  <rect x="300" y="770" width="140" height="18" rx="3" fill="#eef2ff" stroke="#c7d2fe" stroke-width="0.6"/>
+  <text x="370" y="783" text-anchor="middle" font-size="8.5" fill="#3730a3">REVIEW_GATE 反馈闭环</text>
+  <rect x="447" y="770" width="150" height="18" rx="3" fill="#eef2ff" stroke="#c7d2fe" stroke-width="0.6"/>
+  <text x="522" y="783" text-anchor="middle" font-size="8.5" fill="#3730a3">Repair Delta 追踪</text>
+  <rect x="604" y="770" width="155" height="18" rx="3" fill="#eef2ff" stroke="#c7d2fe" stroke-width="0.6"/>
+  <text x="681" y="783" text-anchor="middle" font-size="8.5" fill="#3730a3">Finding Signature 反振荡</text>
+  <rect x="766" y="770" width="135" height="18" rx="3" fill="#eef2ff" stroke="#c7d2fe" stroke-width="0.6"/>
+  <text x="833" y="783" text-anchor="middle" font-size="8.5" fill="#3730a3">升级逻辑 (Escalation)</text>
+  <rect x="908" y="770" width="150" height="18" rx="3" fill="#eef2ff" stroke="#c7d2fe" stroke-width="0.6"/>
+  <text x="983" y="783" text-anchor="middle" font-size="8.5" fill="#3730a3">Claim ID 稳定化</text>
+
+  <!-- Row 2: Data quality -->
+  <text x="48" y="808" font-size="10" font-weight="600" fill="#5b21b6">数据可信度</text>
+  <rect x="138" y="796" width="155" height="18" rx="3" fill="#f5f3ff" stroke="#ddd6fe" stroke-width="0.6"/>
+  <text x="215" y="809" text-anchor="middle" font-size="8.5" fill="#5b21b6">RAG 语义检索 (pgvector)</text>
+  <rect x="300" y="796" width="140" height="18" rx="3" fill="#f5f3ff" stroke="#ddd6fe" stroke-width="0.6"/>
+  <text x="370" y="809" text-anchor="middle" font-size="8.5" fill="#5b21b6">Citation 强制绑定</text>
+  <rect x="447" y="796" width="150" height="18" rx="3" fill="#f5f3ff" stroke="#ddd6fe" stroke-width="0.6"/>
+  <text x="522" y="809" text-anchor="middle" font-size="8.5" fill="#5b21b6">增量修复 (Surgical Fix)</text>
+  <rect x="604" y="796" width="155" height="18" rx="3" fill="#f5f3ff" stroke="#ddd6fe" stroke-width="0.6"/>
+  <text x="681" y="809" text-anchor="middle" font-size="8.5" fill="#5b21b6">置信度自动降级</text>
+  <rect x="766" y="796" width="135" height="18" rx="3" fill="#f5f3ff" stroke="#ddd6fe" stroke-width="0.6"/>
+  <text x="833" y="809" text-anchor="middle" font-size="8.5" fill="#5b21b6">幻觉引用检测</text>
+  <rect x="908" y="796" width="150" height="18" rx="3" fill="#f5f3ff" stroke="#ddd6fe" stroke-width="0.6"/>
+  <text x="983" y="809" text-anchor="middle" font-size="8.5" fill="#5b21b6">PII 自动脱敏</text>
+
+  <!-- Row 3: Engineering -->
+  <text x="48" y="834" font-size="10" font-weight="600" fill="#166534">工程能力</text>
+  <rect x="138" y="822" width="155" height="18" rx="3" fill="#f0fdf4" stroke="#bbf7d0" stroke-width="0.6"/>
+  <text x="215" y="835" text-anchor="middle" font-size="8.5" fill="#166534">SSE 实时事件推送</text>
+  <rect x="300" y="822" width="140" height="18" rx="3" fill="#f0fdf4" stroke="#bbf7d0" stroke-width="0.6"/>
+  <text x="370" y="835" text-anchor="middle" font-size="8.5" fill="#166534">AgentTrace 全链路</text>
+  <rect x="447" y="822" width="150" height="18" rx="3" fill="#f0fdf4" stroke="#bbf7d0" stroke-width="0.6"/>
+  <text x="522" y="835" text-anchor="middle" font-size="8.5" fill="#166534">6 确定性降级工厂</text>
+  <rect x="604" y="822" width="155" height="18" rx="3" fill="#f0fdf4" stroke="#bbf7d0" stroke-width="0.6"/>
+  <text x="681" y="835" text-anchor="middle" font-size="8.5" fill="#166534">5 并行 LLM 质检子任务</text>
+  <rect x="766" y="822" width="135" height="18" rx="3" fill="#f0fdf4" stroke="#bbf7d0" stroke-width="0.6"/>
+  <text x="833" y="835" text-anchor="middle" font-size="8.5" fill="#166534">级联 + 手动重跑</text>
+  <rect x="908" y="822" width="150" height="18" rx="3" fill="#f0fdf4" stroke="#bbf7d0" stroke-width="0.6"/>
+  <text x="983" y="835" text-anchor="middle" font-size="8.5" fill="#166534">Docker 一键部署</text>
+
+  <!-- Row 4: Business -->
+  <text x="48" y="860" font-size="10" font-weight="600" fill="#b45309">业务能力</text>
+  <rect x="138" y="848" width="155" height="18" rx="3" fill="#fffbeb" stroke="#fde68a" stroke-width="0.6"/>
+  <text x="215" y="861" text-anchor="middle" font-size="8.5" fill="#92400e">问卷 / 访谈调研管线</text>
+  <rect x="300" y="848" width="140" height="18" rx="3" fill="#fffbeb" stroke="#fde68a" stroke-width="0.6"/>
+  <text x="370" y="861" text-anchor="middle" font-size="8.5" fill="#92400e">范围确认前置</text>
+  <rect x="447" y="848" width="150" height="18" rx="3" fill="#fffbeb" stroke="#fde68a" stroke-width="0.6"/>
+  <text x="522" y="861" text-anchor="middle" font-size="8.5" fill="#92400e">报告版本对比</text>
+  <rect x="604" y="848" width="155" height="18" rx="3" fill="#fffbeb" stroke="#fde68a" stroke-width="0.6"/>
+  <text x="681" y="861" text-anchor="middle" font-size="8.5" fill="#92400e">全局跨 Run 证据复用</text>
+  <rect x="766" y="848" width="135" height="18" rx="3" fill="#fffbeb" stroke="#fde68a" stroke-width="0.6"/>
+  <text x="833" y="861" text-anchor="middle" font-size="8.5" fill="#92400e">运行指标面板</text>
+  <rect x="908" y="848" width="150" height="18" rx="3" fill="#fffbeb" stroke="#fde68a" stroke-width="0.6"/>
+  <text x="983" y="861" text-anchor="middle" font-size="8.5" fill="#92400e">robots.txt 合规</text>
+
+  <!-- Footer metrics -->
+  <text x="48" y="892" font-size="9" fill="#94a3b8">216 Java 源文件 · 43 测试文件 · 71 Git 提交 · 6 Agent 节点 · 20+ REST 接口 · Spring Boot 3.5 + LangGraph4j + React 18</text>
+
+</svg>
