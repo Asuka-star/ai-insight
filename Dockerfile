@@ -29,15 +29,11 @@ RUN mvn package -DskipTests -B -q
 # ============================================================
 # Stage 3: Runtime
 # ============================================================
-FROM eclipse-temurin:17-jre AS runtime
+FROM mcr.microsoft.com/playwright/java:v1.52.0-noble AS runtime
 
-# System dependencies for Playwright Chromium + curl for health check
-# (set AI_INSIGHT_WEB_RENDERER_ENABLED=false to skip rendering)
+# curl is used by the container health check; CJK fonts improve rendered pages and uploaded document previews.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         curl \
-        libnss3 libatk1.0-0 libatk-bridge2.0-0 libcups2 libdrm2 \
-        libxkbcommon0 libxcomposite1 libxdamage1 libxrandr2 \
-        libgbm1 libpango-1.0-0 libcairo2 libasound2 libxshmfence1 \
         fonts-wqy-zenhei fonts-noto-cjk \
     && rm -rf /var/lib/apt/lists/*
 
